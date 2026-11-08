@@ -1,0 +1,11 @@
+Legend of Kairi - notice
+
+The MIT License in LICENSE (and src/LICENSE, which carries Savage Wind's full original text) covers the code in this
+repository: Savage Wind Recomp's, LAS Recomp's and Legend of Kairi's.
+
+This license covers Savage Wind Recomp's own code and LAS Recomp's code it contains. It does not cover
+The Legend of Zelda: Breath of the Wild or any other Nintendo property (including the code generated from a
+user's copy of the game), nor the third-party components in third_party/, which keep their own licenses.
+
+Likewise it does not cover Kingdom Hearts II or any other Square Enix / Disney property: everything from that game is
+read from the player's own copy at install time and never included here.
