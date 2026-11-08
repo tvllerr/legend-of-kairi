@@ -1,6 +1,6 @@
 # Legend of Kairi
 
-<img src="docs/roxas_magnesis.gif" width="100%" alt="Legend of Kairi: Roxas lifting a shrine platform with Magnesis, with KH2's command menu and HP gauge">
+<img src="docs/roxas_magnesis_v2.gif" width="100%" alt="Legend of Kairi: Roxas lifting a shrine platform with Magnesis, with KH2's command menu and HP gauge">
 
 > [!WARNING]
 > **Early alpha:** bugs and crashes are likely. Back up your Savage Wind saves (`Savage Wind/save`) before you play.
@@ -16,13 +16,13 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Features
 
-<img src="docs/sora_thunder.gif" width="100%" alt="Sora calls down Thunder on a Bokoblin, then jumps up and finishes it, with Donald and Goofy next to him">
+<img src="docs/sora_thunder_v2.gif" width="100%" alt="Sora calls down Thunder on a Bokoblin, then jumps up and finishes it, with Donald and Goofy next to him">
 
 - Sora's KH2 ground and air combos and finishers, in BotW's world (climbing, gliding, swimming)
 - KH2 magic (Fire, Blizzard, Thunder, Cure, Magnet, Reflect) with KH2's own effects and sounds
 - Drive Forms: Valor, Wisdom, Limit, Master, Final and Anti
 
-<img src="docs/sora_final_form.gif" width="100%" alt="Sora picks Final Form from the Drive menu, transforms and fights Bokoblins with his floating Keyblades">
+<img src="docs/sora_final_form_v2.gif" width="100%" alt="Sora picks Final Form from the Drive menu, transforms and fights Bokoblins with his floating Keyblades">
 
 - Summons: Chicken Little, Genie and Peter Pan, unlocked by BotW milestones
 - Donald and Goofy fight next to you; Mickey comes to the rescue in boss fights
