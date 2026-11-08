@@ -44,7 +44,7 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Install
 
-1. Download `Legend-of-Kairi-0.1.1-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
+1. Download `Legend-of-Kairi-0.1.2-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
 2. Right-click it > **Extract All...** into an empty folder (not inside the Savage Wind folder).
 3. Double-click **Install Legend of Kairi.cmd**.
 4. Click **Choose...** next to *Savage Wind folder* and pick the `Savage Wind` folder (the one with `extracted` inside).
@@ -64,7 +64,7 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 > Multiplayer works, but it is still glitchy and needs more development: enemy positions and copied enemy attacks can be
 > late or out of sync, and a hit may not land now and then. Please report what you see.
 
-- Every player needs this **exact same release** (0.1.1 and 0.1.0 can't play together).
+- Every player needs this **exact same release** (0.1.1 and 0.1.2 play together; 0.1.0 can't join them).
 - Players connect directly over UDP port 7790. Easiest: everyone installs [Tailscale](https://tailscale.com) and joins
   the same tailnet.
 - Right-click **Play Legend of Kairi Multiplayer.bat** > **Edit**. On the `set PEERS` line, replace
@@ -82,7 +82,7 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Download check
 
-`Legend-of-Kairi-0.1.1-alpha.zip` sha256: `6380f08b30072419ee075e54ba9d12d1b61693c5cc9c483a56d16a9e919478a3`
+`Legend-of-Kairi-0.1.2-alpha.zip` sha256: `7b7e5b15451f47b2c3cbcf4d867aeeab8366e3c8e677bbfdc261a99d1618d14d`
 
 ## Source code
 

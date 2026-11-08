@@ -934,19 +934,15 @@ void LvupBake(string outPath, string labelsTxt) {
     var font = Png.Read($"{Kh2}/kh2_first/remastered/msg/us/fontimage.bar/US_fontimage_bar0.png", out int fw, out int fh);
     var icon = Png.Read($"{Kh2}/kh2_first/remastered/msg/us/fontimage.bar/US_fontimage_bar2.png", out int iw, out int ih);
     float fsc = fw / 512f, isc = iw / 512f;
-    // icon-font advances (PS2 px) of the first 256 icons: frozen numbers (the same as sounds_recipe.json "hud".icon_widths; they
-    // used to come from PHH's kh2_hud.json icon_widths, itself a copy of a static table in the KH2 FM exe, RVA 0x5C8680)
-    int[] iconW = {
-        18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 24, 24, 18, 18, 18, 18, 18, 18, 18, 18, 24, 24, 24, 24, 24, 24, 18, 18, 18, 18, 24, 24,
-        24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
-        24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
-        24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
-        24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
-        24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
-        24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
-        24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
-    };
-    Console.WriteLine($"icon widths: built-in table ({iconW.Length})");
+    // icon-font advances (PS2 px) of the first 256 icons: mined from the player's own KH2 exe by the install (sounds_mine -> recipe
+    // "hud".icon_widths -> sounds_build writes kh2_hud.json {"icon_widths": {"widths": [...]}}); no table is shipped in this source
+    string hudJson = Environment.GetEnvironmentVariable("SORABUILD_HUDJSON") ?? throw new Exception("set SORABUILD_HUDJSON = work/sounds/kh2_hud.json (sorabuild sounds_build)");
+    if (!File.Exists(hudJson)) throw new Exception("icon widths: " + hudJson + " is missing (run the sorabuild sounds_build step)");
+    int[] iconW;
+    try { using var hj = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(hudJson)); iconW = hj.RootElement.GetProperty("icon_widths").GetProperty("widths").EnumerateArray().Select(x => x.GetInt32()).ToArray(); }
+    catch (Exception ex) when (ex is KeyNotFoundException || ex is InvalidOperationException || ex is System.Text.Json.JsonException) { throw new Exception("icon widths: " + hudJson + " has no icon_widths.widths list (" + ex.Message + ")"); }
+    if (iconW.Length < 256) throw new Exception("icon widths: " + hudJson + " has only " + iconW.Length + " entries, need 256");
+    Console.WriteLine($"icon widths: kh2_hud.json ({iconW.Length})");
     float tr = (TEXT_COL & 0xFF) / 128f, tg = ((TEXT_COL >> 8) & 0xFF) / 128f, tb = ((TEXT_COL >> 16) & 0xFF) / 128f;
     List<GQuad> Layout(byte[] codes, bool shadow, out float width) {
         var o = new List<GQuad>();

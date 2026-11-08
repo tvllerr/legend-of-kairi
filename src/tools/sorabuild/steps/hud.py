@@ -14,7 +14,8 @@ _SRC = ("hudbake.csproj", "Program.cs")
 
 
 def _env(ctx):
-    return {"SORABUILD_KH2": ctx.kh2}  # (s163) font widths = fontinfo.bar "sys", icon widths = frozen table: no PHH / kh2_hud.json
+    # (s182) font widths = fontinfo.bar "sys"; icon widths = work/sounds/kh2_hud.json (mined from the KH2 exe by sounds_mine/sounds_build)
+    return {"SORABUILD_KH2": ctx.kh2, "SORABUILD_HUDJSON": os.path.join(ctx.sndroot(), "kh2_hud.json")}
 
 
 def _hudbake(ctx):
