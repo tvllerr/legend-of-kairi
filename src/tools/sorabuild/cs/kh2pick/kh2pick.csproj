@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- kh2pick: extract ONLY the listed files from the player's KH2 .hed/.pkg (same OpenKh.Egs code as IdxImg hed extract).
+       dotnet build -c Release -o <dir> -p:OpenKhApps=<OpenKH release Apps dir (has OpenKh.Egs.dll)> -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="$(OpenKhApps)/OpenKh.Egs.dll" />
+    <Reference Include="$(OpenKhApps)/OpenKh.Common.dll" />
+    <!-- EgsTools.Names reads resources/*.txt (file name lists) next to the exe -->
+    <None Include="$(OpenKhApps)/resources/*.txt" Link="resources/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

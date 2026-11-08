@@ -1,0 +1,229 @@
+1 id 0x0451     # Customize
+2 id 0x044d     # Abilities
+3 id 0x044f     # Status
+10 lit "Equipment"
+11 lit "BotW Menu"
+20 lit "Equip weapons and armor."   # help: Equipment (KH2 0x370d line 1)
+21 id 0x370f    # help: Abilities
+22 id 0x3713    # help: Customize
+23 id 0x3711    # help: Status
+24 lit "Open the BotW menu."
+30 id 0x051f    # Sora
+31 id 0x0520    # Donald
+32 id 0x0521    # Goofy
+40 id 0x39fc    # LV
+41 id 0x39fd    # HP
+42 id 0x39fe    # MP
+50 id 0x3eb7    # Status (page title tab, sys 0xBEB7)
+60 id 0x4559    # LV            (Status window rows, sys 0xC559.. as OpenKh.Game MenuStatus)
+61 id 0x455a    # Experience
+62 id 0x455b    # Next LV
+63 id 0x455c    # HP
+64 id 0x455d    # MP
+65 id 0x455e    # AP
+66 id 0x455f    # Drive Gauge
+67 id 0x4560    # Strength
+68 id 0x4561    # Magic
+69 id 0x4562    # Defense
+70 id 0x4563    # Fire Resistance
+71 id 0x4564    # Blizzard Resistance
+72 id 0x4565    # Thunder Resistance
+73 id 0x4566    # Dark Resistance
+74 id 0x4567    # Bonus LV
+80 id 0x32ee    # Action (Abilities page, s83 slice 3 step 5)
+81 id 0x32ef    # Growth
+82 id 0x32f0    # Support
+83 id 0x32ed    # Weapons
+84 id 0x3372    # There are no Abilities.
+85 id 0x3629    # Don't Equip
+86 id 0x3627    # Equip
+87 id 0x362a    # help: Don't equip this ability.
+88 id 0x3628    # help: Equip this ability.
+89 id 0x3b8b    # help: Equip each Party Member with Abilities.
+90 id 0x361a    # Switch
+100 id 0x3bd4    # ability 390 name (key 100 + 2 * AB_TAB index)
+101 id 0x3bd5    # ability 390 description
+102 id 0x3bd6    # ability 391 name (key 100 + 2 * AB_TAB index)
+103 id 0x3bd7    # ability 391 description
+104 id 0x3bd8    # ability 392 name (key 100 + 2 * AB_TAB index)
+105 id 0x3bd9    # ability 392 description
+106 id 0x3bda    # ability 393 name (key 100 + 2 * AB_TAB index)
+107 id 0x3bdb    # ability 393 description
+108 id 0x3bdc    # ability 394 name (key 100 + 2 * AB_TAB index)
+109 id 0x3bdd    # ability 394 description
+110 id 0x3bde    # ability 395 name (key 100 + 2 * AB_TAB index)
+111 id 0x3bdf    # ability 395 description
+112 id 0x3be0    # ability 396 name (key 100 + 2 * AB_TAB index)
+113 id 0x3be1    # ability 396 description
+114 id 0x3be2    # ability 397 name (key 100 + 2 * AB_TAB index)
+115 id 0x3be3    # ability 397 description
+116 id 0x3be8    # ability 400 name (key 100 + 2 * AB_TAB index)
+117 id 0x3be9    # ability 400 description
+118 id 0x3bea    # ability 401 name (key 100 + 2 * AB_TAB index)
+119 id 0x3beb    # ability 401 description
+120 id 0x3bec    # ability 402 name (key 100 + 2 * AB_TAB index)
+121 id 0x3bed    # ability 402 description
+122 id 0x3bee    # ability 403 name (key 100 + 2 * AB_TAB index)
+123 id 0x3bef    # ability 403 description
+124 id 0x3bf2    # ability 405 name (key 100 + 2 * AB_TAB index)
+125 id 0x3bf3    # ability 405 description
+126 id 0x3bf4    # ability 406 name (key 100 + 2 * AB_TAB index)
+127 id 0x3bf5    # ability 406 description
+128 id 0x3bf8    # ability 408 name (key 100 + 2 * AB_TAB index)
+129 id 0x3bf9    # ability 408 description
+130 id 0x3bfa    # ability 409 name (key 100 + 2 * AB_TAB index)
+131 id 0x3bfb    # ability 409 description
+132 id 0x3bfc    # ability 410 name (key 100 + 2 * AB_TAB index)
+133 id 0x3bfd    # ability 410 description
+134 id 0x3bfe    # ability 411 name (key 100 + 2 * AB_TAB index)
+135 id 0x3bff    # ability 411 description
+136 id 0x3c04    # ability 414 name (key 100 + 2 * AB_TAB index)
+137 id 0x3c05    # ability 414 description
+138 id 0x3c06    # ability 415 name (key 100 + 2 * AB_TAB index)
+139 id 0x3c07    # ability 415 description
+140 id 0x3c08    # ability 416 name (key 100 + 2 * AB_TAB index)
+141 id 0x3c09    # ability 416 description
+142 id 0x4e2a    # ability 540 name (key 100 + 2 * AB_TAB index)
+143 id 0x4e2b    # ability 540 description
+144 id 0x4e2e    # ability 542 name (key 100 + 2 * AB_TAB index)
+145 id 0x4e2f    # ability 542 description
+146 id 0x3bca    # ability 385 name (key 100 + 2 * AB_TAB index)
+147 id 0x3bcb    # ability 385 description
+148 id 0x3bcc    # ability 386 name (key 100 + 2 * AB_TAB index)
+149 id 0x3bcd    # ability 386 description
+150 id 0x3b89    # help: Select settings for shortcut commands and other various functions. (Customize member step, Sora)
+151 id 0x3b8a    # help: Change Party Member settings. (Customize member step, Donald / Goofy)
+152 id 0x0448    # empty shortcut / Remove entry (3 sys-font glyphs; FUN_14035bd90 uVar13 = 0x8448) (s84 slice 4)
+153 id 0x1df7    # help: Remove Shortcut settings.
+154 id 0x0508    # Fire       (key 154 + spell: SPELL_FIRE 0 / BLIZZARD 1 / THUNDER 2 / CURE 3)
+155 id 0x050e    # Blizzard
+156 id 0x050b    # Thunder
+157 id 0x0511    # Cure
+158 id 0x0635    # help: Fire     (magic item record +10, key 158 + spell)
+159 id 0x0637    # help: Blizzard
+160 id 0x0639    # help: Thunder
+161 id 0x063b    # help: Cure
+162 id 0x045b    # Weapons row (s85 slice 5, Equipment page state 2, kind 5)
+163 id 0x045c    # help: Change main weapon.
+164 id 0x045d    # Valor row (kind 6 sub-weapon)
+165 id 0x045e    # help: Change Sub-Weapon used in Valor Form.
+166 id 0x05c2    # Kingdom Key   (key 166 + 2 * KB_TAB index = name, +1 = desc)
+167 id 0x05c3    # Kingdom Key desc
+168 id 0x3dfa    # Star Seeker
+169 id 0x3dfb    # Star Seeker desc
+170 id 0x05c4    # Oathkeeper (item 0x2a)
+171 id 0x05c5    # Oathkeeper desc
+172 id 0x05c6    # Oblivion (item 0x2b)
+173 id 0x05c7    # Oblivion desc
+174 id 0x3642    # help: Equips a Keyblade in each hand... (Valor sub-weapon picker)
+# (s89 kb) the rest of KH2 FM's Keyblades: key 400 + 2 * (KB_TAB index - 4) = name, + 1 = desc (sora_kb.h kb_text_key)
+400 id 0x3dfc    # Hidden Dragon (item 0x1e1)
+401 id 0x3dfd    # Hidden Dragon desc
+402 id 0x3e2e    # Hero's Crest (item 0x1e4)
+403 id 0x3e2f    # Hero's Crest desc
+404 id 0x3e30    # Monochrome (item 0x1e5)
+405 id 0x3e31    # Monochrome desc
+406 id 0x3e32    # Follow the Wind (item 0x1e6)
+407 id 0x3e33    # Follow the Wind desc
+408 id 0x3e34    # Circle of Life (item 0x1e7)
+409 id 0x3e35    # Circle of Life desc
+410 id 0x3e36    # Photon Debugger (item 0x1e8)
+411 id 0x3e37    # Photon Debugger desc
+412 id 0x3e38    # Gull Wing (item 0x1e9)
+413 id 0x3e39    # Gull Wing desc
+414 id 0x3e3a    # Rumbling Rose (item 0x1ea)
+415 id 0x3e3b    # Rumbling Rose desc
+416 id 0x3e3c    # Guardian Soul (item 0x1eb)
+417 id 0x3e3d    # Guardian Soul desc
+418 id 0x3e3e    # Wishing Lamp (item 0x1ec)
+419 id 0x3e3f    # Wishing Lamp desc
+420 id 0x3e40    # Decisive Pumpkin (item 0x1ed)
+421 id 0x3e41    # Decisive Pumpkin desc
+422 id 0x3e42    # Sleeping Lion (item 0x1ee)
+423 id 0x3e43    # Sleeping Lion desc
+424 id 0x3e44    # Sweet Memories (item 0x1ef)
+425 id 0x3e45    # Sweet Memories desc
+426 id 0x3e46    # Mysterious Abyss (item 0x1f0)
+427 id 0x3e47    # Mysterious Abyss desc
+428 id 0x3e48    # Fatal Crest (item 0x1f1)
+429 id 0x3e49    # Fatal Crest desc
+430 id 0x3e4a    # Bond of Flame (item 0x1f2)
+431 id 0x3e4b    # Bond of Flame desc
+432 id 0x3e4c    # Fenrir (item 0x1f3)
+433 id 0x3e4d    # Fenrir desc
+434 id 0x3e4e    # Ultima Weapon (item 0x1f4)
+435 id 0x3e4f    # Ultima Weapon desc
+436 id 0x4e35    # Two Become One (item 0x21f)
+437 id 0x4e36    # Two Become One desc
+438 id 0x4e37    # Winner's Proof (item 0x220)
+439 id 0x4e38    # Winner's Proof desc
+440 id 0x045f    # Master row (s91 mfkb, Equipment page kind 6)
+441 id 0x0460    # help: Change Sub-Weapon used in Master Form.
+442 id 0x0461    # Final row
+443 id 0x0462    # help: Change Sub-Weapon used in Final Form.
+
+# (s91 b5-abil) appended Abilities rows: key 500 + 2*(AB_TAB index - 25) name, +1 description (03system item names)
+500 id 0x066c    # ability 82 name
+501 id 0x066d    # ability 82 description
+502 id 0x1e60    # ability 137 name
+503 id 0x1e61    # ability 137 description
+504 id 0x399d    # ability 271 name
+505 id 0x399e    # ability 271 description
+506 id 0x3995    # ability 267 name
+507 id 0x3996    # ability 267 description
+508 id 0x39a1    # ability 273 name
+509 id 0x39a2    # ability 273 description
+510 id 0x398b    # ability 262 name
+511 id 0x398c    # ability 262 description
+512 id 0x398d    # ability 263 name
+513 id 0x398e    # ability 263 description
+514 id 0x4e72    # ability 559 name
+515 id 0x4e73    # ability 559 description
+516 id 0x398f    # ability 264 name
+517 id 0x3990    # ability 264 description
+518 id 0x4e78    # ability 562 name
+519 id 0x4e79    # ability 562 description
+520 id 0x3991    # ability 265 name
+521 id 0x3992    # ability 265 description
+522 id 0x3993    # ability 266 name
+523 id 0x3994    # ability 266 description
+524 id 0x3999    # ability 269 name
+525 id 0x399a    # ability 269 description
+526 id 0x4e74    # ability 560 name
+527 id 0x4e75    # ability 560 description
+528 id 0x399b    # ability 270 name
+529 id 0x399c    # ability 270 description
+530 id 0x399f    # ability 272 name
+531 id 0x39a0    # ability 272 description
+532 id 0x4e76    # ability 561 name
+533 id 0x4e77    # ability 561 description
+534 id 0x3997    # ability 268 name
+535 id 0x3998    # ability 268 description
+536 id 0x3335    # ability 198 name
+537 id 0x3336    # ability 198 description
+538 id 0x4e8b    # ability 568 name
+539 id 0x4e8c    # ability 568 description
+540 id 0x3bce    # ability 387 name
+541 id 0x3bcf    # ability 387 description
+542 id 0x3bd0    # ability 388 name
+543 id 0x3bd1    # ability 388 description
+544 id 0x1f73    # ability 138 name
+545 id 0x1f74    # ability 138 description
+546 id 0x2858    # ability 158 name
+547 id 0x2859    # ability 158 description
+548 id 0x4e28    # ability 539 name
+549 id 0x4e29    # ability 539 description
+600 id 0x0463    # Armor (tag, s120 eqlook, Equipment page kind 7)
+601 id 0x464c    # Ability (panel label, s120 eqlook)
+610 id 0x2f63    # ability 162 name (Keyblade ability not in AB_TAB: Sleeping Lion, s120 eqlook)
+611 id 0x2f65    # ability 163 name (Star Seeker)
+612 id 0x3be4    # ability 398 name (Oathkeeper)
+613 id 0x3c00    # ability 412 name (Hidden Dragon)
+614 id 0x3c02    # ability 413 name (Circle of Life)
+615 id 0x3c14    # ability 422 name (Ultima Weapon)
+616 id 0x3bf0    # ability 404 name (Winner's Proof)
+617 id 0x4e2c    # ability 541 name (Two Become One)
+620 id 0x0514    # Magnet   (s147 Customize: key 620 + spell - 4)
+621 id 0x0517    # Reflect
+622 id 0x063d    # help: Magnet   (key 622 + spell - 4)
+623 id 0x063f    # help: Reflect

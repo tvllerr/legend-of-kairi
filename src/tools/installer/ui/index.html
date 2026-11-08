@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Legend of Kairi</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<canvas id="bg" aria-hidden="true"></canvas>
+
+<main class="panel" id="panel">
+  <!-- ============================================================ setup -->
+  <section class="screen" id="s-setup">
+    <h1>Welcome to Legend of Kairi</h1>
+    <p class="lead">Legend of Kairi is built on your PC from your own copies of the games: it reads them, makes the mod's files
+      and checks every one. It takes about 15 minutes. Your games stay as they are.</p>
+    <div class="cols">
+      <div class="rows">
+        <div class="sect">Your games</div>
+        <button class="row" id="r-sw" data-help="h-sw"><span class="lbl">Savage Wind folder</span><span class="val" id="v-sw">Choose...</span></button>
+        <button class="row" id="r-kh2" data-help="h-kh2"><span class="lbl">Kingdom Hearts 1.5+2.5</span><span class="val" id="v-kh2">Choose...</span></button>
+        <div class="sect">Set up</div>
+        <button class="row go" id="r-go" data-help="h-go" disabled><span class="lbl" id="go-lbl">Install Legend of Kairi</span><span class="val" id="v-go"></span></button>
+        <button class="row" id="r-credits" data-help="h-credits"><span class="lbl">Credits</span><span class="val">View</span></button>
+        <p class="note" id="setup-note">Everything the installer writes goes into one folder:<br><span id="root-path" class="path"></span></p>
+      </div>
+      <div class="help">
+        <div class="hp" id="h-sw">
+          <p>The folder you unpacked <b>Savage Wind <span class="swv"></span></b> into. Start it once and set up your game
+            files first: the installer reads them from there.</p>
+          <p class="st" id="st-sw"></p>
+        </div>
+        <div class="hp" id="h-kh2">
+          <p>Your <b>KINGDOM HEARTS HD 1.5+2.5 ReMIX</b> folder from Steam. Sora, his forms, the party, the effects and the
+            sounds are all made from it. It is found through Steam when it can be.</p>
+          <p class="st" id="st-kh2"></p>
+        </div>
+        <div class="hp" id="h-go">
+          <p>Builds the mod's files from your games, then checks each one against the reference build, so everyone who
+            plays together has the very same files.</p>
+          <p class="st" id="st-go"></p>
+        </div>
+        <div class="hp" id="h-credits">
+          <p>Who made this, and the free tools it is built with.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ progress / done / failed -->
+  <section class="screen" id="s-run" hidden>
+    <h1 id="run-title">Installing Legend of Kairi</h1>
+    <p class="lead" id="run-lead">You can keep using your PC. If you close this window the install stops, and the next
+      time it carries on where it stopped.</p>
+    <div class="now" id="now"></div>
+    <div class="bar big"><div class="fill" id="all-fill"></div></div>
+    <div class="times"><span id="t-el">0:00</span><span id="t-eta"></span></div>
+    <ol class="phases" id="phases"></ol>
+    <div class="err" id="err" hidden></div>
+    <div class="play" id="play" hidden>
+      <h2>Ready to play</h2>
+      <p><b>Play Legend of Kairi</b> &ndash; plays on your own. Start it from the folder below (or make a shortcut to it).</p>
+      <p><b>Play Legend of Kairi Multiplayer</b> &ndash; plays with friends. The first time, right-click it, choose Edit, and put your
+        friend's Tailscale address on the marked line (for example 100.101.102.103:7790). Everybody needs the very same Legend of Kairi
+        release, and Windows may ask to let the game through the firewall (UDP port 7790): say yes.</p>
+      <p class="note" id="play-note"></p>
+    </div>
+    <div class="actions">
+      <button class="btn" id="b-log">Show details</button>
+      <button class="btn" id="b-logs">Open logs</button>
+      <button class="btn" id="b-folder" hidden>Open the game folder</button>
+      <span class="grow"></span>
+      <button class="btn" id="b-back" hidden>Back</button>
+      <button class="btn warn" id="b-cancel">Stop</button>
+    </div>
+    <pre class="log" id="log" hidden></pre>
+  </section>
+
+  <!-- ============================================================ credits -->
+  <section class="screen" id="s-credits" hidden>
+    <h1>Credits</h1>
+    <div class="credits" id="credits"></div>
+    <div class="actions"><button class="btn" id="b-lic">Open license texts</button><span class="grow"></span>
+      <button class="btn" id="b-cback">Back</button></div>
+  </section>
+</main>
+
+<div class="ver" id="ver"></div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+{
+ "people": [
+  {
+   "name": "tvllerr",
+   "role": "Legend of Kairi (Sora in BotW): the mod, its data tools and this installer."
+  },
+  {
+   "name": "Project Heart Hunters (PHH) by YG123",
+   "role": "A lot of ideas came from PHH, a Borderlands 2 mod where you play as Sora from KH2 in a similar way."
+  },
+  {
+   "name": "Savage Wind by Revivedx and contributors",
+   "role": "The PC recompilation of Breath of the Wild that Legend of Kairi runs on (built on LAS Recomp by Peiikai)."
+  }
+ ],
+ "tools": [
+  {
+   "name": "OpenKH",
+   "role": "Reads the KH2 packages, models and motions.",
+   "license": "Apache License 2.0"
+  },
+  {
+   "name": ".NET 8 runtime (Microsoft)",
+   "role": "Runs the bake tools and this window.",
+   "license": "MIT"
+  },
+  {
+   "name": "WebView2 (Microsoft)",
+   "role": "Shows this page inside the installer window.",
+   "license": "BSD-3-Clause (WebView2 SDK)"
+  },
+  {
+   "name": "Python 3.12",
+   "role": "Runs the data builder and this installer.",
+   "license": "Python Software Foundation License"
+  },
+  {
+   "name": "NumPy",
+   "role": "Effect math.",
+   "license": "BSD-3-Clause (and bundled MIT / Zlib / 0BSD / CC0 parts)"
+  },
+  {
+   "name": "Pillow",
+   "role": "HUD pictures.",
+   "license": "MIT-CMU (HPND)"
+  },
+  {
+   "name": "oead by leoetlino",
+   "role": "Reads BotW game data (SARC, BYML).",
+   "license": "GPL-2.0-or-later"
+  },
+  {
+   "name": "BusyBox-w32 by Ron Yorston",
+   "role": "Runs the effect recorder scripts.",
+   "license": "GPL-2.0"
+  },
+  {
+   "name": "FFmpeg (Windows build by Gyan Doshi)",
+   "role": "Resamples the skateboard sounds.",
+   "license": "GPL-3.0"
+  },
+  {
+   "name": "vgmstream",
+   "role": "Decodes the KH2 voices.",
+   "license": "ISC (bundled decoders: LGPL / BSD / MIT)"
+  },
+  {
+   "name": "Fira Sans (Mozilla)",
+   "role": "The font of this window, the same as Savage Wind's.",
+   "license": "SIL Open Font License 1.1"
+  }
+ ],
+ "legal": "Fan project, not affiliated with Disney, Square Enix or Nintendo. KINGDOM HEARTS is (c) Disney / Square Enix; The Legend of Zelda: Breath of the Wild is (c) Nintendo. No game files are included: everything is built on your PC from your own copies of the games. Full license texts are in the LICENSES folder."
+}

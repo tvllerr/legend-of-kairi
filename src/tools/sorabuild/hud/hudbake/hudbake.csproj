@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- sorabuild: dotnet build -c Release -o <dir> -p:OpenKh=<dir with the OpenKH release DLLs> -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="$(OpenKh)/OpenKh.Kh2.dll" />
+    <Reference Include="$(OpenKh)/OpenKh.Common.dll" />
+    <Reference Include="$(OpenKh)/OpenKh.Imaging.dll" />
+    <Reference Include="$(OpenKh)/Xe.BinaryMapper.dll" />
+    <Reference Include="$(OpenKh)/Xe.dll" />
+  </ItemGroup>
+</Project>

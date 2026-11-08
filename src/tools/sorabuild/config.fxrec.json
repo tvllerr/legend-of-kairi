@@ -1,0 +1,12 @@
+{
+ "kh2": "D:/KH2Extract",
+ "romfs": "D:/recompiled games/SavageWind-0.4.1-alpha.4-windows/Savage Wind/extracted/romfs",
+ "out": "D:/SoraBotW/sb/s164/out",
+ "work": "D:/SoraBotW/sb/fxrecwork",
+ "dotnet": "D:/Tools/dotnet8/dotnet.exe",
+ "openkh": "D:/KH2BusterSword/conv/out",
+ "fx": "fxrec",
+ "sounds": "recipe",
+ "kh2exe": "D:/SteamLibrary/steamapps/common/KINGDOM HEARTS -HD 1.5+2.5 ReMIX-/KINGDOM HEARTS II FINAL MIX.exe",
+ "fxrec_jobs": 2
+}

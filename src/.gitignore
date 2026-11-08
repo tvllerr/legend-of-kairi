@@ -1,0 +1,54 @@
+# your own game files and what's made from them (building from source puts them here)
+input/
+extracted/
+extracted-*/
+generated/
+generated-*/
+# Nintendo fonts (users import their own; only the README ships)
+/fonts/*
+!/fonts/README.md
+# the player's own start screen picture (runtime/ui/splash.mm): theirs, never tracked or shipped
+/splash.jpg
+/splash.jpeg
+/splash.png
+# build output, caches, saves and settings
+build/
+/cache/
+save/
+/save.lock
+/savagewind.ini
+# tools and Python environments (machine-specific)
+tools/venv/
+venv/
+__pycache__/
+.DS_Store
+# Savage Wind: never track console dumps, keys or decrypted/extracted game data
+*.keys
+*.xci
+*.xcz
+*.nsp
+*.nsz
+*.nca
+dump/
+keys/
+# Ghidra query paths for this machine (tools/ghidra/README.md)
+tools/ghidra/gq.local.json
+
+# Internal work-branch log, local only
+docs/RAMAS.md
+# the player's own colour LUTs (runtime/color_grade.h): in the data root, which is the checkout in a source build
+/luts/
+tools_s119/hudbake/obj/
+
+# Sora mod: game-derived binaries made by the out_s*/ tools (KH2 textures, BotW logo edits, bakes, previews).
+# Kept on disk for the install scripts, never tracked (private backup must not hold game assets).
+/out_*/**/*.bin
+/out_*/**/*.png
+/out_*/**/*.npy
+/recon/out_*/**/*.bin
+
+# multiplayer test build (Play Sora in BotW 4.1 NET.bat runs its exe)
+/build_mp/
+
+# vgmstream-cli (fetched by tools/sorabuild/sounds/fetch_vgmstream.py, never committed)
+/tools/sorabuild/sounds/bin/

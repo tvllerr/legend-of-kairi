@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- sorabuild fx_trigjson: dotnet build -c Release -o <dir> -p:OpenKhDir=<dir with the OpenKH DLLs>
+       (tools_s110/sorabake `trigjson` command only: same decode, the KH2 root is an argument instead of a constant) -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>trigjson</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="$(OpenKhDir)/OpenKh.Kh2.dll" />
+    <Reference Include="$(OpenKhDir)/OpenKh.Common.dll" />
+    <Reference Include="$(OpenKhDir)/OpenKh.Ps2.dll" />
+    <Reference Include="$(OpenKhDir)/OpenKh.Imaging.dll" />
+    <Reference Include="$(OpenKhDir)/Xe.BinaryMapper.dll" />
+    <Reference Include="$(OpenKhDir)/Xe.dll" />
+    <Reference Include="$(OpenKhDir)/OpenKh.Kh2AnimEmu.dll" />
+  </ItemGroup>
+</Project>

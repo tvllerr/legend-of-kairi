@@ -44,7 +44,7 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Install
 
-1. Download `Legend-of-Kairi-0.1.0-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
+1. Download `Legend-of-Kairi-0.1.1-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
 2. Right-click it > **Extract All...** into an empty folder (not inside the Savage Wind folder).
 3. Double-click **Install Legend of Kairi.cmd**.
 4. Click **Choose...** next to *Savage Wind folder* and pick the `Savage Wind` folder (the one with `extracted` inside).
@@ -64,7 +64,7 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 > Multiplayer works, but it is still glitchy and needs more development: enemy positions and copied enemy attacks can be
 > late or out of sync, and a hit may not land now and then. Please report what you see.
 
-- Every player needs this **exact same release**.
+- Every player needs this **exact same release** (0.1.1 and 0.1.0 can't play together).
 - Players connect directly over UDP port 7790. Easiest: everyone installs [Tailscale](https://tailscale.com) and joins
   the same tailnet.
 - Right-click **Play Legend of Kairi Multiplayer.bat** > **Edit**. On the `set PEERS` line, replace
@@ -82,7 +82,15 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Download check
 
-`Legend-of-Kairi-0.1.0-alpha.zip` sha256: `6e83635029f021203e1a5438a8346fd65aade21d7743333743c3551a1f8a9cd9`
+`Legend-of-Kairi-0.1.1-alpha.zip` sha256: `6380f08b30072419ee075e54ba9d12d1b61693c5cc9c483a56d16a9e919478a3`
+
+## Source code
+
+The full source is in [`src/`](src/), open source under the [MIT License](src/LICENSE) so anyone can learn from it,
+fix it or build on it: the mod, the changes to Savage Wind, the installer and every build tool. [`src/README.md`](src/README.md)
+explains what's where and how to build it. Like the download, the source contains no game files: everything from
+Breath of the Wild and Kingdom Hearts II (models, motions, skeletons, effects, sound timings, logos) is built on the
+player's PC from their own copies of the games.
 
 ## Credits
 
@@ -102,7 +110,8 @@ Made by **tvllerr**. Thank you to everyone whose work this mod stands on:
 Full license texts are in the `LICENSES` folder of the zip, with links to the source of the GPL / LGPL programs.
 
 **Research and references**
-- **YG123**'s PHH, a Borderlands 2 mod where you play as KH2's Sora: many of the ideas for this mod
+- **YG123**'s PHH, a Borderlands 2 mod where you play as KH2's Sora: many of the ideas for this mod; its data was the
+  reference our own KH2 effect recorder and sound miner were checked against
 - [SkyCraft](https://github.com/chasmlol/SkyCraft) by chasmlol and
   [minecraft-crossover-bridge](https://github.com/justbustin/minecraft-crossover-bridge) by justbustin: cross-game mod ideas
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) (NSA): reverse engineering KH2 Final Mix
@@ -112,6 +121,11 @@ Full license texts are in the `LICENSES` folder of the zip, with links to the so
 The Legend of Zelda and Breath of the Wild are © Nintendo. Kingdom Hearts is © Disney / Square Enix. This is an
 unofficial fan project: the download contains only original code and art, and all game content stays with its owners
 and is read from your own copies of the games.
+
+## License
+
+The mod's own code is [MIT](src/LICENSE) (Savage Wind's notice stays with it). Third-party parts keep their own
+licenses (see `LICENSES/` in the zip and `src/third_party/`).
 
 ## Made with Claude
 

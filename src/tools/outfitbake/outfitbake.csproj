@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Build: D:/Tools/dotnet8/dotnet.exe build -c Release -o out  (OpenKH DLLs from D:/KH2BusterSword/conv/out) -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="D:/KH2BusterSword/conv/out/OpenKh.Kh2.dll" />
+    <Reference Include="D:/KH2BusterSword/conv/out/OpenKh.Common.dll" />
+    <Reference Include="D:/KH2BusterSword/conv/out/OpenKh.Imaging.dll" />
+    <Reference Include="D:/KH2BusterSword/conv/out/Xe.BinaryMapper.dll" />
+    <Reference Include="D:/KH2BusterSword/conv/out/Xe.dll" />
+  </ItemGroup>
+</Project>
