@@ -58,6 +58,8 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Multiplayer
 
+<img src="docs/sora_multiplayer.gif" width="100%" alt="Co-op: two players' Soras (one from a Steam Deck, in another outfit) running together, each with Donald and Goofy">
+
 > [!NOTE]
 > Multiplayer works, but it is still glitchy and needs more development: enemy positions and copied enemy attacks can be
 > late or out of sync, and a hit may not land now and then. Please report what you see.
