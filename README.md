@@ -44,12 +44,16 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Install
 
-1. Download `Legend-of-Kairi-0.1.2-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
+1. Download `Legend-of-Kairi-0.1.3-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
 2. Right-click it > **Extract All...** into an empty folder (not inside the Savage Wind folder).
 3. Double-click **Install Legend of Kairi.cmd**.
 4. Click **Choose...** next to *Savage Wind folder* and pick the `Savage Wind` folder (the one with `extracted` inside).
    Kingdom Hearts is found automatically from Steam.
 5. Click **Install** and wait for the finish screen (about 15 minutes).
+
+**Updating from an older version:** unzip the new release, double-click **Install Legend of Kairi.cmd**, choose
+**Update an existing install** and pick your old Legend of Kairi folder. Only what changed is rebuilt (seconds to a few
+minutes). Your saves and the friend IPs in your Multiplayer launcher are kept.
 
 ## Play
 
@@ -64,7 +68,7 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 > Multiplayer works, but it is still glitchy and needs more development: enemy positions and copied enemy attacks can be
 > late or out of sync, and a hit may not land now and then. Please report what you see.
 
-- Every player needs this **exact same release** (0.1.1 and 0.1.2 play together; 0.1.0 can't join them).
+- Every player needs this **exact same release** (0.1.1, 0.1.2 and 0.1.3 play together; 0.1.0 can't join them).
 - Players connect directly over UDP port 7790. Easiest: everyone installs [Tailscale](https://tailscale.com) and joins
   the same tailnet.
 - Right-click **Play Legend of Kairi Multiplayer.bat** > **Edit**. On the `set PEERS` line, replace
@@ -75,6 +79,14 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Troubleshooting
 
+- **Something wrong? Make a bug report:** close the game, double-click **Make bug report.bat** (next to the Play
+  launchers). A `Legend of Kairi bug report <date>.zip` appears on your Desktop: send it to tvllerr (a GitHub issue
+  here or a message on Twitter) with what you saw. It holds the logs, launchers, `savagewind.ini` and system info
+  (Windows, graphics card, RAM); no saves, no game files, friends' IPs removed.
+- **Sora / Roxas invisible:** if the model can't be drawn, a short line in the bottom-left corner says why. A
+  screenshot of it plus the bug report zip is all we need. (0.1.0-0.1.2 didn't draw them on AMD and Intel graphics:
+  update to 0.1.3.)
+- **"files are incomplete" / "from another version" when starting:** run Install Legend of Kairi.cmd and choose Update.
 - **"your KH2 files differ from the Steam KH2 FM release"**: a KH2 mod is installed. Restore the original `.pkg` / `.hed`
   files or run Steam's *Verify integrity of game files*, then install again.
 - **The install stopped:** the install window shows the step and has **Open logs**. Send the `work/logs` folder to tvllerr.
@@ -82,7 +94,7 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Download check
 
-`Legend-of-Kairi-0.1.2-alpha.zip` sha256: `7b7e5b15451f47b2c3cbcf4d867aeeab8366e3c8e677bbfdc261a99d1618d14d`
+`Legend-of-Kairi-0.1.3-alpha.zip` sha256: `0eefc4028c95f3d4bb3894940e180ced42716f1118034916694acac2a1e2b8f0`
 
 ## Source code
 

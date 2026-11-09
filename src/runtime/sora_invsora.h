@@ -348,7 +348,11 @@ static bool is_frame(void) {
         // (s106b: the menu Link stands at his scene's ORIGIN, so a zero translation is right; the old check bailed here)
         float cv[12] = {0}, cp[4] = {0}, csh[2] = {0};
         const bool cam_ok = g_is_menucam && is_menu_cam(cv, cp, csh);
-        if (g_is_menucam && !cam_ok) { if (!IS.cam_warned) IS.cam_warned = true, LOG("[invsora] world mode: the menu camera did not read sane: not drawn\n"); return false; }
+        if (g_is_menucam && !cam_ok) {  // (revfix: Link is hidden already, so Sora must show: the screen mode below instead)
+            if (!IS.cam_warned) IS.cam_warned = true, LOG("[invsora] world mode: the menu camera did not read sane: screen mode (invsora 1) instead\n");
+            if (IS.cam_on) { IS.cam_on = false; if (g_is_camfn) g_is_camfn(false, NULL, NULL); }
+            goto is_screen_mode;
+        }
         if (cam_ok) g_is_shiftfn(csh[0], csh[1]), g_is_camfn(true, cv, cp), IS.cam_on = true;
         else if (IS.cam_on) g_is_camfn(false, NULL, NULL), IS.cam_on = false;
         if (PD.off) for (int k = 0; k < 2; k++) if (g_party_id[k] > 0) PD.off(g_party_id[k]);  // (the party isn't in the menu scene)
@@ -367,6 +371,7 @@ static bool is_frame(void) {
         IS.drew = true;
         return true;
     }
+is_screen_mode:
     // Sora (screen mode: the Game Over's / menuwalk's exe path: own fixed camera, no scene depth, drawn over BotW's UI)
     if (!IS.tried || (!IS.screen && !(now & 0x3ff))) {
         IS.tried = true;

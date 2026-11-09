@@ -29,6 +29,16 @@ static void chestev_tick(uint64_t present, const float p[3]) {
     static int on_n, off_n;
     static uint64_t at;
     float dist, ang;
+    {  // (revfix) a loose camera (cam_alive only, off cam_track) may be a wrong one: its distance / angle must not freeze Sora
+        static bool tried;
+        static bool (*loose_fn)(void);
+        if (!tried) tried = true, loose_fn = (bool (*)(void))(void *)GetProcAddress(GetModuleHandleA(NULL), "linkpos_camera_loose");
+        if (loose_fn && loose_fn()) {
+            on_n = 0, g_chev_det = false;
+            if (g_chev && ++off_n >= g_evoff) g_chev = false, LOG("[sora] chestev: event OFF at present %llu (camera not tracking)\n", (unsigned long long)present);
+            return;
+        }
+    }
     if (!chev_measure(p, &dist, &ang)) return;
     bool det = dist > (float)g_evcam || (ang > (float)g_evang && dist >= (float)g_evmin);  // (s94 review: evmin)
     if (det != g_chev_det && g_evrec)

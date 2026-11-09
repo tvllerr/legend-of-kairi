@@ -99,6 +99,9 @@ void sora_draw_present(float vx, float vy, float vw, float vh);
 // the game's final image at BotW's scene composite (under its 2D UI), 0 = over the window image here (the old order).
 int sora_draw_ui_order(void);
 void sora_draw_set_ui_order(int on);
+// (s183 amd, render thread) maxPushConstantsSize as Sora's passes see it: the GPU's, or min(GPU, n) with
+// SAVAGEWIND_SORA_PUSH_LIMIT=<n> (test a 128-byte GPU on NVIDIA). Every Sora pipeline layout checks its push range with it.
+unsigned sora_push_limit(void);
 // (mp2-perf) remote avatar perf cuts, DLL "set drawperf N" (looked up by name): bits 1 C1 bones blended once per publish,
 // 2 C2 static index buffer, 4 C3 one vertex copy fewer per side, 8 C4 cached descriptor sets (default 15 = all), 16 = verify
 // (one-shot: logs the old vs new memcmp). A cleared bit = the old path. sora_draw_perf: the cut bits now.
@@ -114,3 +117,6 @@ void sora_draw_scene_pass(VkImageView view, VkFormat fmt, uint32_t w, uint32_t h
 // A world point (BotW units) -> window px with the camera sora_draw_present drew with this frame (sora_hud_present,
 // same thread, after it); false behind the camera or when no Sora frame was drawn.
 bool sora_draw_project(const float w[3], float *sx, float *sy);
+// (s183 kairi-diag) why the body is not on screen: 1 + the first latched failure ("D<n> text") in why, else 0 + the latest skip reason
+// (may be ""); *drawn_frame = vk_frame_counter() of the last frame a body was drawn (0 = never). Any thread; the DLL looks it up by name.
+int sora_draw_diag(char *why, int cap, uint64_t *drawn_frame);

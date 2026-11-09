@@ -149,6 +149,9 @@ bool sora_hud_quads_shown(void);  // drawn at the last present
 // now. Behind the camera = not drawn; drawn over the KH2 HUD, never while sora_hud_quads' pause menu is up (that page
 // owns the screen); needs camp.bin (the font).
 void sora_hud_label(const float world[3], const SoraHudQuad *q, int n);
+// (s183 kairi-diag) one text notice in the window's bottom-left corner (quads as sora_hud_label's but in the 512 x 416 frame, not
+// world-anchored); resend every frame, gone 3 presents after the last call; n <= 0 = hide. Needs camp.bin (the font).
+void sora_hud_notice(const SoraHudQuad *q, int n);
 // (mp4) slots 0..3 (4 players), each stale after 3 presents; sora_hud_label = slot 0
 void sora_hud_label_slot(int slot, const float world[3], const SoraHudQuad *q, int n);
 bool sora_hud_itempic_ready(void);  // (s120) itempic.bin loaded: SoraHudQuad.tex 3 = the Keyblade picture atlas (u/v in its texels)

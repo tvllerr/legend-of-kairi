@@ -41,7 +41,7 @@ static const char *const SK_R1_FLAGS[] = {
     "Guide_ItemMagnetglove", "IsHelp_App_Magnetglove", "IsHelp_App_RemoteBomb", "IsHelp_App_Stoptimer", "IsHelp_App_IceMaker",
 };
 
-static int g_sk = 0;          // live "set slate 1": the Slate row on the Items slot
+static int g_sk = 1;          // (s183: default ON, verified s98/s114b) live "set slate 1": the Slate row on the Items slot
 static int g_sk_force = 0;    // live "set slateforce 1": the row is usable even if the unlock flag reads 0 / unknown
 static int g_sk_pulse = 1;    // live "set slatepulse 0": no automatic L tap (press L yourself)
 static int g_sk_hold = 90;    // live "set slatehold <presents>": Slate mode lasts at least this long
@@ -55,7 +55,7 @@ static int g_sk_rec = 0;      // live "set slaterec <n>": 1 = R1 flags (now + ea
 static struct { bool on; uint64_t t0; uint32_t sw0, last_sw; int stand, rune; bool moved; bool wait; int want; } SK;
 // (s99 b14-runes) live "set slaterune 1": Slate mode first chooses the row's rune in BotW (exe export linkpos_rune_select, NEEDS EXE RELINK),
 // then taps L once the game has applied it. 0 (default) = as before: BotW's own selected rune is used.
-static int g_sk_rune = 0;
+static int g_sk_rune = 1;  // (s183: default ON, verified s100c)
 static struct { bool tried; int (*sel)(int); int (*get)(int *, int *); } SKR;
 static void sk_rune_bind(void) {
     if (SKR.tried) return;

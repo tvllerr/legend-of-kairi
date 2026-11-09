@@ -28,6 +28,16 @@ def main():
         open(lp, "w").write(str(p.pid))
         assert not installer.pid_alive(p.pid)
         assert child(r) == "True", "stale lock must not block"
+        # (s183) a live pid that is not a python (Windows reused the dead installer's number): stale too
+        q = subprocess.Popen([os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "System32", "PING.EXE"), "-n", "20", "127.0.0.1"],
+                             stdout=subprocess.DEVNULL)
+        try:
+            open(lp, "w").write(str(q.pid))
+            assert installer.pid_alive(q.pid) and installer._not_python(q.pid)
+            assert child(r) == "True", "a non-python pid must not block"
+        finally:
+            q.kill()
+            q.wait()
         open(lp, "w").write("garbage")
         assert child(r) == "True", "garbage lock must not block"
     ok, msg, _ = installer.check_sw("C:/Users/J\u00f6rg/Savage Wind")

@@ -38,6 +38,7 @@ function render() {
   $("ver").textContent = "Version " + S.version;
   for (const id of ["s-setup", "s-run", "s-credits"]) $(id).hidden = id !== "s-" + view;
   document.querySelectorAll(".swv").forEach((e) => (e.textContent = S.sw_version));
+  document.querySelectorAll(".newv").forEach((e) => (e.textContent = S.version));
   $("root-path").textContent = S.root;
   if (view === "setup") renderSetup();
   if (view === "run") renderRun();
@@ -53,13 +54,30 @@ function setVal(el, st, item, autoText) {
   st.classList.add(item.ok ? "ok" : "bad");
 }
 
+let LEAD = "";
 function renderSetup() {
   setVal($("v-sw"), $("st-sw"), S.sw, "");
   setVal($("v-kh2"), $("st-kh2"), S.kh2, "Found (Steam)");
   const ready = S.sw.ok && S.kh2.ok && S.disk.ok;
+  const U = S.upd || {}, upd = !!S.updating, ui = U.info || {};
   $("r-go").disabled = !ready;
-  $("go-lbl").textContent = S.resumable ? "Continue the install" : "Install Legend of Kairi";
-  $("v-go").textContent = ready ? (S.resumable ? "Continue" : "About 15 min") : "";
+  // (s183) an older install picked: the big button updates that folder instead of installing here
+  $("go-lbl").textContent = upd ? (ui.resume ? "Finish the update" : "Update Legend of Kairi") : S.resumable ? "Continue the install" : "Install Legend of Kairi";
+  const sv = (v) => String(v || "?").replace(/-.*/, "");
+  $("v-go").textContent = !ready ? "" : upd ? `${sv(ui.version)} → ${sv(S.version)}` : (S.resumable ? "Continue" : "About 15 min");
+  if (!LEAD) LEAD = $("setup-lead").textContent;
+  $("setup-lead").textContent = upd ? `Your Legend of Kairi ${ui.version} is brought up to ${S.version} in its own folder: only what changed is ` +
+    "rebuilt and checked, usually a few minutes. Your saves and your games stay as they are." : LEAD;
+  const vu = $("v-upd"), su = $("st-upd");
+  vu.classList.remove("ok", "bad"); su.classList.remove("ok", "bad");
+  if (!U.path) { vu.textContent = "Choose..."; su.textContent = ""; }
+  else {
+    vu.textContent = U.ok ? short(U.path) : "Check this";
+    vu.classList.add(U.ok ? "ok" : "bad");
+    su.textContent = (U.ok ? "✓ " : "") + U.msg + (U.ok ? "  " + U.path : "");
+    su.classList.add(U.ok ? "ok" : "bad");
+  }
+  $("b-updclear").hidden = !U.path;
   const d = S.disk, st = $("st-go");
   st.classList.remove("ok", "bad");
   st.textContent = d.free === null ? "" : `Needs about ${d.need} GB free on that drive while it works (${d.free} GB free now).`;
@@ -68,7 +86,7 @@ function renderSetup() {
   document.querySelectorAll(".rows .row").forEach((r) => r.classList.toggle("sel", r.dataset.help === helpSel));
 }
 
-const SHORT = { kh2: "KH2 files", bakes: "Characters", fxrec: "Effects", fx: "Effect packs", other: "HUD + sounds", verify: "Checking files", game: "Game setup" };
+const SHORT = { copy: "Program files", kh2: "KH2 files", bakes: "Characters", fxrec: "Effects", fx: "Effect packs", other: "HUD + sounds", verify: "Checking files", game: "Game setup" };
 const pct = (f) => Math.round(Math.min(1, Math.max(0, f)) * 100);
 function nowPhase() {   // the running phase that is furthest behind (several run at once), else the first running one
   const run = S.phases.filter((p) => p.state === "run");
@@ -81,14 +99,20 @@ const PRETTY = (n) => n.replace(/^(form|summon|party|fxsfx|fx|sfx|hud)_/, "").re
 function renderRun() {
   const s = S.status;
   const running = s === "running" || s === "verifying";
-  $("run-title").textContent = { running: "Installing Legend of Kairi", verifying: "Checking every file", done: "Legend of Kairi is ready",
-    failed: "The install stopped", cancelled: "Install stopped", setup: "Installing Legend of Kairi" }[s];
-  document.title = running ? "Legend of Kairi - installing" : "Legend of Kairi";   // the window program asks before closing while installing
+  const up = S.mode === "update";
+  $("run-title").textContent = up
+    ? { running: "Updating Legend of Kairi", verifying: "Checking every file", done: `Updated to ${S.version}`,
+        failed: "The update stopped", cancelled: "Update stopped", setup: "Updating Legend of Kairi" }[s]
+    : { running: "Installing Legend of Kairi", verifying: "Checking every file", done: "Legend of Kairi is ready",
+        failed: "The install stopped", cancelled: "Install stopped", setup: "Installing Legend of Kairi" }[s];
+  document.title = running ? (up ? "Legend of Kairi - installing the update" : "Legend of Kairi - installing") : "Legend of Kairi";   // the window program asks before closing while installing
+  const verb = up ? "Update" : "Install";
   $("run-lead").textContent = s === "done"
-    ? `Every file matches the reference build (build id ${S.build_id}). It took ${mmss(S.elapsed)}. The mod's files are in ${S.root}/data.`
+    ? (up ? `Your Legend of Kairi in ${S.root} is now ${S.version}. ` : "") +
+      `Every file matches the reference build (build id ${S.build_id}). It took ${mmss(S.elapsed)}. The mod's files are in ${S.root}/data.`
     : s === "failed" ? "Something went wrong. The details are below; the logs folder has everything to send to tvllerr."
-    : s === "cancelled" ? "Nothing is lost: Install again and it carries on where it stopped."
-    : "You can keep using your PC. If you close this window the install stops, and the next time it carries on where it stopped.";
+    : s === "cancelled" ? `Nothing is lost: ${verb} again and it carries on where it stopped.`
+    : `You can keep using your PC. If you close this window the ${verb.toLowerCase()} stops, and the next time it carries on where it stopped.`;
   $("all-fill").style.width = (s === "done" ? 100 : S.frac * 100).toFixed(1) + "%";
   const np = nowPhase(), all = s === "done" ? 100 : pct(S.frac);
   $("now").textContent = s === "done" ? "Done  ·  100%" : running ? (np ? `${SHORT[np.key] || np.label} ${pct(np.frac)}%  ·  overall ${all}%` : `Overall ${all}%`) : `Overall ${all}%`;
@@ -121,13 +145,15 @@ function renderRun() {
 async function pick(what) {
   const r = await api("/api/pick", { what });
   if (r.error) alert(r.error);
-  helpSel = what === "sw" ? "h-sw" : "h-kh2";
+  helpSel = what === "sw" ? "h-sw" : what === "upd" ? "h-upd" : "h-kh2";
   poll1();
 }
 async function poll1() { const st = await api("/api/state?since=" + seq); seq = st.seq; S = st; render(); }
 
 $("r-sw").onclick = () => pick("sw");
 $("r-kh2").onclick = () => pick("kh2");
+$("r-upd").onclick = async () => { await pick("upd"); helpSel = "h-upd"; render(); };
+$("b-updclear").onclick = async () => { await api("/api/update", { path: "" }); helpSel = "h-go"; poll1(); };
 $("r-go").onclick = async () => {
   const r = await api("/api/install", {});
   if (r.error) { alert(r.error); return; }
@@ -136,7 +162,7 @@ $("r-go").onclick = async () => {
 $("r-credits").onclick = () => { view = "credits"; loadCredits(); render(); };
 $("b-cback").onclick = () => { view = "setup"; render(); };
 $("b-back").onclick = () => { view = "setup"; render(); };
-$("b-cancel").onclick = async () => { if (confirm("Stop the install? It carries on where it stopped next time.")) { await api("/api/cancel", {}); poll1(); } };
+$("b-cancel").onclick = async () => { if (confirm(`Stop the ${S && S.mode === "update" ? "update" : "install"}? It carries on where it stopped next time.`)) { await api("/api/cancel", {}); poll1(); } };
 $("b-log").onclick = () => { logOpen = !logOpen; $("log").hidden = !logOpen; $("b-log").textContent = logOpen ? "Hide details" : "Show details"; };
 $("b-folder").onclick = () => api("/api/open", { what: "root" });
 $("b-logs").onclick = () => api("/api/open", { what: "log" });

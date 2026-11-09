@@ -54,7 +54,7 @@ static int g_mkchoice = 1, g_mkroll = 1;   // live mkchoice 0 = today's automati
 #define MK_ANIM_WAIT_MS 2500  // waiting for a free ground moment to play the cast, then the heal comes without it
 
 // (s110, user: "cut mickey damage to half") g_mk_dmg default 100 -> 50 (% of the HP share a hit costs him; live "set mkdmg N")
-static int g_mickey = 0, g_mk_any = 0, g_mk_chance = -1, g_mk_charge = 0, g_mk_dmg = 50, g_mk_log = 1, g_mk_anim = 1;
+static int g_mickey = 1,  /* s183: default ON (verified s111; was only on via the dev live file) */ g_mk_any = 0, g_mk_chance = -1, g_mk_charge = 0, g_mk_dmg = 50, g_mk_log = 1, g_mk_anim = 1;
 // (s119, user: "Mickey has no hit reaction, HP drops, no flinch") the exe guard drops Link's hits in Mickey mode, so sora.c's
 // flinch (Link's life drop count) never saw one: a hit charged to Mickey (guard block count) now plays KH2's flinch.
 // Live "set mkflinch 0" = old (no flinch).

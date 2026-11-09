@@ -169,7 +169,15 @@ static void pick_device(void) {
     }
     free(qp);
     if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
-    LOG("[vk] using %s\n", g_vk.props.deviceName);
+    {   // (s183 kairi-diag) the GPU + driver for every bug report (NVIDIA packs driverVersion as 10.8.8.6 bits, the rest as Vulkan's 7.10.12)
+        const uint32_t dv = g_vk.props.driverVersion;
+        char dvs[48];
+        if (g_vk.props.vendorID == 0x10DE) snprintf(dvs, sizeof dvs, "%u.%u.%u.%u", dv >> 22, dv >> 14 & 0xFF, dv >> 6 & 0xFF, dv & 0x3F);
+        else snprintf(dvs, sizeof dvs, "%u.%u.%u", dv >> 22, dv >> 12 & 0x3FF, dv & 0xFFF);
+        LOG("[vk] using %s (vendor %#06x device %#06x, driver version %s [raw %#x], Vulkan %u.%u.%u)\n", g_vk.props.deviceName,
+            g_vk.props.vendorID, g_vk.props.deviceID, dvs, dv, VK_API_VERSION_MAJOR(g_vk.props.apiVersion),
+            VK_API_VERSION_MINOR(g_vk.props.apiVersion), VK_API_VERSION_PATCH(g_vk.props.apiVersion));
+    }
     // Colour images with a list of their view formats (textures.c create_image), on integrated GPUs by default: there
     // the memory traffic it saves pays (Radeon 660M; LAS Recomp 03ee802f measured an Intel UHD 770 faster and an
     // RTX 3080 Ti slightly slower). Not on Linux AMD (RADV: the Steam Deck): there the game showed small purple specks

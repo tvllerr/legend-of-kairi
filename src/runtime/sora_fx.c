@@ -51,6 +51,7 @@ static inline void mod_update_set(const VkWriteDescriptorSet *w) {
 }
 #include "sora_fx.h"
 #include "sora_path.h"  // (Deck port: D:/SoraBotW -> SORA_ROOT)
+unsigned sora_push_limit(void);  // (s183 amd, sora_draw.c: the GPU's maxPushConstantsSize, or SAVAGEWIND_SORA_PUSH_LIMIT's)
 
 bool linkpos_camera_view(float m[12]);
 
@@ -651,6 +652,10 @@ static bool upload_tex(VkCommandBuffer ucb, uint32_t i, uint32_t w, uint32_t h, 
 }
 
 static bool gpu_init(void) {
+    if (sora_push_limit() < 128) {  // (s183 amd) mvp k vp duv z = sora_draw.c's push block, exactly Vulkan's minimum
+        LOG("[sora-fx] push constants: %u bytes, need 128\n", sora_push_limit());
+        return false;
+    }
     VkDescriptorSetLayoutBinding b[2] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
                                          {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL}};
     VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = b};

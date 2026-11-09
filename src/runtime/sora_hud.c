@@ -179,6 +179,22 @@ void sora_hud_label_slot(int slot, const float world[3], const SoraHudQuad *q, i
 }
 void sora_hud_label(const float world[3], const SoraHudQuad *q, int n) { sora_hud_label_slot(0, world, q, n); }
 
+// (s183 kairi-diag) one small text notice in the window's bottom-left corner (the "Sora's model can't be drawn" line): quads in KH2
+// virtual px of the 512 x 416 frame (x -85..597), the sys font (tex 1) or solid (tex 2). Not world-anchored, so it shows even when
+// the body does not. Resent every frame it shows; gone 3 presents after the last call; n <= 0 hides it. The DLL looks it up by name.
+#define NT_MAX 512
+static SoraHudQuad g_nt_in[NT_MAX];
+static int g_nt_n;
+static uint64_t g_nt_at;
+void sora_hud_notice(const SoraHudQuad *q, int n) {
+    if (!q || n < 0) n = 0;
+    if (n > NT_MAX) n = NT_MAX;
+    pthread_mutex_lock(&g_lock);
+    if (n) memcpy(g_nt_in, q, sizeof g_nt_in[0] * (size_t)n);
+    g_nt_n = n, g_nt_at = vk_frame_counter();
+    pthread_mutex_unlock(&g_lock);
+}
+
 // (s93 meals) text over the command menu's sub rows: the DLL composes the quads (camp.bin's sys font glyphs, tex 1) in the
 // menu's own frame (KH2 PS2 px of the 512 x 416 frame, same space as the row sprites). menu_draw adds them after the labels.
 // 3 presents without a call = gone. The DLL looks it up by name (GetProcAddress): exes before s93 lack it.
@@ -2003,6 +2019,12 @@ static void camp_draw(const SoraHudQuad *q, int n, VkExtent2D ext, float vx, flo
     if (G.frames % 600 == 1) LOG("[sora-hud] frame %llu: camp %d quads, %d batches\n", (unsigned long long)G.frames, n, nb);
 }
 
+// (s183 kairi-diag) the notice: drawn as it is (render thread, last, over the HUD)
+static void notice_draw(const SoraHudQuad *q, int n, VkExtent2D ext, float vx, float vy, float vw, float vh) {
+    if (n <= 0 || g_cp_state != 1) return;
+    camp_draw(q, n, ext, vx, vy, vw, vh, false);
+}
+
 // (mp Task 7) the label: its quads moved from around 0, 0 onto the anchor's projection (render thread, after the HUD)
 static void label_draw(SoraHudQuad *q, int n, const float w[3], VkExtent2D ext, float vx, float vy, float vw, float vh) {
     float px, py, ox, oy;
@@ -2065,12 +2087,15 @@ void sora_hud_present(float vx, float vy, float vw, float vh) {
         lb_n[k] = vk_frame_counter() - g_lb_at[k] > 3 ? 0 : g_lb_n[k];
         if (lb_n[k]) memcpy(lb[k], g_lb_in[k], sizeof lb[k][0] * (size_t)lb_n[k]), memcpy(lb_w[k], g_lb_w[k], sizeof lb_w[k]), lb_any = 1;
     }
+    static SoraHudQuad nt[NT_MAX];  // (s183 kairi-diag) this present's notice quads (render thread only)
+    int nt_n = vk_frame_counter() - g_nt_at > 3 ? 0 : g_nt_n;
+    if (nt_n) memcpy(nt, g_nt_in, sizeof nt[0] * (size_t)nt_n);
     pthread_mutex_unlock(&g_lock);
     if (lv_drop) LVB.n = 0;                        // (s55 HUD: before any early return, so no taken request is lost)
     if (lv_ntake) lvup_start(lv_take, lv_ntake);
     if (!in.on) D.valid = false;
     if (en.max <= 0) E.valid = false;
-    if (!in.on && !m.on && !dm.on && !lk_kind && !LK[0].active && !LK[1].active && en.max <= 0 && dim_a <= 0 && !cq_any && !lb_any) return;
+    if (!in.on && !m.on && !dm.on && !lk_kind && !LK[0].active && !LK[1].active && en.max <= 0 && dim_a <= 0 && !cq_any && !lb_any && !nt_n) return;
     if (!g_state) {
         g_state = bake_load() ? 1 : -1;
         if (g_state == 1) g_cmd_state = cmd_load() ? 1 : -1;  // (the menu rides on the gauge's bake: one pipeline, one sampler)
@@ -2252,7 +2277,11 @@ void sora_hud_present(float vx, float vy, float vw, float vh) {
     // the command menu, over the gauge (its own origin: KH2's 512 x 416 frame)
     if (dm.on) dream_draw(&dm, vx, vy, vw, vh);  // (s54 dream: the picker replaces the command menu while it is up)
     else if (m.on) menu_draw(&m, vx, vy, vw, vh);
-    if (!g_nvtx) { for (int k = 0; k < LB_SLOTS; k++) label_draw(lb[k], lb_n[k], lb_w[k], ext, vx, vy, vw, vh); return; }
+    if (!g_nvtx) {
+        for (int k = 0; k < LB_SLOTS; k++) label_draw(lb[k], lb_n[k], lb_w[k], ext, vx, vy, vw, vh);
+        notice_draw(nt, nt_n, ext, vx, vy, vw, vh);
+        return;
+    }
 
     VkCommandBuffer cb = vk_cmd();
     VkViewport vp = {0, 0, T.W, T.H, 0, 1};
@@ -2281,6 +2310,7 @@ void sora_hud_present(float vx, float vy, float vw, float vh) {
     }
     vk_dyn_forget();  // (exec.c / the overlay menu: pipeline and dynamic state changed)
     for (int k = 0; k < LB_SLOTS; k++) label_draw(lb[k], lb_n[k], lb_w[k], ext, vx, vy, vw, vh);  // (mp Task 7, mp4: over the HUD)
+    notice_draw(nt, nt_n, ext, vx, vy, vw, vh);
     if (G.frames % 600 == 1)
         LOG("[sora-hud] frame %llu: hp %.0f/%.0f (ghost %.0f%s) mp %.0f/%.0f, ring at %.0f %.0f unit %.2f px, bar %.0f u, menu %s cursor %d sub %d/%d, enemy %.0f/%.0f, %d verts\n",
             (unsigned long long)G.frames, in.hp, in.hp_max, D.ghost_hp, low ? ", LOW" : "", in.mp, in.mp_max, T.ox, T.oy, T.unit, L,

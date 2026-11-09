@@ -10,6 +10,8 @@
   KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (found through Steam by itself when it can). Nothing else is asked.
 - Install = tools/sorabuild/sorabuild.py all (kit mode, kh2img) into <root>/data with scratch <root>/work, then
   verify.py --expect manifest.json (every file = the reference build). Game files are only read, never written.
+- (s183) Update: the player can pick an OLDER Legend of Kairi folder instead; this release's program files replace the old ones there
+  and only the data files that changed are rebuilt (update.py), then the same build / verify / game side run in that folder.
 Paths: <root> defaults to the folder above tools/ (the unpacked friend zip); the kit to <root>/kit.
 """
 import argparse
@@ -38,12 +40,16 @@ KH2_DIRNAME = "KINGDOM HEARTS -HD 1.5+2.5 ReMIX-"
 KH2_EXE = "KINGDOM HEARTS II FINAL MIX.exe"
 KH2_EXE_SHA1 = "2548F1191FE6587A34947952763CE6BB4F3B5C1A"
 SW_VERSION = "0.4.1-alpha.4"
+GAME_VERSION = "1.9.0"      # the BotW version the mod is built for
+NEED_UPDATE_GB = 5         # (s183) stage + old copies of the program files (~1.1 GB) + the steps that re-run (GUESS: fxrec needs more)
+RELEASE = os.path.normpath(os.path.join(HERE, "..", ".."))   # this download's folder (bin/ kit/ tools/ manifest.json)
 NEED_DISK_GB = 15          # s168kit4 (exact KH2 list): work 4.8 GB + data 2.8 GB at the end; + room for the fx recordings while they run (GUESS)
 WINDOW_TITLE = "Legend of Kairi"
 
 sys.path.insert(0, SBDIR)
 sys.path.insert(0, HERE)
 import gameside   # noqa: E402  (the last step: bin/ + the two launchers)
+import update     # noqa: E402  (s183: update an older install in place)
 try:
     import sorabuild as _sbmain   # EST (seconds per step) for the progress weights
     EST = dict(_sbmain.EST)
@@ -55,7 +61,8 @@ PHASES = [("kh2", "Unpack the KH2 files the mod needs"), ("bakes", "Bake Sora, t
           ("other", "Build the HUD, sounds, text and logos"), ("verify", "Check every file"),
           ("game", "Set up the game program and the launchers")]
 GROUP_PHASE = {"bakes": "bakes", "fxrec": "fxrec", "fx": "fx", "hud": "other", "levels": "other", "logo": "other", "ragmap": "other", "ours": "other", "sounds": "other"}
-PHASE_W = {"kh2": 5, "verify": 25, "game": 2}
+PHASE_W = {"kh2": 5, "verify": 25, "game": 2, "copy": 3}
+COPY_PHASE = ("copy", "Bring the program files up to date")     # (s183) update only, before the others
 PAR = 2.8    # (s168) serial step seconds / wall seconds of the parallel build (s168kit3: 36.5 min of steps in 12.9 min, jobs 3)
 
 
@@ -89,7 +96,24 @@ def check_sw(path):
     if not os.path.isfile(os.path.join(romfs, "Pack", "Bootup.pack")):
         return False, ("Savage Wind %s is here, but its game files are not set up yet. Start Savage Wind once, choose your "
                        "game files folder and let it finish, then come back." % SW_VERSION), {}
-    return True, "Savage Wind %s with your game files." % SW_VERSION, {"romfs": romfs.replace("\\", "/")}
+    ver = game_version(romfs)
+    if ver and ver != GAME_VERSION:
+        return False, "Legend of Kairi needs Breath of the Wild %s; your Savage Wind has %s." % (GAME_VERSION, ver), {}
+    msg = "Savage Wind %s with your game files." % SW_VERSION
+    if not ver:
+        msg += " (Could not read the game version: Legend of Kairi needs Breath of the Wild %s.)" % GAME_VERSION
+    return True, msg, {"romfs": romfs.replace("\\", "/"), "game_version": ver}
+
+
+def game_version(romfs):
+    """the BotW version of the extracted game files: romfs/System/Version.txt (the file Savage Wind itself reads), '' when unreadable"""
+    try:
+        with open(os.path.join(romfs, "System", "Version.txt"), "rb") as f:
+            raw = f.read(64)
+    except OSError:
+        return ""
+    m = re.fullmatch(r"(\d+(?:\.\d+){1,3})", raw.decode("ascii", "replace").strip())
+    return m.group(1) if m else ""
 
 
 def check_kh2(path):
@@ -271,6 +295,23 @@ def recover_after_bad_verify(root, bad_lines, prev_bad=None):
             % (len(files), ", ".join(sorted(files)[:3])), files)
 
 
+def update_after_bad_verify(root, msg):
+    """(s183) verify failed after an update: old work/ files may not fit the new steps, so the next Update rebuilds every step in that
+    folder (the KH2 extract stays). -> the message for the player"""
+    done = os.path.join(root, "work", "done")
+    if os.path.isdir(done):
+        for n in os.listdir(done):
+            if not n.startswith("_"):
+                try:
+                    os.remove(os.path.join(done, n))
+                except OSError:
+                    pass
+    if "build them differently" in msg:
+        return msg
+    tail = (" (" + msg.split("(", 1)[1]) if "(" in msg else ""
+    return "Some files did not come out right after the update. Press Update again: this time it rebuilds every file (about 15 minutes)." + tail
+
+
 # ------------------------------------------------------------------------------------------------ state + build
 class State:
     def __init__(self, a):
@@ -294,6 +335,8 @@ class State:
         self.phase_state = {k: "wait" for k, _ in PHASES}
         self.error, self.build_id = "", ""
         self.launchers = {}
+        self.mode = "install"          # install | update (s183: the build runs in self.upd's folder)
+        self.upd = {"path": "", "ok": False, "msg": "", "info": {}}
         self.settings_file = os.path.join(self.root, ".installer-ui", "choices.json")
         try:
             prev = json.load(open(self.settings_file, encoding="utf-8"))
@@ -309,10 +352,38 @@ class State:
         else:
             self.resumable = False
 
-    def save_choices(self):
-        os.makedirs(os.path.dirname(self.settings_file), exist_ok=True)
-        with open(self.settings_file, "w", encoding="utf-8", newline="\n") as f:
+    def save_choices(self, path=None):
+        path = path or self.settings_file
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
             json.dump({"sw": self.sw["path"], "kh2": self.kh2["path"]}, f)
+
+    # (s183) update an older install
+    def set_upd(self, p):
+        ok, msg, info = update.detect(p, RELEASE, VERSION) if p else (False, "", {})
+        self.upd = {"path": info.get("root", p) if ok else p, "ok": ok, "msg": msg, "info": info}
+        if ok:      # the old install's game folders, when they still check out (else the player picks them here)
+            if info.get("sw") and check_sw(info["sw"])[0]:
+                self.set_sw(info["sw"])
+            if info.get("kh2") and check_kh2(info["kh2"])[0]:
+                self.set_kh2(info["kh2"])
+
+    def updating(self):
+        return self.upd["ok"] and bool(self.upd["path"])
+
+    def dest(self):
+        """the folder the build writes into: this one, or the old install being updated"""
+        if self.mode == "update" or (self.status not in ("running", "verifying") and self.updating()):
+            return self.upd["path"]
+        return self.root
+
+    def phases(self):
+        return ([COPY_PHASE] if self.mode == "update" else []) + PHASES
+
+    @property
+    def sbdir(self):
+        """the sorabuild that builds: this release's own, or (update) the copy just put into the old folder"""
+        return os.path.join(self.dest(), "tools", "sorabuild").replace(chr(92), "/") if self.mode == "update" else SBDIR
 
     def set_sw(self, p):
         ok, msg, info = check_sw(p) if p else (False, "", {})
@@ -328,28 +399,32 @@ class State:
             self.log.append((self.seq, line))
 
     def disk(self):
-        g = free_gb(self.root)
-        return {"free": None if g is None else round(g, 1), "need": NEED_DISK_GB, "ok": g is None or g >= NEED_DISK_GB}
+        g = free_gb(self.dest())
+        need = NEED_UPDATE_GB if self.updating() else NEED_DISK_GB
+        return {"free": None if g is None else round(g, 1), "need": need, "ok": g is None or g >= need}
 
     def snapshot(self, since):
         with self.lock:
             lines = [l for s, l in self.log if s > since]
             phases = []
-            for k, label in PHASES:
+            for k, label in self.phases():
                 st = [s for s in self.steps.values() if s["phase"] == k and s["state"] != "skip"]
-                w = sum(s["w"] for s in st) or (PHASE_W.get(k, 0) if k in ("kh2", "verify", "game") else 0)
+                w = sum(s["w"] for s in st) or (PHASE_W.get(k, 0) if k in ("copy", "kh2", "verify", "game") else 0)
                 dw = sum(s["w"] for s in st if s["state"] == "done")
-                frac = 1.0 if self.phase_state[k] == "done" else (dw / w if w else 0.0)
-                phases.append({"key": k, "label": label, "state": self.phase_state[k], "frac": round(frac, 3),
+                ps = self.phase_state.get(k, "wait")
+                frac = 1.0 if ps == "done" else (dw / w if w else 0.0)
+                phases.append({"key": k, "label": label, "state": ps, "frac": round(frac, 3),
                                "running": [n for n, s in self.steps.items() if s["phase"] == k and s["state"] == "run"]})
-            tot = sum(s["w"] for s in self.steps.values() if s["state"] != "skip") + PHASE_W["kh2"] + PHASE_W["verify"] + PHASE_W["game"]
+            fixed = [k for k, _ in self.phases() if k in PHASE_W]
+            tot = sum(s["w"] for s in self.steps.values() if s["state"] != "skip") + sum(PHASE_W[k] for k in fixed)
             done = sum(s["w"] for s in self.steps.values() if s["state"] == "done") + \
-                (PHASE_W["kh2"] if self.phase_state["kh2"] == "done" else 0) + (PHASE_W["verify"] if self.phase_state["verify"] == "done" else 0) +                 (PHASE_W["game"] if self.phase_state["game"] == "done" else 0)
+                sum(PHASE_W[k] for k in fixed if self.phase_state.get(k) == "done")
             frac = done / tot if tot else 0.0
             el = (time.time() - self.t0) if self.t0 and self.status in ("running", "verifying") else \
                 ((self.t1 - self.t0) if self.t0 and self.t1 else 0)
             eta = self._eta(el) if self.status in ("running", "verifying") else None
-            return {"version": VERSION, "status": self.status, "root": self.root, "sw": self.sw, "kh2": self.kh2,
+            return {"version": VERSION, "status": self.status, "root": self.dest(), "sw": self.sw, "kh2": self.kh2,
+                    "mode": self.mode, "upd": self.upd, "updating": self.updating(),
                     "disk": self.disk(), "resumable": self.resumable, "phases": phases, "frac": round(frac, 4),
                     "elapsed": round(el), "eta": None if eta is None else round(eta), "error": self.error,
                     "build_id": self.build_id, "launchers": self.launchers, "seq": self.seq, "lines": lines, "sw_version": SW_VERSION}
@@ -376,10 +451,12 @@ class State:
 
     # -------------------------------------------------------------------------------------------- build
     def config(self):
-        cfg = {"kit": self.kit, "kh2img": self.kh2img_dev or self.kh2["info"]["img"], "romfs": self.sw["info"]["romfs"],
-               "out": self.root + "/data", "work": self.root + "/work", "fx": "fxrec", "sounds": "recipe", "fx_keep": "used",
+        root = self.dest()
+        kit = (root + "/kit") if self.mode == "update" else self.kit
+        cfg = {"kit": kit, "kh2img": self.kh2img_dev or self.kh2["info"]["img"], "romfs": self.sw["info"]["romfs"],
+               "out": root + "/data", "work": root + "/work", "fx": "fxrec", "sounds": "recipe", "fx_keep": "used",
                "kh2exe": self.kh2["info"]["exe"]}
-        p = os.path.join(self.root, "work", "install_config.json")
+        p = os.path.join(root, "work", "install_config.json")
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8", newline="\n") as f:
             json.dump(cfg, f, indent=1)
@@ -399,10 +476,10 @@ class State:
             si.wShowWindow = 0
             kw = {"startupinfo": si, "creationflags": subprocess.CREATE_NEW_CONSOLE}
         return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                env=env, cwd=SBDIR, **kw)
+                                env=env, cwd=self.sbdir, **kw)
 
     def kit_python(self):
-        return os.path.join(self.kit, "python", "python.exe")
+        return os.path.join(self.kit, "python", "python.exe")     # (update: this release's kit python runs the copy in the old folder)
 
     def start(self):
         with self.lock:
@@ -412,9 +489,19 @@ class State:
                 return "choose both folders first"
             if not self.disk()["ok"]:
                 return "not enough free disk space"
+            self.mode = "update" if self.updating() else "install"
+            if self.mode == "update":
+                d = self.upd["path"]
+                ok, msg, _ = update.detect(d, RELEASE, VERSION)      # again: the folder may have changed since it was picked
+                busy = msg if not ok else update.busy_message(d)
+                if not busy and not acquire_lock(d):
+                    busy = "Another installer is working on that folder. Close it first."
+                if busy:
+                    self.mode = "install"
+                    return busy
             self.status, self.error, self.build_id = "running", "", ""
             self.t0, self.t1 = time.time(), None
-            self.phase_state = {k: "wait" for k, _ in PHASES}
+            self.phase_state = {k: "wait" for k, _ in self.phases()}
             self.steps = {}
             self.gen += 1
             self.thread = threading.Thread(target=self._run, args=(self.gen,), daemon=True)
@@ -444,12 +531,16 @@ class State:
                 self.proc = None
         return rc
 
-    def _list_steps(self, cfgp):
-        r = subprocess.run([self.kit_python(), "-E", "-P", os.path.join(SBDIR, "sorabuild.py"), "--config", cfgp, "--list"],
-                           capture_output=True, text=True, cwd=SBDIR,
+    def _list_steps(self, cfgp, raw=False):
+        r = subprocess.run([self.kit_python(), "-E", "-P", os.path.join(self.sbdir, "sorabuild.py"), "--config", cfgp, "--list"],
+                           capture_output=True, text=True, cwd=self.sbdir,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if r.returncode:
             self.add_log("[installer] sorabuild --list failed (%d): %s" % (r.returncode, (r.stderr or r.stdout).strip()[-400:]))
+            if raw:
+                raise RuntimeError("The build tools did not start (see the details).")
+        if raw:
+            return r.stdout
         steps = {}
         for ln in r.stdout.splitlines():
             m = re.match(r"(\S+)\s+(\S+)\s+(done|-)\s", ln)
@@ -461,15 +552,34 @@ class State:
 
     def _run(self, gen):
         try:
+            self._run2(gen)
+        finally:
+            if self.mode == "update":
+                release_lock(os.path.join(self.dest(), ".installer-ui", "lock"))
+
+    def _run2(self, gen):
+        try:
+            upd = self.mode == "update"
+            gameside.clear_build_id(self.dest())   # (s183) until verify passes again the launchers refuse to start (stale data)
+            if upd:   # (s183) the old folder gets this release's program files, then only what changed is rebuilt
+                with self.lock:
+                    self.phase_state["copy"] = "run"
+                self.add_log("[update] %s: %s -> %s" % (self.dest(), self.upd["info"].get("version", "?"), VERSION))
+                update.prepare(RELEASE, self.dest(), self.add_log)
+                self.save_choices(os.path.join(self.dest(), ".installer-ui", "choices.json"))
             cfgp = self.config()
             self.add_log("[installer] config %s" % cfgp)
+            if upd:
+                update.invalidate(self.dest(), self._list_steps(cfgp, raw=True), self.add_log)
+                with self.lock:
+                    self.phase_state["copy"] = "done"
             steps = self._list_steps(cfgp)
             with self.lock:
                 if not self._live(gen):
                     return
                 self.steps = steps
                 self.phase_state["kh2"] = "run"
-            p = self._spawn(gen, [self.kit_python(), "-E", "-P", os.path.join(SBDIR, "sorabuild.py"), "--config", cfgp, "all"])
+            p = self._spawn(gen, [self.kit_python(), "-E", "-P", os.path.join(self.sbdir, "sorabuild.py"), "--config", cfgp, "all"])
             if p is None:
                 return
 
@@ -485,8 +595,8 @@ class State:
                 for k in ("kh2", "bakes", "fxrec", "fx", "other"):
                     self.phase_state[k] = "done"
                 self.status, self.phase_state["verify"] = "verifying", "run"
-            man = os.path.join(SBDIR, "manifest.thispc.json")
-            v = self._spawn(gen, [self.kit_python(), "-E", "-P", os.path.join(SBDIR, "verify.py"), "--out", self.root + "/data",
+            man = os.path.join(self.sbdir, "manifest.thispc.json")
+            v = self._spawn(gen, [self.kit_python(), "-E", "-P", os.path.join(self.sbdir, "verify.py"), "--out", self.dest() + "/data",
                                   "--expect", man])
             if v is None:
                 return
@@ -510,13 +620,20 @@ class State:
                 self.phase_state["verify"] = "done"
                 self.phase_state["game"] = "run"
             # (s177) the game side: bin/ into the install root + the two launchers (safe to repeat; never touches saves)
-            self.launchers = gameside.install_game_side(self.root, self.sw["path"], self.add_log)
+            if upd:   # bin/ is already this release's (prepare): the game side only checks it + rewrites the launchers
+                self.launchers = gameside.install_game_side(self.dest(), self.sw["path"], self.add_log, release=self.dest())
+                update.finish(self.dest(), self.add_log)
+                with self.lock:
+                    self.set_upd(self.dest())     # it is this version now
+            else:
+                self.launchers = gameside.install_game_side(self.root, self.sw["path"], self.add_log)
             with self.lock:
                 if not self._live(gen):
                     return
                 self.phase_state["game"] = "done"
                 self.status, self.t1 = "done", time.time()
-            self.add_log("[installer] done in %.1f min, build id %s" % ((self.t1 - self.t0) / 60, self.build_id))
+            self.add_log("[installer] %s in %.1f min, build id %s" % ("updated to %s" % VERSION if upd else "done",
+                                                                     (self.t1 - self.t0) / 60, self.build_id))
         except Exception as e:  # noqa: BLE001 - shown to the player
             with self.lock:
                 if not self._live(gen):
@@ -530,7 +647,9 @@ class State:
 
     def _after_bad_verify(self, bad):
         """(s178 M2) verify failed: make the next Install rebuild the wrong files instead of skipping every step again. -> the message"""
-        msg, self.last_bad = recover_after_bad_verify(self.root, bad, getattr(self, "last_bad", None))
+        msg, self.last_bad = recover_after_bad_verify(self.dest(), bad, getattr(self, "last_bad", None))
+        if self.mode == "update":
+            msg = update_after_bad_verify(self.dest(), msg)
         self.add_log("[installer] " + msg)
         return msg
 
@@ -623,11 +742,14 @@ def make_handler(st, token):
             u = urllib.parse.urlparse(self.path).path
             if u == "/api/pick":
                 what = body.get("what")
-                cur = (st.sw if what == "sw" else st.kh2)["path"]
+                cur = {"sw": st.sw, "kh2": st.kh2, "upd": st.upd}.get(what, st.kh2)["path"]
+                if what == "upd" and not cur:
+                    cur = os.path.dirname(st.root)       # an older release usually sits next to this one
                 if not st.pick_lock.acquire(blocking=False):
                     return self._send(200, {"picked": ""})     # a picker is already open
                 try:
                     p = pick_folder("Choose your Savage Wind %s folder" % SW_VERSION if what == "sw" else
+                                    "Choose the folder of your older Legend of Kairi" if what == "upd" else
                                     "Choose your KINGDOM HEARTS HD 1.5+2.5 ReMIX folder", cur)
                 except OSError as e:
                     return self._send(200, {"error": str(e)})
@@ -635,12 +757,23 @@ def make_handler(st, token):
                     st.pick_lock.release()
                 if p:
                     with st.lock:
+                        if st.status in ("running", "verifying"):
+                            return self._send(200, {"error": "the install is running"})
                         if what == "sw":
                             st.set_sw(p)
+                        elif what == "upd":
+                            st.set_upd(p)
                         else:
                             st.set_kh2(p)
                     st.save_choices()
                 return self._send(200, {"picked": p})
+            if u == "/api/update":      # (s183) set (path) or clear ("") the old install to update without the picker (also: tests)
+                with st.lock:
+                    if st.status in ("running", "verifying"):
+                        return self._send(200, {"error": "the install is running"})
+                    st.set_upd(body.get("path") or "")
+                    st.mode = "install"
+                return self._send(200, {"ok": st.upd["ok"], "msg": st.upd["msg"]})
             if u == "/api/install":
                 return self._send(200, {"error": st.start()})
             if u == "/api/cancel":
@@ -648,7 +781,7 @@ def make_handler(st, token):
                 return self._send(200, {})
             if u == "/api/open":
                 what = body.get("what")
-                p = {"log": os.path.join(st.root, "work", "logs"), "root": st.root,
+                p = {"log": os.path.join(st.dest(), "work", "logs"), "root": st.dest(),
                      "licenses": os.path.join(st.root, "LICENSES")}.get(what)
                 if p and os.path.exists(p) and sys.platform == "win32":
                     os.startfile(p)  # noqa: S606 - opens one of our own folders in Explorer
@@ -680,15 +813,36 @@ def pid_alive(pid):
         except OSError:
             return False
     import ctypes
-    k = ctypes.windll.kernel32
+    k = ctypes.WinDLL("kernel32", use_last_error=True)   # (s183) the real last error, not one Python's own calls left behind
     k.OpenProcess.restype = ctypes.c_void_p
     h = k.OpenProcess(0x1000, False, pid)         # PROCESS_QUERY_LIMITED_INFORMATION
     if not h:
-        return k.GetLastError() == 5              # access denied = it exists
+        return ctypes.get_last_error() == 5       # access denied = it exists
     code = ctypes.c_ulong()
     ok = k.GetExitCodeProcess(ctypes.c_void_p(h), ctypes.byref(code))
     k.CloseHandle(ctypes.c_void_p(h))
     return bool(ok) and code.value == 259         # STILL_ACTIVE
+
+
+def _not_python(pid):
+    """(s183) True when pid is a running program that is NOT a python (the lock's installer is gone and Windows gave its number to
+    another program); False when it is a python or cannot be told"""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.restype = wintypes.HANDLE
+    h = k.OpenProcess(0x1000, False, pid)
+    if not h:
+        return False
+    try:
+        buf, n = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+        if not k.QueryFullProcessImageNameW(wintypes.HANDLE(h), 0, buf, ctypes.byref(n)):
+            return False
+        return not os.path.basename(buf.value).lower().startswith("python")
+    finally:
+        k.CloseHandle(wintypes.HANDLE(h))
 
 
 def acquire_lock(root):
@@ -705,7 +859,7 @@ def acquire_lock(root):
                 pid = int(open(lp).read().strip() or 0)
             except (OSError, ValueError):
                 pid = 0
-            if pid and pid != os.getpid() and pid_alive(pid):
+            if pid and pid != os.getpid() and pid_alive(pid) and not _not_python(pid):
                 return False
             try:
                 os.remove(lp)

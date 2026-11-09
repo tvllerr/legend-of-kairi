@@ -3194,6 +3194,10 @@ static void cam_page(uint64_t pg, void *ctx) {
     for (size_t i = 0; i + 9 <= 0x1000 / 4; i++) {
         int s = cam_score_l(f + i, i >= 12, link);
         if (s && sc->ncams < CAM_MAX) sc->cam_score[sc->ncams] = s, sc->cams[sc->ncams++] = pg + i * 4;
+        else if (s == 2) {  // (s183) full of look-alikes: a score-2 camera replaces a score-1 one, never the reverse
+            for (int k = 0; k < CAM_MAX; k++)
+                if (sc->cam_score[k] < 2) { sc->cam_score[k] = 2, sc->cams[k] = pg + i * 4; break; }
+        }
         if (i + 7 <= 0x1000 / 4 && sc->nprojs < PROJ_MAX && proj_ok(f + i)) sc->projs[sc->nprojs++] = pg + i * 4;
     }
 }
@@ -3254,6 +3258,7 @@ static void cam_scan(void) {
 static volatile LONG g_scan_gen;       // bumped to abandon the running worker
 static CamScan *volatile g_scan_done;  // worker -> game thread: the finished findings (heap, freed by the game thread)
 static bool g_scan_pending;            // game thread only
+static bool loose;                     // (revfix) the scanned camera is off cam_track but still cam_alive: kept, maybe not tracking (linkpos_camera_loose)
 static uint64_t g_scan_req_present;
 
 typedef struct { CamScan *sc; LONG gen; } CamJob;
@@ -3390,7 +3395,6 @@ static void cam_frame(void) {
         }
     // (s58 live, the Bokoblin cave: all 3 copies failed cam_track within 15 presents, the scan found 0 candidates in
     // 4.3 s) still a camera by cam_alive = keep drawing with it; the stretch is logged once with the failing rule
-    static bool loose;
     if (g_cam && cam_alive((const float *)(uintptr_t)g_cam)) {
         if (!loose) {
             const float *c = (const float *)(uintptr_t)g_cam;
@@ -3404,11 +3408,18 @@ static void cam_frame(void) {
     if (loose && g_cam) LOG("[linkpos] camera %llx not alive either (%s)\n", (unsigned long long)g_cam, cam_why((const float *)(uintptr_t)g_cam));
     loose = false;
     if (g_cam && ++lost < CAM_LOST) return;
-    if (last_scan && present - last_scan < CAM_RESCAN) return;
+    // (s183) no camera at all = no Sora body: look again after 60 presents (first 10 tries, then every CAM_RESCAN: bounded)
+    static int nocam_tries;
+    if (g_cam) nocam_tries = 0;
+    if (last_scan && present - last_scan < (g_cam || nocam_tries >= 10 ? CAM_RESCAN : 60)) return;
+    if (!g_cam && !g_scan_pending) nocam_tries++;  // (revfix: a request ignored because a scan is still running is not a try)
     if (g_cam) LOG("[linkpos] camera %llx lost (presented %llu)\n", (unsigned long long)g_cam, (unsigned long long)present);
     last_scan = present, lost = 0;
     cam_scan_request(present);
 }
+
+// (revfix) true while the camera in use is only cam_alive (not cam_track): it may be a stale / wrong one. DLL: GetProcAddress (older exe = false).
+bool linkpos_camera_loose(void) { return g_cam && loose; }
 
 bool linkpos_camera_fwd(float f[2]) {
     g_cam_wanted = true;

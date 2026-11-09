@@ -13,7 +13,7 @@
   <!-- ============================================================ setup -->
   <section class="screen" id="s-setup">
     <h1>Welcome to Legend of Kairi</h1>
-    <p class="lead">Legend of Kairi is built on your PC from your own copies of the games: it reads them, makes the mod's files
+    <p class="lead" id="setup-lead">Legend of Kairi is built on your PC from your own copies of the games: it reads them, makes the mod's files
       and checks every one. It takes about 15 minutes. Your games stay as they are.</p>
     <div class="cols">
       <div class="rows">
@@ -22,6 +22,7 @@
         <button class="row" id="r-kh2" data-help="h-kh2"><span class="lbl">Kingdom Hearts 1.5+2.5</span><span class="val" id="v-kh2">Choose...</span></button>
         <div class="sect">Set up</div>
         <button class="row go" id="r-go" data-help="h-go" disabled><span class="lbl" id="go-lbl">Install Legend of Kairi</span><span class="val" id="v-go"></span></button>
+        <button class="row" id="r-upd" data-help="h-upd"><span class="lbl">Update an existing install</span><span class="val" id="v-upd">Choose...</span></button>
         <button class="row" id="r-credits" data-help="h-credits"><span class="lbl">Credits</span><span class="val">View</span></button>
         <p class="note" id="setup-note">Everything the installer writes goes into one folder:<br><span id="root-path" class="path"></span></p>
       </div>
@@ -40,6 +41,13 @@
           <p>Builds the mod's files from your games, then checks each one against the reference build, so everyone who
             plays together has the very same files.</p>
           <p class="st" id="st-go"></p>
+        </div>
+        <div class="hp" id="h-upd">
+          <p>Already playing an older <b>Legend of Kairi</b>? Choose its folder (the one with Play Legend of Kairi.bat) and it is
+            brought up to <b><span class="newv"></span></b> right there: only what changed is rebuilt, so it takes a few minutes
+            instead of 15. Your saves and your friend's address in the Multiplayer launcher stay.</p>
+          <p class="st" id="st-upd"></p>
+          <p><button class="btn" id="b-updclear" hidden>Install fresh instead</button></p>
         </div>
         <div class="hp" id="h-credits">
           <p>Who made this, and the free tools it is built with.</p>

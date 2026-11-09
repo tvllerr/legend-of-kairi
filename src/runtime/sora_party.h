@@ -218,7 +218,7 @@ static struct {
     uint32_t rnd;             // MSVC rand() state (KH2 PC: re:0x19BE90 rand_n / re:0x19BF50 rand_range)
     uint64_t battle_ticks;
     const PHooks *hk;         // (the last tick's: a knockdown cuts an action short)
-} P = {.on = true, .log = true, .ray_on = true, .fwd = 1, .slot_r_cm = 160, .kd_radius_cm = KD_RADIUS_CM,
+} P = {.on = true, .spawn = 1 /* s183: default ON with the New Game wake-up (verified s99) */, .log = true, .ray_on = true, .fwd = 1, .slot_r_cm = 160, .kd_radius_cm = KD_RADIUS_CM,
        .combat = true, .clog = true, .stop_cm = 30, .rnd = 1};
 
 static float pt_wrap(float a) { return atan2f(sinf(a), cosf(a)); }

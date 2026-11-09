@@ -36,6 +36,7 @@ SYSTEM_DLLS = {"kernel32.dll", "user32.dll", "shell32.dll", "winmm.dll", "ws2_32
 SKIP_TOOLS = {"tools/installer/mkzip.py", "tools/sorabuild/config.thispc.json", "tools/sorabuild/config.fxrec.json",
               # host tests and the dev-only PHH-oracle proof scripts (they name C:/Users/... paths; the build steps never call them)
               "tools/installer/test_gameside.py", "tools/installer/test_recover.py", "tools/installer/test_lock.py",
+              "tools/installer/test_update.py",
               "tools/sorabuild/logo/dev/gen_layers.py", "tools/sorabuild/logo/dev/README.md",
               "tools/sorabuild/ragmap/dev/dump_old.c", "tools/sorabuild/ragmap/dev/dump_new.c", "tools/sorabuild/ragmap/dev/proof.sh",
               # (s182) the old frozen sound recipe (made from PHH's mined tables; step sounds_mine mines it at install now), its retired
@@ -142,7 +143,9 @@ def main():
            "data": {"build_id": dm["build_id"], "files": len(dm["files"]),
                     "manifest": "tools/sorabuild/manifest.thispc.json",
                     "manifest_sha256": sha256(os.path.join(REPO, "tools", "sorabuild", "manifest.thispc.json"))},
-           "bin": binfiles, "bin_runtime_dlls_shipped": shipped, "bin_imports_needing_runtime_dlls": imp}
+           "bin": binfiles, "bin_runtime_dlls_shipped": shipped, "bin_imports_needing_runtime_dlls": imp,
+           # (s183) what an Update copies over an older install (installer update.py); written last, so it lists itself too
+           "top": sorted(os.listdir(out)) + ["manifest.json"]}
     with open(os.path.join(out, "manifest.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(man, f, indent=1)
 

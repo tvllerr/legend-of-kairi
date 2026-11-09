@@ -28,6 +28,7 @@ static void (*g_frame)(void), (*g_unload)(void);
 static char g_dir[MAX_PATH];
 static FILETIME g_time;
 static int g_live;
+static bool g_direct;  // (s183) reload off: load sora_mod.dll without a live copy
 
 static bool file_time(const char *path, FILETIME *t) {
     WIN32_FILE_ATTRIBUTE_DATA a;
@@ -39,7 +40,10 @@ static bool file_time(const char *path, FILETIME *t) {
 static void load(const char *src, const FILETIME *t) {
     char live[MAX_PATH + 32];
     snprintf(live, sizeof live, "%ssora_mod_live%lu_%d.dll", g_dir, (unsigned long)GetCurrentProcessId(), g_live++);  // (the pid: two copies of one exe never share live copies)
-    if (!CopyFileA(src, live, FALSE)) { LOG("[sora-host] copying %s failed (%lu)\n", src, GetLastError()); return; }
+    // (s183) SAVAGEWIND_SORA_RELOAD=0 (the release launchers): load sora_mod.dll itself, no fresh unsigned live copy per start
+    // for the antivirus to look at; the copy is for hot reload (the linker must be able to replace sora_mod.dll)
+    if (g_direct) snprintf(live, sizeof live, "%s", src);
+    else if (!CopyFileA(src, live, FALSE)) { LOG("[sora-host] copying %s failed (%lu)\n", src, GetLastError()); return; }
     HMODULE m = LoadLibraryA(live);
     void (*frame)(void) = m ? (void (*)(void))(void *)GetProcAddress(m, "sora_mod_frame") : NULL;
     if (!frame) { LOG("[sora-host] %s: no sora_mod_frame (%lu)\n", live, GetLastError()); return; }
@@ -59,6 +63,7 @@ void sora_frame(void) {
         init = 1;
         const char *e = getenv("SAVAGEWIND_SORA_RELOAD");
         if (e && *e) reload = atoi(e);
+        g_direct = !reload;
         DWORD n = GetModuleFileNameA(NULL, g_dir, MAX_PATH);
         while (n && g_dir[n - 1] != '\\' && g_dir[n - 1] != '/') n--;
         g_dir[n] = 0;

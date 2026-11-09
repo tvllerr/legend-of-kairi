@@ -19,7 +19,7 @@
 #define MEAL_SUB 4  // M.sub value of this page
 
 #define MEAL_HP 16  // per-dish heal values kept per name (dishes of one name can differ by ingredients)
-static int g_meals = 0, g_meal_q = 8, g_meal_log = 0, g_meal_tp = 1, g_meal_hp = 1;
+static int g_meals = 1,  /* s183: default ON (verified s99) */ g_meal_q = 8, g_meal_log = 0, g_meal_tp = 1, g_meal_hp = 1;
 #include "sora_items.h"  // (s131 kh2item: dish -> KH2 item table; after g_meal_tp, which it reads)
 static struct {
     int n;
@@ -317,7 +317,7 @@ static int meal_top_state(void) {  // the Items entry: 5 greyed (as before) unle
 
 // (s98 b13) exe export (NULL on an exe linked before this: the tally alone, as before). int linkpos_pouch_remove(name):
 // 1 = BotW's PauseMenuDataMgr::removeItem was called, < 0 = refused (recon/S98_HELPER_POUCH.md).
-static int g_meal_del = 0;  // live "mealdel": 0 = tally only (default until the user tests), 1 = remove from BotW's pouch on eat
+static int g_meal_del = 1;  // live "mealdel": 0 = tally only; s183: default ON (verified s99d), 1 = remove from BotW's pouch on eat
 static struct { bool bound; int (*remove)(const char *); } MEALX;
 static void meal_pouch_bind(void) {
     if (MEALX.bound) return;

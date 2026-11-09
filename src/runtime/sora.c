@@ -1438,7 +1438,7 @@ static uint8_t g_frz_mask[32] = {[0x33 / 8] = 1u << (0x33 % 8)};
 static int g_frz_id = -1;   // a screen of the set that is up now (-1: none)
 static int g_frz_log = 1;   // (on until the ids are confirmed)
 static bool g_event;       // last frame was an event stretch: Link owns the pad, the KH2 menu stays shut (#5)
-static int g_evfreeze = 0;  // (s94 GUESS default off until one user test; live "set evfreeze 1"; knobs in sora_chestev.h)
+static int g_evfreeze = 1;  // (s183: default ON, user OK - on in every dev session since s93) (s94 GUESS default off until one user test; live "set evfreeze 1"; knobs in sora_chestev.h)
 static int g_evrec = 0, g_evcam = 18, g_evang = 40, g_evon = 20, g_evoff = 10;
 static int g_evmin = 3;  // (s94 review) the angle test only past this many m (first person / bow aim / a wall-pushed camera put Link off axis up close)
 static bool g_chev;      // (s94 b8-chestev) the chest-unlock camera event is on (sora_chestev.h): Sora frozen, Link has the pad
@@ -3705,6 +3705,11 @@ static bool ride_updraft(void) {
 int sora_draw_bone_count(void);  // (runtime/sora_draw.c, exported by the exe since its 21:12 relink)
 bool sora_draw_slot_pose(int slot, float clock, float *out);
 void sora_draw_world(const float *bones, float face, float scale);
+// (s183 kairi-diag, sora_diag.h) every pose handed to the draw pass says "the body should be on screen"; set by these wrappers, read and
+// cleared once a frame by dg_tick (sora_mod_frame). playing / nolink are set by sora_mod_frame_body.
+static bool g_dg_posed, g_dg_playing, g_dg_nolink;
+#define sora_draw_pose(...) (g_dg_posed = true, sora_draw_pose(__VA_ARGS__))
+#define sora_draw_world(...) (g_dg_posed = true, sora_draw_world(__VA_ARGS__))
 #define RAG_BLEND 16.0f
 
 #define POSE_BUF_BONES 256  // (s68: a Drive Form's bake has more bones than base Sora's 240: Valor 252)
@@ -3967,10 +3972,10 @@ static int g_bedpose = 1, g_bed_r = 12, g_bed_up = 30, g_bed_log = 1;
 static const float BED_POS[3] = {-1130.0f, 237.4f, 1914.5f};
 // (s99 b14-bed) The wake-up scene: Link's actor and bones exist from the first world frame (state word 0x18000001 the whole
 // lying scene, last.log), so Sora is drawn on his bones from the FIRST frame instead of waiting for the late "flat" bed
-// latch. Live "set wake 0/1/2" (0 off [default], 1 = on + recon log, 2 = recon log only), "set wakedx <presents>" (state
+// latch. Live "set wake 0/1/2" (0 off, 1 = on + recon log [default since s183: the 0.1.2 New Game had Roxas standing in the pod; "set evlink 0" = off], 2 = recon log only), "set wakedx <presents>" (state
 // word 0 held this long ends it: the Demo hands over to the event stretch; default 15 = g_ev_zero), "set wakelog <n>"
 // (recon line every n presents, default 60), "set wakemax <presents>" (safety timeout, default 4800).
-static int g_wake = 0, g_wake_dx = 15, g_wake_log = 60, g_wake_max = 4800;
+static int g_wake = 1, g_wake_dx = 15, g_wake_log = 60, g_wake_max = 4800;
 static bool g_wake_on, g_wake_used;  // g_wake_on: Sora lies (party hidden); g_wake_used: the old late bed latch stays off
 #define BED_FLAT 0.6f   // GUESS: lying when vert extent < 0.6 x horizontal extent (a standing / sitting-up body is >= 1)
 #define BED_UPRIGHT 1.0f  // GUESS: upright again when vert >= 1.0 x horizontal
@@ -4385,7 +4390,7 @@ static DWORD WINAPI stale_watchdog(LPVOID arg) {
     return 0;
 }
 
-static volatile int g_invsora = 1;  // (s102: default ON after the live test: menu Link hidden + Sora drawn, VERIFIED) (s102 b16-invsora, sora_invsora.h: live "set invsora"; the scan loop below also runs for it)
+static volatile int g_invsora = 3;  // (s183: default 3 = the s108 composite mode the user verified) (s102: default ON after the live test: menu Link hidden + Sora drawn, VERIFIED) (s102 b16-invsora, sora_invsora.h: live "set invsora"; the scan loop below also runs for it)
 static volatile LONG g_is_thr;
 static void is_off(void);
 static bool is_live_set(const char *key, int v);
@@ -4821,7 +4826,7 @@ static bool walkoff_floor(const float p[3], float *floor_u) {  // true: a floor 
 }
 
 // Live tests in one running game (no restart per test; with `make sora` hot reload): the test file
-// SAVAGEWIND_SORA_LIVE (default D:/SoraBotW/run/live_test.txt) is checked every 15 frames; when it changes, its lines
+// SAVAGEWIND_SORA_LIVE (unset or empty = no live file; the dev launchers set it) is checked every 15 frames; when it changes, its lines
 // run once, in order:
 //   name <tag>            logged as "[sora] live test <tag>" (and a "# live" line in the .sora.txt log)
 //   goto <x> <y> <z> | goto lynel <1..3> | goto off   safe long teleport (held until the ground is loaded; s108)
@@ -4902,8 +4907,15 @@ static void live_poll(const float p[3], uint64_t present) {
     static struct { uint64_t a; float v; } hold[4];
     for (int i = 0; i < 4; i++) if (hold[i].a) *(volatile float *)(uintptr_t)hold[i].a = hold[i].v;
     if (present % 15 && seen != -1) return;  // (s99: the FIRST read is not gated, so a "boot" file lands on the first world frame)  // (s99: the FIRST read is not gated, so a "boot" file lands on the first world frame)
-    if (!path) path = sora_path(getenv("SAVAGEWIND_SORA_LIVE") && *getenv("SAVAGEWIND_SORA_LIVE") ? getenv("SAVAGEWIND_SORA_LIVE")
-                                                                                                   : "D:/SoraBotW/run/live_test.txt");
+    // (s183) no default file: the dev launchers all set SAVAGEWIND_SORA_LIVE, the release launchers set it empty = no live file
+    static bool path_set;
+    if (!path_set) {
+        const char *e = getenv("SAVAGEWIND_SORA_LIVE");
+        path_set = true;
+        path = e && *e ? sora_path(e) : NULL;
+        if (!path) LOG("[sora] live: no SAVAGEWIND_SORA_LIVE file (live commands off)\n");
+    }
+    if (!path) return;
     FILE *f = fopen(path, "rb");
     if (!f) { if (seen == -1) seen = 0; return; }  // (missing at the start: its first version is a test)
     char buf[8192];
@@ -5129,6 +5141,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "bedup")) g_bed_up = v < 1 ? 1 : v > 600 ? 600 : v;
             else if (!strcmp(key, "bedlog")) g_bed_log = v != 0;
             else if (!strcmp(key, "wake")) g_wake = v < 0 ? 0 : v > 3 ? 3 : v;  // (s99 b14-bed)
+            else if (!strcmp(key, "evlink")) g_wake = v ? (g_wake ? g_wake : 1) : 0;  // (s183) 1 = the body follows Link's skeleton in the wake-up event (default), 0 = old standing idle
             else if (!strcmp(key, "wakedx")) g_wake_dx = v < 1 ? 1 : v > 600 ? 600 : v;
             else if (!strcmp(key, "wakelog")) g_wake_log = v < 1 ? 1 : v > 6000 ? 6000 : v;
             else if (!strcmp(key, "wakemax")) g_wake_max = v < 60 ? 60 : v > 60000 ? 60000 : v;
@@ -6124,6 +6137,7 @@ static void ffin_set(int on) {  // (s92) Final's hit bakes _s91 / _s92, live (hi
 #include "sora_anti.h"  // (s89 anti: Anti Form's points / random trigger / no heal / x1.5 damage; S89_HELPER_ANTI.md)
 #include "sora_debugall.h"  // (s90: live "set debugall 1" testing toggle)
 #include "sora_camp.h"  // (s78 KH2 pause menu slice 1)
+#include "sora_diag.h"  // (s183 kairi-diag: the on-screen "Sora's model can't be drawn" notice; needs CAMP from sora_camp.h)
 #include "sora_net_avatar.h"  // (mp Task 6: the remote Sora; needs sora_form.h / sora_mickey.h; Task 7: CAMP.seq for the name plate)
 #include "sora_net_party.h"   // (mp slice 3: the remote Donald + Goofy; the party poses for the fx anchors)
 #include "sora_invsora.h"  // (s102 b16-invsora: Sora instead of Link on BotW's inventory screen; S102_HELPER_INVSORA.md)
@@ -6282,6 +6296,7 @@ __declspec(dllexport) void sora_mod_frame(void) {
     mark_poll();  // (s111: F5 marks work in every state, before the body's early returns)
     pcap_begin();  // (mp slice 3: a party draw record is only good for the frame it was drawn in)
     sora_mod_frame_body();
+    if (g_on) dg_tick(GetTickCount64());  // (s183 kairi-diag)
     if (g_on) {  // (mp: one net step a frame, after the body: recv, 20 Hz SNAP, HELLO / timeouts)
         float lp[3] = {g_body[0], g_body[1], g_body[2]};
         uint64_t now = GetTickCount64();
@@ -6401,7 +6416,7 @@ static void sora_mod_frame_body(void) {
     }
     savepic_note(vk_frame_counter(), false);
     float p[3];
-    if (!linkpos_link_pos(p)) { g_nd_nolink++; mg_other("load / no Link"); pl_cancel("load / no Link"); sm_end("load / no Link"); lflash_early(vk_frame_counter(), true); drive_off(); sora_draw_off(); sora_hud_off(); skt_quiet(); return; }
+    if (!linkpos_link_pos(p)) { g_nd_nolink++; g_dg_nolink = t0 != 0 && !g_loading && !g_go_screen;  /* (g_t0 is never cleared: a load / Game Over is not E2) */ mg_other("load / no Link"); pl_cancel("load / no Link"); sm_end("load / no Link"); lflash_early(vk_frame_counter(), true); drive_off(); sora_draw_off(); sora_hud_off(); skt_quiet(); return; }
     uint64_t present = vk_frame_counter();
     g_body[0] = p[0], g_body[1] = p[1], g_body[2] = p[2];
     NET.driven = true;  // (mp: this frame's SNAP carries Link's position; else NF_LOADING, sora_mod_frame -> net_frame)
@@ -6554,10 +6569,11 @@ static void sora_mod_frame_body(void) {
         float wv = 0, wh = 0, wdxz = hypotf(p[0] - BED_POS[0], p[2] - BED_POS[2]), wdy = fabsf(p[1] - BED_POS[1]);
         bool entry = !last_seen || present - last_seen > 30;  // (a world frame after a gap: a load / the title)
         last_seen = present;
-        if (g_wake && entry && !dead && !g_loading && (g_wake >= 3 || !seen_world) && wdxz <= (float)g_bed_r && wdy <= 6.0f) {
+        if (g_wake && entry && !dead && !g_loading && (g_wake >= 3 || !seen_world) && wdxz <= (g_wake == 1 ? 1.5f : (float)g_bed_r) && wdy <= (g_wake == 1 ? 2.0f : 6.0f)) {  // (s183: wake 1 = default: only the exact New Game spawn [log: 0.0 m], so a Continue near the pod is not puppeted)
             rec = true, rec_at = present, armed = g_wake != 2, wake_at = present, zero_n = 0, moved_ok = false, end_at = 0;
             LOG("[wake] world entry at present %llu near the bed (%.1f m, dy %.1f): %s\n", (unsigned long long)present, wdxz, wdy,
                 g_wake == 2 ? "recon log only" : "Sora lies from this frame");
+            if (armed) LOG("[sora] event pose: following Link's skeleton (event Demo102_0, New Game wake-up in the pod; set evlink 0 = off)\n");
             if (armed) g_wake_on = true, g_wake_used = true, LOG("[wake] latched at present %llu: state %#x pos %.2f %.2f %.2f, Sora takes Link's pose, Donald / Goofy hidden\n",
                                                           (unsigned long long)present, sw_now, p[0], p[1], p[2]);
         }
@@ -6588,7 +6604,14 @@ static void sora_mod_frame_body(void) {
             if (moved_ok || present - rec_at > 12000 || dead) rec = false, LOG("[wake] recon log over (%s) at present %llu\n", moved_ok ? "the player moved" : dead ? "dead" : "12000 presents", (unsigned long long)present);
         }
         if (!g_wake && g_wake_on) g_wake_on = false;
-        if (g_wake_on) st = LINK_OTHER, g_event = true;
+        if (g_wake_on) {
+            // (s183) the retargeted pose needs real Link bones (as the state-0x1 puppet): junk bones (no skeleton found on
+            // this PC / a layout change) would draw a garbage body, so the normal body stays (re-checked every frame)
+            static bool wake_junk_said;
+            float wmax = -1;
+            if (link_bones_sane(&wmax)) st = LINK_OTHER, g_event = true, wake_junk_said = false;
+            else if (!wake_junk_said) wake_junk_said = true, LOG("[wake] Link's bones are not sane (max dist %.2f u, bones %llx): the normal body is drawn, no wake-up puppet\n", wmax, (unsigned long long)link_bones_now());
+        }
     }
     // (s94 bed) Link lying on the Shrine of Resurrection's bed / getting up: Link's, Sora puppets his bones
     {
@@ -6634,6 +6657,7 @@ static void sora_mod_frame_body(void) {
     warp_tint(0);  // (s54: only the 0x1 puppet below glows)
     light_tick();  // (s121 a1 light)
     blob_tick();   // (s126: KH2 blob keep / off / auto)
+    g_dg_playing = (st == LINK_GROUND || st == LINK_AIR) && !dead && !g_loading;  // (s183 kairi-diag)
     if (st != LINK_GROUND && st != LINK_AIR) {  // climbing, swimming, a cutscene...: Link's (the servo can't drive)
         rox_tick();  // (s110: the body switch also runs while Link has the pad: the new game's wake-up / walk-out cutscenes kept Sora until the first save)
         static uint64_t said;

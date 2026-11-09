@@ -29,6 +29,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -49,10 +50,17 @@ static inline void mod_update_set(const VkWriteDescriptorSet *w) {
     }
     rec_UpdateDescriptorSets(n, s);
 }
+#include <errno.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#include <time.h>
 #include "sora_draw.h"
 #include "sora_path.h"  // (Deck port: D:/SoraBotW -> SORA_ROOT)
 #include "sora_fx.h"
 #include "game_sites.h"
+#include "nvn/output_scale.h"  // (s183 amd FIX 2) output_world_proj: the world camera's projection as built
+#include "sora_proj_core.h"
 
 bool linkpos_link_mtx(float m[12]);
 bool linkpos_weapon_shown(void);  // (s128 wpn) Link's BotW weapon is in Sora's hand now: hide the Keyblade groups
@@ -114,7 +122,7 @@ typedef struct { uint32_t first, n; float u, v; } MVert;
 typedef struct { uint32_t bone; float p[4]; } MInfl;
 typedef struct { uint16_t slot, poses; uint32_t off; } PDir;
 
-typedef struct { bool have_proj; float view[12], proj[4]; bool screen; float clear[4], mask[4], shift[2]; bool co; } CamSnap;
+typedef struct { bool have_proj; float view[12], proj[4]; bool screen; float clear[4], mask[4], shift[2]; bool co; int proj_src; } CamSnap;
 // (s114 drawsync) Roxas looked below 60 fps although his clock, bakes and feet advance every frame (s113 anim60 probe). The scene
 // pass runs on the queue thread ~30 ms after the game submitted the frame (recon/S114_HELPER_DRAWLAT.md) and used the NEWEST
 // snapshot: depending on the race, a displayed frame got two new poses or none. Now each publish is kept in a ring tagged
@@ -265,15 +273,82 @@ void sora_draw_camera_shift(float sx, float sy) {
     g_camo.shift[0] = isfinite(sx) ? sx : 0, g_camo.shift[1] = isfinite(sy) ? sy : 0;
 }
 
+// ------------------------------------------------------------------ (s183 kairi-diag) why the body is not on screen
+// A tester had the KH2 HUD and the title logo but no model at all and no log. Every way the body draw can fail or never
+// start records a short reason here (first failure wins, never cleared; code + text); the DLL (sora_diag.h) asks
+// sora_draw_diag once a frame, and when it posed the body for > 5 s without one drawn frame it puts the reason on screen.
+// Cheap: a latch writes once, a skip is one pointer store, a draw one counter store. Any thread.
+uint64_t vk_frame_counter(void);
+static char g_dg_why[200];
+static volatile LONG g_dg_has;               // 0 none, 2 one thread is writing g_dg_why, 1 complete (readers use only 1)
+static const char *volatile g_dg_skip = "";  // the latest reason a pass drew nothing (cleared by a draw)
+static volatile uint64_t g_dg_drawn;         // vk_frame_counter() of the last pass that drew a body
+static bool g_bake_ioerr;  // (s183) the last Sora bake failure was a read failure (retried), not a bad file
+static const char *dg_bake_why = "see the [sora-draw] lines above in last.log";
+static void dg_latch(const char *fmt, ...) {
+    if (g_dg_has) return;
+    char t[sizeof g_dg_why];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(t, sizeof t, fmt, ap);
+    va_end(ap);
+    t[sizeof t - 1] = 0;
+    if (InterlockedCompareExchange(&g_dg_has, 2, 0) != 0) return;  // (first failure wins, even across threads)
+    memcpy(g_dg_why, t, strlen(t) + 1);  // (only the text and its NUL, not the stack bytes after it)
+    MemoryBarrier();
+    InterlockedExchange(&g_dg_has, 1);
+    LOG("[kairi-diag] body draw: %s\n", t);
+}
+static const char *dg_vkr(int r) {
+    switch (r) {
+    case 0: return "VK_SUCCESS";
+    case -1: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case -2: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case -3: return "VK_ERROR_INITIALIZATION_FAILED";
+    case -4: return "VK_ERROR_DEVICE_LOST";
+    case -5: return "VK_ERROR_MEMORY_MAP_FAILED";
+    case -7: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+    case -8: return "VK_ERROR_FEATURE_NOT_PRESENT";
+    case -11: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+    case -1000012000: return "VK_ERROR_INVALID_SHADER_NV";
+    default: return "VkResult";
+    }
+}
+// -> 1 and the first latched failure in why, else 0 and the latest skip reason (may be ""); *drawn_frame = the last frame drawn (0 = never).
+int sora_draw_diag(char *why, int cap, uint64_t *drawn_frame) {
+    if (drawn_frame) *drawn_frame = g_dg_drawn;
+    int has = g_dg_has == 1;  // (2 = being written: not yet)
+    const char *t = has ? g_dg_why : g_dg_skip;
+    if (why && cap > 0) snprintf(why, (size_t)cap, "%s", t ? t : "");
+    return has;
+}
+
+// (s183) why the last read_all failed: g_rd_gone = the file does not exist (else it exists but could not be read: antivirus /
+// OneDrive lock, no memory, short read), g_rd_note = errno / GetLastError text for the log.
+static bool g_rd_gone;
+static char g_rd_note[160];
 static uint8_t *read_all(const char *path, long *n) {
     path = sora_path(path);  // (every draw actor's model + pose)
+    g_rd_gone = false, g_rd_note[0] = 0;
+    errno = 0;
     FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
+    if (!f) {
+        int e = errno;
+        g_rd_gone = e == ENOENT;
+#ifdef _WIN32
+        snprintf(g_rd_note, sizeof g_rd_note, "fopen failed: errno %d (%s), GetLastError %lu", e, strerror(e), (unsigned long)GetLastError());
+#else
+        snprintf(g_rd_note, sizeof g_rd_note, "fopen failed: errno %d (%s)", e, strerror(e));
+#endif
+        return NULL;
+    }
     fseek(f, 0, SEEK_END);
     *n = ftell(f);
     fseek(f, 0, SEEK_SET);
     uint8_t *b = *n > 32 ? malloc((size_t)*n) : NULL;
-    if (b && fread(b, 1, (size_t)*n, f) != (size_t)*n) free(b), b = NULL;
+    if (!b) snprintf(g_rd_note, sizeof g_rd_note, *n > 32 ? "malloc of %ld bytes failed" : "file is only %ld bytes", *n);
+    else if (fread(b, 1, (size_t)*n, f) != (size_t)*n)
+        snprintf(g_rd_note, sizeof g_rd_note, "read failed after open: errno %d (%s)", errno, strerror(errno)), free(b), b = NULL;
     fclose(f);
     return b;
 }
@@ -357,9 +432,21 @@ static void skin_normals(DrawActor *a, float *buf, bool body) {  // (mp2-perf: b
 // problem. Leaves sh / ghost / last_* alone (actor 0's may be set before its first use).
 static bool bake_load(DrawActor *a, int id, const char *mp, const char *pp) {
     long nm = 0, np = 0;
+    static char rbuf[240];
     a->model = read_all(mp, &nm);
+    bool mgone = g_rd_gone;
+    char mnote[160];
+    memcpy(mnote, g_rd_note, sizeof mnote);
     a->pose = read_all(pp, &np);
     const char *why = NULL;
+    if (!id) {
+        g_bake_ioerr = !a->model || !a->pose;
+        if (!a->model) snprintf(rbuf, sizeof rbuf, mgone ? "sora_model.bin is missing" : "sora_model.bin exists but could not be read (%s)", mnote);
+        else if (!a->pose) snprintf(rbuf, sizeof rbuf, g_rd_gone ? "sora_pose.bin is missing" : "sora_pose.bin exists but could not be read (%s)", g_rd_note);
+        else snprintf(rbuf, sizeof rbuf, "wrong file type");
+        dg_bake_why = rbuf;
+        if (g_bake_ioerr) LOG("[sora-draw] bake read: %s\n", rbuf);
+    }
     if (!a->model || !a->pose || memcmp(a->model, "SKRG", 4) || memcmp(a->pose, "SKRP", 4)) {
         LOG("[sora-draw] no draw bake (%s %s, %s %s): %s not drawn\n", mp, a->model ? "ok" : "missing", pp,
             a->pose ? "ok" : "missing", id ? "actor" : "Sora");
@@ -371,6 +458,7 @@ static bool bake_load(DrawActor *a, int id, const char *mp, const char *pp) {
            ix = in + 20 * (size_t)a->ninfl;
     if (a->ntex > MAX_TEX || a->ngroups > MAX_GROUPS || !a->nverts || ix + 4 * (size_t)a->nidx > (size_t)nm) {
         why = "bad model";
+        if (!id) dg_bake_why = "sora_model.bin is damaged";
         goto bad;
     }
     a->tex = (const MTex *)(a->model + t), a->groups = (const MGroup *)(a->model + gr);
@@ -395,6 +483,7 @@ static bool bake_load(DrawActor *a, int id, const char *mp, const char *pp) {
     a->nslots = ph[2];
     if (ph[3] != a->nbones) {
         LOG("[sora-draw] pose bake %s has %u bones, the model %u\n", pp, ph[3], a->nbones);
+        if (!id) dg_bake_why = "sora_pose.bin does not match sora_model.bin";
         goto fail;
     }
     if (16 + 8 * (size_t)a->nslots > (size_t)np) { why = "bad pose directory"; goto bad; }
@@ -413,6 +502,7 @@ static bool bake_load(DrawActor *a, int id, const char *mp, const char *pp) {
         id, a->nbones, a->ngroups, a->nverts, a->nidx / 3, a->ntex, pp, a->nslots);
     return true;
 bad:
+    if (!id) dg_bake_why = why;
     LOG("[sora-draw] %s: %s (actor %d not drawn)\n", mp, why, id);
 fail:
     free(a->model), free(a->pose), free(a->local), free(a->snap.vb), free(a->weld), free(a->nacc), free(a->bl), a->bl = NULL;
@@ -433,11 +523,26 @@ static const PDir *pose_slot(const DrawActor *a, int slot) {
 static bool ready(void) {
     if (!g_state) {
         const char *e = getenv("SAVAGEWIND_SORA_DRAW");
-        if (e && !atoi(e)) { LOG("[sora-draw] off (SAVAGEWIND_SORA_DRAW=0)\n"); g_state = -1; return false; }
+        if (e && !atoi(e)) { LOG("[sora-draw] off (SAVAGEWIND_SORA_DRAW=0)\n"); dg_latch("D0 drawing is switched off (SAVAGEWIND_SORA_DRAW=0)"); g_state = -1; return false; }
         const char *mp = getenv("SAVAGEWIND_SORA_MODEL"), *pp = getenv("SAVAGEWIND_SORA_POSE");
         if (!mp || !*mp) mp = "D:/SoraBotW/data/sora_model.bin";
         if (!pp || !*pp) pp = "D:/SoraBotW/data/sora_pose.bin";
-        g_state = bake_load(&g_act[0], 0, mp, pp) ? 1 : -1;
+        // (s183) a read failure (antivirus / OneDrive holding the freshly built 83 MB sora_pose.bin) is retried every ~2 s for
+        // ~20 s before the D1 latch; a bad file (wrong type / damaged / mismatch) is final at once
+        static struct timespec first, next;
+        struct timespec now;
+        timespec_get(&now, TIME_UTC);
+        if (!first.tv_sec) first = now;
+        if (now.tv_sec < next.tv_sec) return false;
+        if (bake_load(&g_act[0], 0, mp, pp)) g_state = 1;
+        else if (g_bake_ioerr && now.tv_sec - first.tv_sec < 20) {
+            next.tv_sec = now.tv_sec + 2;
+            return false;
+        } else g_state = -1;
+        if (g_state < 0) {
+            bool io = g_bake_ioerr;
+            dg_latch("D1 Sora's model data (sora_model.bin / sora_pose.bin) %s: %s", io ? "could not be read (or is missing)" : "is bad", dg_bake_why);
+        }
         if (g_state == 1) {
             e = getenv("SAVAGEWIND_SORA_SHADOW");
             if (e && *e && !atoi(e)) g_shadow_on = false, LOG("[sora-draw] no blob shadow (SAVAGEWIND_SORA_SHADOW=0)\n");
@@ -484,7 +589,7 @@ void sora_draw_near_cut(int cm) { g_near_cut = cm > 0 ? cm / 100.0f : 0.0f; }
 // neighbour. A pixel whose scene depth hides the body (and is nearer than leafrange) only hides it when at least leafthr
 // percent of a 4x4 block of depth taps (spread leafk tenths of a texel) also hide it. DLL keys leafmode / leafk / leafthr /
 // leafrange via sora_draw_leaf_cfg(which, v); depthdbg via sora_draw_depth_debug (the env SAVAGEWIND_SORA_DEPTH_DEBUG view).
-static int g_leaf_mode = 0, g_leaf_k = 10, g_leaf_thr = 90, g_leaf_range = 1000, g_depth_dbg = 0;
+static int g_leaf_mode = 1 /* s183: default ON (user OK, was dev-live-file only) */, g_leaf_k = 10, g_leaf_thr = 90, g_leaf_range = 1000, g_depth_dbg = 0;
 void sora_draw_leaf_cfg(int which, int v) {
     if (which == 0) g_leaf_mode = v != 0;
     else if (which == 1) g_leaf_k = v < 1 ? 1 : v > 100 ? 100 : v;
@@ -760,6 +865,44 @@ static void skin_verts(const DrawActor *a, const SkinIn *k0) {
         o[3] = mv->u, o[4] = mv->v;
     }
 }
+// (s183 amd FIX 2, game thread) BotW's world camera projection for the body pass: {near, far, fovy rad, aspect} and its
+// source (sora_proj_core.h: the camera scan's, else the exe's own, else none = no scene-depth occlusion that frame).
+// SAVAGEWIND_SORA_PROJ_SRC = auto (default) / exe / scan. One log line per change of source (the first 20, then every 100th).
+static const char *proj_src_name(int src) {
+    return src == PROJ_SRC_SCAN ? "scan" : src == PROJ_SRC_EXE ? "exe" : src == 3 ? "screen" : src == 4 ? "override" : "none";
+}
+static int world_proj(float proj[4]) {
+    static int mode = -1, last = -1;
+    static unsigned changes;
+    static bool told_disagree;
+    if (mode < 0) {
+        const char *e = getenv("SAVAGEWIND_SORA_PROJ_SRC");
+        mode = !e || !*e ? PROJ_AUTO : (!strcmp(e, "exe") || !strcmp(e, "1")) ? PROJ_EXE : (!strcmp(e, "scan") || !strcmp(e, "2")) ? PROJ_SCAN : PROJ_AUTO;
+        LOG("[sora-draw] projection source: %s (SAVAGEWIND_SORA_PROJ_SRC=%s)\n", mode == PROJ_EXE ? "exe first" : mode == PROJ_SCAN ? "scan only" : "auto (scan, else exe)",
+            e && *e ? e : "-");
+    }
+    float s[4] = {0, 0, 0, 0}, x[4];
+    WorldProj wp;
+    const bool sok = linkpos_camera_proj(s), eok = output_world_proj(&wp);
+    x[0] = wp.tan_half_fovy, x[1] = wp.aspect, x[2] = wp.near_, x[3] = wp.far_;
+    const int src = proj_pick(mode, sok, s, eok, x, proj);
+    if (src != last && (++changes <= 20 || changes % 100 == 0)) {
+        if (src == PROJ_SRC_NONE)
+            LOG("[sora-draw] projection: NONE (no scanned gameplay projection, exe's %s): guessed one, scene-depth occlusion off (change %u)\n",
+                eok ? "not sane" : "not built yet", changes);
+        else
+            LOG("[sora-draw] projection: %s near %.3f far %.0f fovy %.2f aspect %.4f (scan %s, exe %s; change %u)\n", proj_src_name(src),
+                proj[0], proj[1], proj[2] * 57.29578f, proj[3], sok ? "found" : "none", eok && proj_exe_sane(x) ? "built" : "none", changes);
+    }
+    last = src;
+    if (sok && eok && proj_exe_sane(x) && !proj_agree(s, x) && !told_disagree) {
+        told_disagree = true;  // (log only, once: auto keeps the scan's unless the aspect differs)
+        LOG("[sora-draw] projection: scan and exe differ: scan near %.3f far %.0f fovy %.2f aspect %.4f, exe near %.3f far %.0f fovy %.2f aspect %.4f\n",
+            s[0], s[1], s[2] * 57.29578f, s[3], x[2], x[3], 2 * atanf(x[0]) * 57.29578f, x[1]);
+    }
+    return src;
+}
+
 static bool skin_publish(DrawActor *a, const float *m0, const float *m1, float u, const float feet[3], float face,
                          float scale) {
     float lm[12], view[12], proj[4], t[3];
@@ -767,17 +910,19 @@ static bool skin_publish(DrawActor *a, const float *m0, const float *m1, float u
     const uint64_t pf_t0 = plat_now_ns();
     if (feet) t[0] = feet[0], t[1] = feet[1], t[2] = feet[2];
     else if (linkpos_link_mtx(lm)) t[0] = lm[3], t[1] = lm[7], t[2] = lm[11];
-    else { sora_draw_actor_off((int)(a - g_act)); return false; }
+    else { g_dg_skip = "DC Link's position was not found (the body has nowhere to stand)"; sora_draw_actor_off((int)(a - g_act)); return false; }
     const bool scr = g_scr.on;  // (s59: the KH2 Game Over's own camera, not BotW's)
     if (g_camo.on && ++g_camo.age > 30) g_camo.on = false, LOG("[sora-draw] camera override lapsed (no call for 30 poses)\n");
     const bool co = !scr && g_camo.on;  // (s106 invsora 3: the menu scene's camera in the normal pass)
     if (scr) memcpy(view, g_scr.view, sizeof view);
     else if (co) memcpy(view, g_camo.view, sizeof view);
     if (!(scr || co || linkpos_camera_view(view)) || !(t[0] == t[0] && t[1] == t[1] && t[2] == t[2])) {  // (a NaN foot: not drawn)
+        g_dg_skip = "DD BotW's camera was not found (the body cannot be placed on screen)";
         sora_draw_actor_off((int)(a - g_act));
         return false;
     }
-    bool have_proj = scr ? (memcpy(proj, g_scr.proj, sizeof proj), true) : co ? (memcpy(proj, g_camo.proj, sizeof proj), true) : linkpos_camera_proj(proj);
+    const int psrc = scr ? 3 : co ? 4 : world_proj(proj);  // (s183 amd FIX 2: 3 / 4 = the screen / override camera's own)
+    bool have_proj = scr ? (memcpy(proj, g_scr.proj, sizeof proj), true) : co ? (memcpy(proj, g_camo.proj, sizeof proj), true) : psrc != PROJ_SRC_NONE;
     // model (KH: +x left, +y up, +z forward, cm) -> world: RotY(face) * scale, then the feet
     float s = sinf(face), c = cosf(face), tx = t[0], ty = t[1], tz = t[2];
     // (s58) a detached weapon: its vertices (first influence on a bone >= wbase) skinned with the weapon's own
@@ -913,6 +1058,7 @@ static bool skin_publish(DrawActor *a, const float *m0, const float *m1, float u
     memcpy(g_cam.view, view, sizeof view);
     memcpy(g_cam.proj, proj, sizeof proj);
     g_cam.have_proj = have_proj;
+    g_cam.proj_src = psrc;
     g_cam.screen = scr;
     g_cam.shift[0] = co ? g_camo.shift[0] : 0, g_cam.shift[1] = co ? g_camo.shift[1] : 0, g_cam.co = co;  // (s107)
     memcpy(g_cam.clear, g_scr.clear, sizeof g_cam.clear);
@@ -1195,8 +1341,20 @@ void sora_draw_world(const float *bones, float face, float scale) { sora_draw_ac
 // out. s38 did the floor search in the vertex shader: a VS-visible scene depth loses the GPU on NVIDIA ("device fault:
 // address write invalid"), so binding 1 is fragment-only. s0 = (sora.c floor, radius, fade_h, min_scale), s1 =
 // (min_alpha, -, search depth, lift), s2 = (feet, -).
-#define PC_DECL "layout(push_constant) uniform P { mat4 mvp; vec4 k; vec4 vp; vec4 duv; vec4 z; vec4 s0; vec4 s1; vec4 s2; vec4 t; vec4 oa; vec4 ob; vec4 oc; } pc;\n"
-#define PC_FLOATS 60
+// (s183 amd) Only mvp k vp duv z (128 bytes) are push constants: AMD's Windows driver and Mesa Intel allow 128 bytes
+// (Vulkan's minimum; NVIDIA / RADV 256), and the old 240-byte block (all of the below in it) failed gpu_init there = no
+// body and no KH2 effects, the HUD fine. s0 s1 s2 t oa ob oc (112 bytes) are a per-draw uniform block instead (set 2,
+// one dynamic-offset slot per push in a per-pass transient span, PdRing), the same values the push had: pd.* = pc.* was.
+#define PC_DECL "layout(push_constant) uniform P { mat4 mvp; vec4 k; vec4 vp; vec4 duv; vec4 z; } pc;\n" \
+                "layout(set = 2, binding = 0) uniform D { vec4 s0; vec4 s1; vec4 s2; vec4 t; vec4 oa; vec4 ob; vec4 oc; } pd;\n"
+typedef struct { float mvp[16], k[4], vp[4], duv[4], z[4]; } BodyPC;                   // = P (sora_fx_draw reads its 32 floats)
+typedef struct { float s0[4], s1[4], s2[4], t[4], oa[4], ob[4], oc[4]; } BodyPD;      // = D (std140: 7 vec4, no padding)
+#define PC_BYTES 128
+#define PD_BYTES 112
+#define PC_BYTES_S182 240  // (the old all-push block, for the log line only)
+_Static_assert(sizeof(BodyPC) == PC_BYTES, "BodyPC must match the GLSL push block");
+_Static_assert(PC_BYTES <= 128, "Sora's body pass must fit Vulkan's minimum maxPushConstantsSize (128): AMD Windows / Intel");
+_Static_assert(sizeof(BodyPD) == PD_BYTES, "BodyPD must match the GLSL uniform block D");
 static const char *VERT_SRC =
     "#version 450\n"
     "layout(location = 0) in vec3 pos;\n"
@@ -1249,11 +1407,11 @@ static const char *VERT_SRC =
     "    }\n"
     "    if (pc.z.w < 0.5) { gl_Position = pc.mvp * vec4(pos, 1.0); return; }\n"
     "    if (pc.z.w > 1.5) { gl_Position = vec4(pos.xy, 0.5, 1.0); return; }\n"
-    "    float fy = pc.s0.x;\n"
-    "    float t = pc.s0.z > 0.0 ? clamp((pos.y - fy) / pc.s0.z, 0.0, 1.0) : 0.0;\n"
-    "    float r = pc.s0.y * (1.0 - (1.0 - pc.s0.w) * t);\n"
-    "    v_a = 1.0 - (1.0 - pc.s1.x) * t;\n"
-    "    gl_Position = pc.mvp * vec4(pos.x + uv.x * r, fy + pc.s1.w, pos.z + uv.y * r, 1.0);\n"
+    "    float fy = pd.s0.x;\n"
+    "    float t = pd.s0.z > 0.0 ? clamp((pos.y - fy) / pd.s0.z, 0.0, 1.0) : 0.0;\n"
+    "    float r = pd.s0.y * (1.0 - (1.0 - pd.s0.w) * t);\n"
+    "    v_a = 1.0 - (1.0 - pd.s1.x) * t;\n"
+    "    gl_Position = pc.mvp * vec4(pos.x + uv.x * r, fy + pd.s1.w, pos.z + uv.y * r, 1.0);\n"
     "}\n";
 static const char *FRAG_SRC =
     "#version 450\n"
@@ -1332,11 +1490,11 @@ static const char *FRAG_SRC =
     "        float zs = scene_z(s);\n"
     "        vec3 p = mat3(pc.mvp) * (vec3(s * 2.0 - 1.0, 1.0) * zs) + pc.mvp[3].xyz;\n"
     "        vec3 nr = cross(dFdx(p), dFdy(p));\n"
-    "        float dy = pc.s2.y - p.y, lnr = length(nr);\n"
-    "        if (dy < -0.3 || dy > pc.s1.z) discard;\n"
-    "        float t = pc.s0.z > 0.0 ? clamp(max(dy, 0.0) / pc.s0.z, 0.0, 1.0) : 0.0;\n"
-    "        float r = pc.s0.y * (1.0 - (1.0 - pc.s0.w) * t), q = length(p.xz - pc.s2.xz) / max(r, 0.01);\n"
-    "        float a = pc.k.x * (1.0 - (1.0 - pc.s1.x) * t) * (1.0 - smoothstep(0.55, 1.0, q));\n"
+    "        float dy = pd.s2.y - p.y, lnr = length(nr);\n"
+    "        if (dy < -0.3 || dy > pd.s1.z) discard;\n"
+    "        float t = pd.s0.z > 0.0 ? clamp(max(dy, 0.0) / pd.s0.z, 0.0, 1.0) : 0.0;\n"
+    "        float r = pd.s0.y * (1.0 - (1.0 - pd.s0.w) * t), q = length(p.xz - pd.s2.xz) / max(r, 0.01);\n"
+    "        float a = pc.k.x * (1.0 - (1.0 - pd.s1.x) * t) * (1.0 - smoothstep(0.55, 1.0, q));\n"
     "        if (lnr > 0.0) a *= smoothstep(0.3, 0.6, abs(nr.y) / lnr);\n"
     "        if (q >= 1.0 || a < 0.004) discard;\n"
     "        o = vec4(0.0, 0.0, 0.0, a);\n"
@@ -1347,10 +1505,10 @@ static const char *FRAG_SRC =
     "        c = vec4(0.0, 0.0, 0.0, pc.k.x * v_a * (1.0 - smoothstep(0.55, 1.0, length(v_uv))));\n"
     "        if (c.a < 0.004) discard;\n"
     "    } else if (c.a < pc.k.x) discard;\n"
-    "    if (pc.oa.w > 0.5 && pc.z.w < 0.5 && pc.k.w < 0.5) {\n"  // (s107 slateocc) the Slate box: oa/ob = local axes 0/1, oc = centre, s0 = (camera, half2), s1.zw = half0/1
-    "        vec3 a0 = pc.oa.xyz, a1 = pc.ob.xyz, a2 = cross(a0, a1), o0 = pc.s0.xyz - pc.oc.xyz, d0 = v_w - pc.s0.xyz;\n"
+    "    if (pd.oa.w > 0.5 && pc.z.w < 0.5 && pc.k.w < 0.5) {\n"  // (s107 slateocc) the Slate box: oa/ob = local axes 0/1, oc = centre, s0 = (camera, half2), s1.zw = half0/1
+    "        vec3 a0 = pd.oa.xyz, a1 = pd.ob.xyz, a2 = cross(a0, a1), o0 = pd.s0.xyz - pd.oc.xyz, d0 = v_w - pd.s0.xyz;\n"
     "        vec3 ro = vec3(dot(o0, a0), dot(o0, a1), dot(o0, a2)), rd = vec3(dot(d0, a0), dot(d0, a1), dot(d0, a2));\n"
-    "        vec3 hb = vec3(pc.s1.z, pc.s1.w, pc.s0.w);\n"
+    "        vec3 hb = vec3(pd.s1.z, pd.s1.w, pd.s0.w);\n"
     "        vec3 inv = 1.0 / (rd + vec3(equal(rd, vec3(0.0))) * 1e-9), t1 = (-hb - ro) * inv, t2 = (hb - ro) * inv;\n"
     "        float tn = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z)), tf = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));\n"
     "        if (tn <= tf && tf > 0.0 && tn < 1.0) discard;\n"
@@ -1359,18 +1517,18 @@ static const char *FRAG_SRC =
     "    if (pc.k.z > 0.5) {\n"
     "        zs = scene_z(s);\n"
     "        float lim = pc.z.z + ze * 0.002;\n"
-    "        bool hid = ze > zs + lim && !(zs < pc.s2.w && zs < ze * 0.6);\n"
-    "        if (pc.s2.x > 0.0 && pc.z.w < 0.5 && hid && zs < pc.s2.z) {\n"  // (s105 leafmode 1: 4x4 neighbourhood)
-    "            vec2 base = pc.duv.xy + s * pc.duv.zw, ts = pc.s2.x / vec2(textureSize(sdepth, 0));\n"
+    "        bool hid = ze > zs + lim && !(zs < pd.s2.w && zs < ze * 0.6);\n"
+    "        if (pd.s2.x > 0.0 && pc.z.w < 0.5 && hid && zs < pd.s2.z) {\n"  // (s105 leafmode 1: 4x4 neighbourhood)
+    "            vec2 base = pc.duv.xy + s * pc.duv.zw, ts = pd.s2.x / vec2(textureSize(sdepth, 0));\n"
     "            vec2 lo = min(pc.duv.xy, pc.duv.xy + pc.duv.zw), hi = max(pc.duv.xy, pc.duv.xy + pc.duv.zw);\n"
     "            int cnt = 0;\n"
     "            for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {\n"
     "                vec2 q = clamp(base + (vec2(float(i), float(j)) - 1.5) * ts, lo, hi);\n"
     "                if (ze > lin_z(texture(sdepth, q).r) + lim) cnt++;\n"
     "            }\n"
-    "            hid = float(cnt) >= pc.s1.x * 16.0 - 0.001;\n"  // s1.x = thr fraction on the bodies' pass
+    "            hid = float(cnt) >= pd.s1.x * 16.0 - 0.001;\n"  // s1.x = thr fraction on the bodies' pass
     "        }\n"
-    "        if (pc.k.w < 0.5 && hid != (pc.s1.y > 0.0)) discard;\n"
+    "        if (pc.k.w < 0.5 && hid != (pd.s1.y > 0.0)) discard;\n"
     "    }\n"
     "    if (pc.k.w > 0.5) { o = vec4(vec3(clamp(zs / ze * 0.5, 0.0, 1.0)), 1.0); return; }\n"
     "    vec3 rgb = c.rgb;\n"  // (s54 tint: toward the glow colour by its luminance, plus a little added light)
@@ -1386,15 +1544,16 @@ static const char *FRAG_SRC =
     "        rgb *= light_of(N, sv);\n"
     "        if (sm >= 3) rgb = mix(rgb, se < 0.01 ? vec3(0.1, 0.2, 1.0) : vec3(1.0 - sv, sv, 0.0), 0.75);\n"  // red shade, green sun, blue outside
     "    }\n"
-    "    if (pc.t.w > 0.0) rgb = mix(rgb, pc.t.rgb * (0.35 + 0.65 * dot(rgb, vec3(0.3, 0.59, 0.11))), pc.t.w * 0.85)\n"
-    "                            + pc.t.rgb * pc.t.w * 0.45;\n"
-    "    o = vec4(rgb, pc.s1.y > 0.0 ? pc.s1.y : pc.k.y > 0.0 ? c.a : 1.0);\n"
+    "    if (pd.t.w > 0.0) rgb = mix(rgb, pd.t.rgb * (0.35 + 0.65 * dot(rgb, vec3(0.3, 0.59, 0.11))), pd.t.w * 0.85)\n"
+    "                            + pd.t.rgb * pd.t.w * 0.45;\n"
+    "    o = vec4(rgb, pd.s1.y > 0.0 ? pd.s1.y : pc.k.y > 0.0 ? c.a : 1.0);\n"
     "}\n";
 
 static struct {  // (s54: shared by every actor; the textures + vb copy are per actor, DrawActor.gpu)
     bool init, failed;
     VkDescriptorSetLayout set_layout;   // (mp2-perf C4) set 0: binding 0 = the group's texture (persistent per (actor, texture) set)
     VkDescriptorSetLayout set_layout1;  // set 1: binding 0 = BotW's scene depth, 1 = the sun cascade (one set per draw pass)
+    VkDescriptorSetLayout set_layout2;  // (s183 amd) set 2: binding 0 = the per-draw block D (dynamic uniform buffer, one set per draw pass)
     VkDescriptorPool pool;              // our own pool for the persistent texture sets (never reset: the per-submission pools are)
     VkPipelineLayout layout;
     // per colour format (s57: the window image's and the game's final image's): opaque (alpha test, depth write),
@@ -1412,7 +1571,10 @@ static VkPipeline make_pipeline(VkFormat fmt, bool blend, bool depth_only) {
     static VkShaderModule vs, fs;
     if (!vs) vs = vk_compile_glsl(VERT_SRC, STAGE_VERTEX, "sora_draw.vert");
     if (!fs) fs = vk_compile_glsl(FRAG_SRC, STAGE_FRAGMENT, "sora_draw.frag");
-    if (!vs || !fs) return VK_NULL_HANDLE;
+    if (!vs || !fs) {
+        dg_latch("D3 Sora's shader did not compile (%s shader, GPU driver refused it)", !vs ? "vertex" : "fragment");
+        return VK_NULL_HANDLE;
+    }
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
@@ -1460,7 +1622,11 @@ static VkPipeline make_pipeline(VkFormat fmt, bool blend, bool depth_only) {
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = G.layout};
     VkPipeline p = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkResult pr = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p);
+    if (pr != VK_SUCCESS) {
+        dg_latch("D4 Vulkan pipeline failed: %s (%d), colour format %d", dg_vkr((int)pr), (int)pr, (int)fmt);
+        return VK_NULL_HANDLE;
+    }
     return p;
 }
 
@@ -1478,15 +1644,36 @@ static const VkPipeline *pipes_for(VkFormat fmt) {
     if (!G.pipes[i].p[0] || !G.pipes[i].p[1] || !G.pipes[i].p[2]) {
         G.failed = true, G.pipes[i].p[0] = VK_NULL_HANDLE;
         LOG("[sora-draw] pipelines failed (format %d)\n", fmt);
+        dg_latch("D5 Vulkan pipelines could not be made for colour format %d", (int)fmt);
         return NULL;
     }
     LOG("[sora-draw] pipelines for colour format %d\n", fmt);
     return G.pipes[i].p;
 }
 
+// (s183 amd) maxPushConstantsSize as Sora's passes see it: the GPU's, or less with SAVAGEWIND_SORA_PUSH_LIMIT=<n> (=128 on
+// NVIDIA = an AMD-Windows / Intel-like GPU, to prove the body still draws there). Every Sora pipeline layout with push
+// constants (the body pass here, the cast shadow below, sora_fx.c's effects) checks its range against this.
+unsigned sora_push_limit(void) {
+    static long long env = -2;
+    const uint32_t real = g_vk.props.limits.maxPushConstantsSize;
+    if (env == -2) {
+        const char *e = getenv("SAVAGEWIND_SORA_PUSH_LIMIT");
+        env = e && *e ? strtoll(e, NULL, 0) : -1;
+        if (env >= 0) LOG("[sora-draw] SAVAGEWIND_SORA_PUSH_LIMIT=%lld: Sora's passes treat this GPU's %u bytes of push constants as %lld\n",
+                          env, real, env < (long long)real ? env : (long long)real);
+    }
+    return env >= 0 && env < (long long)real ? (uint32_t)env : real;
+}
+
 static bool gpu_init(void) {  // (s54: the shared part; textures per actor in actor_gpu_init)
-    if (g_vk.props.limits.maxPushConstantsSize < PC_FLOATS * 4) {
-        LOG("[sora-draw] push constants: %u bytes, need %d\n", g_vk.props.limits.maxPushConstantsSize, PC_FLOATS * 4);
+    const uint32_t lim = sora_push_limit();
+    LOG("[sora-draw] push constants: %u bytes allowed (GPU %u), body pass needs %d + a %d-byte uniform block (the s182 layout "
+        "needed %d: %s)\n", lim, g_vk.props.limits.maxPushConstantsSize, PC_BYTES, PD_BYTES, PC_BYTES_S182,
+        lim < PC_BYTES_S182 ? "it would have FAILED here, D6" : "it fit");
+    if (lim < PC_BYTES) {
+        LOG("[sora-draw] push constants: %u bytes, need %d\n", lim, PC_BYTES);
+        dg_latch("D6 this GPU allows %u bytes of push constants, Sora needs %d", lim, PC_BYTES);
         return false;
     }
     VkDescriptorSetLayoutBinding b[2] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
@@ -1495,13 +1682,16 @@ static bool gpu_init(void) {  // (s54: the shared part; textures per actor in ac
     VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &G.set_layout));
     li.bindingCount = 2;
     VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &G.set_layout1));
+    VkDescriptorSetLayoutBinding bd = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo ld = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &bd};
+    VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &ld, NULL, &G.set_layout2));
     VkDescriptorPoolSize psz = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SORA_DRAW_TEX_SETS};
     VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = SORA_DRAW_TEX_SETS,
                                       .poolSizeCount = 1, .pPoolSizes = &psz};
     if (vkCreateDescriptorPool(g_vk.dev, &dpi, NULL, &G.pool) != VK_SUCCESS) G.pool = VK_NULL_HANDLE;  // (no persistent sets: per-draw ones)
-    VkDescriptorSetLayout sls[2] = {G.set_layout, G.set_layout1};
-    VkPushConstantRange r = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, PC_FLOATS * 4};
-    VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 2,
+    VkDescriptorSetLayout sls[3] = {G.set_layout, G.set_layout1, G.set_layout2};
+    VkPushConstantRange r = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, PC_BYTES};
+    VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 3,
                                      .pSetLayouts = sls, .pushConstantRangeCount = 1, .pPushConstantRanges = &r};
     VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &G.layout));
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR, .minFilter = VK_FILTER_LINEAR,
@@ -1529,7 +1719,11 @@ static bool actor_gpu_init(DrawActor *a) {
                                 .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VkResult vr = vmaCreateImage(g_vk.vma, &ic, &ai, &a->gpu.tex[i], &a->gpu.tex_mem[i], NULL);
-        if (vr != VK_SUCCESS) { LOG("[sora-draw] actor %d texture %u (%ux%u): vmaCreateImage %d\n", (int)(a - g_act), i, t->w, t->h, vr); break; }
+        if (vr != VK_SUCCESS) {
+            LOG("[sora-draw] actor %d texture %u (%ux%u): vmaCreateImage %d\n", (int)(a - g_act), i, t->w, t->h, vr);
+            if (a == &g_act[0]) dg_latch("D7 Sora's texture %u (%ux%u) could not be created: %s (%d)", i, t->w, t->h, dg_vkr((int)vr), (int)vr);
+            break;
+        }
         vk_image_init_layout(ucb, a->gpu.tex[i], VK_IMAGE_ASPECT_COLOR_BIT);
         VkSpan s = vk_transient_copy(a->model + t->off, (uint64_t)t->w * t->h * 4, 16);
         VkBufferImageCopy rg = {.bufferOffset = s.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {t->w, t->h, 1}};
@@ -1539,6 +1733,7 @@ static bool actor_gpu_init(DrawActor *a) {
         vr = vkCreateImageView(g_vk.dev, &vc, NULL, &a->gpu.tex_view[i]);
         if (vr != VK_SUCCESS) {
             LOG("[sora-draw] actor %d texture %u: vkCreateImageView %d\n", (int)(a - g_act), i, vr);
+            if (a == &g_act[0]) dg_latch("D7 Sora's texture %u view failed: %s (%d)", i, dg_vkr((int)vr), (int)vr);
             vk_defer_image(a->gpu.tex[i], a->gpu.tex_mem[i]), a->gpu.tex[i] = VK_NULL_HANDLE;
             break;
         }
@@ -1607,7 +1802,12 @@ static bool depth_for(VkExtent2D e) {
                             .extent = {e.width, e.height, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (vmaCreateImage(g_vk.vma, &ic, &ai, &G.depth, &G.depth_mem, NULL) != VK_SUCCESS) { G.depth = VK_NULL_HANDLE; return false; }
+    VkResult dr = vmaCreateImage(g_vk.vma, &ic, &ai, &G.depth, &G.depth_mem, NULL);
+    if (dr != VK_SUCCESS) {
+        G.depth = VK_NULL_HANDLE;
+        dg_latch("D8 Sora's depth image (%ux%u) could not be created: %s (%d)", e.width, e.height, dg_vkr((int)dr), (int)dr);
+        return false;
+    }
     vk_image_init_layout(vk_upload_cmd(), G.depth, VK_IMAGE_ASPECT_DEPTH_BIT);
     VkImageViewCreateInfo vc = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = G.depth, .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                 .format = DEPTH_FORMAT, .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}};
@@ -1744,6 +1944,38 @@ static void bind_draw_sets(VkCommandBuffer cb, const DrawActor *a, uint32_t tex,
     }
 }
 
+// (s183 amd) The per-draw block D (BodyPD) of one draw pass: one transient span of cap slots (each slot rounded up to
+// minUniformBufferOffsetAlignment) behind one set-2 descriptor (dynamic uniform buffer), so a push is the 128-byte push
+// constants + (when D changed since the last push) the next slot written and set 2 bound at its offset. One span = one
+// VkBuffer for the whole pass (a second span only if cap ran out: a new set, never a slot an earlier draw still reads).
+typedef struct { VkSpan span; VkDescriptorSet set; uint32_t stride, cap, n; BodyPD last; uint32_t slots, spans; } PdRing;
+static void pd_begin(PdRing *r, uint32_t cap) {
+    uint64_t al = g_vk.props.limits.minUniformBufferOffsetAlignment;
+    if (al < 16) al = 16;
+    r->stride = (uint32_t)((PD_BYTES + al - 1) / al * al);
+    r->cap = cap ? cap : 1, r->n = 0;
+    r->span = vk_transient((uint64_t)r->stride * r->cap, al);
+    r->set = vk_alloc_set(G.set_layout2);
+    VkDescriptorBufferInfo bi = {r->span.buf, r->span.off, PD_BYTES};
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = r->set, .dstBinding = 0, .descriptorCount = 1,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .pBufferInfo = &bi};
+    mod_update_set(&w);
+    r->spans++;
+}
+static void pd_push(VkCommandBuffer cb, PdRing *r, const BodyPC *pc, const BodyPD *pd) {
+    rec_CmdPushConstants(cb, G.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof *pc, pc);
+    if (r->slots && !memcmp(&r->last, pd, sizeof *pd)) return;  // (set 2 still bound at that block: binds of sets 0 / 1 and pipelines keep it)
+    if (r->n >= r->cap) {
+        static bool said;
+        if (!said) said = true, LOG("[sora-draw] per-draw blocks: %u slots ran out, a second span (not expected)\n", r->cap);
+        pd_begin(r, r->cap);
+    }
+    const uint32_t off = r->n++ * r->stride;
+    memcpy((uint8_t *)r->span.ptr + off, pd, sizeof *pd);
+    r->last = *pd, r->slots++;
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, G.layout, 2, 1, &r->set, 1, &off);
+}
+
 // Inside a rendering of its own into cv (format fmt, layout lay, size ext), the actors in (vx, vy, vw, vh) of it.
 // window: cv = the window image, inside its rendering (suspended around ours), after the game image went into
 // (vx, vy, vw, vh); else (s57) cv = the game's final image, with no rendering open (exec.c ended the game's pass).
@@ -1832,7 +2064,7 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
     if (!nvalid) return false;
     if (!G.init) {
         G.init = true;
-        if (!gpu_init()) { G.failed = true; LOG("[sora-draw] GPU setup failed\n"); return false; }
+        if (!gpu_init()) { G.failed = true; LOG("[sora-draw] GPU setup failed\n"); dg_latch("D6 Sora's GPU setup failed"); return false; }
     }
     // an actor's first posed present: its textures go up with this submission, it draws from the next one on (one
     // actor per present: Sora first, the party a present apart)
@@ -1842,11 +2074,15 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
         s[i].valid = false, nvalid--;
         if (up++) continue;
         a->gpu.init = true;
-        if (!actor_gpu_init(a)) a->gpu.failed = true, LOG("[sora-draw] actor %d: GPU setup failed (not drawn)\n", i);
+        if (!actor_gpu_init(a)) {
+            a->gpu.failed = true, LOG("[sora-draw] actor %d: GPU setup failed (not drawn)\n", i);
+            if (i == 0) dg_latch("D7 Sora's textures could not be uploaded (GPU memory?)");
+        }
         else if (i) LOG("[sora-draw] actor %d: %u textures uploaded\n", i, a->ntex);
     }
-    if (!nvalid) return false;
-    if (!cv || !depth_for(ext)) return false;
+    if (!nvalid) { g_dg_skip = "D9 the game has not handed the body a pose to draw"; return false; }
+    if (!cv) { g_dg_skip = "DA no image to draw into"; return false; }
+    if (!depth_for(ext)) return false;
     const VkPipeline *P = pipes_for(fmt);
     if (!P) return false;
     float proj[4] = {0.1f, 25000, 50 * 3.14159265f / 180, vh > 0 ? vw / vh : 16.0f / 9};
@@ -1857,10 +2093,10 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
         const char *e = getenv("SAVAGEWIND_SORA_FOVY");
         if (e && *e) proj[2] = strtof(e, NULL) * 3.14159265f / 180;
     }
-    struct { float mvp[16], k[4], vp[4], duv[4], z[4], s0[4], s1[4], s2[4], t[4], oa[4], ob[4], oc[4]; } pc;
-    memset(pc.s0, 0, sizeof pc.s0 + sizeof pc.s1 + sizeof pc.s2);
-    memset(pc.oa, 0, sizeof pc.oa + sizeof pc.ob + sizeof pc.oc);  // (s107 slateocc)
-    memcpy(pc.t, s[0].tint, sizeof pc.t);  // (set again per actor before each of its draws)
+    BodyPC pc;  // (s183 amd: the push constants, 128 bytes)
+    BodyPD pd;  // (s183 amd: the per-draw uniform block, pd_push)
+    memset(&pd, 0, sizeof pd);  // (s0 s1 s2, s107 slateocc oa ob oc: 0)
+    memcpy(pd.t, s[0].tint, sizeof pd.t);  // (set again per actor before each of its draws)
     build_mvp(cam.view, proj, pc.mvp);
     if (!scr && (cam.shift[0] != 0 || cam.shift[1] != 0))  // (s107 invsora 3: an off-centre camera, clip += shift * w; y flipped here)
         for (int c = 0; c < 4; c++) pc.mvp[c * 4] += cam.shift[0] * pc.mvp[c * 4 + 3], pc.mvp[c * 4 + 1] -= cam.shift[1] * pc.mvp[c * 4 + 3];
@@ -1878,6 +2114,11 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
     uint32_t dw = 0, dh = 0, ddraws = 0;
     float mode = 0;
     if (occl && !scr && vk_scene_depth(&dview, pc.duv, &dw, &dh, &ddraws)) mode = nvn_depth_mode() == 0 ? 1 : 2;
+    if (mode > 0 && !cam.have_proj) {  // (s183 amd FIX 2) no known near / far: linearising BotW's depth with a guess hid the
+        static uint64_t n_off;         // whole body (4:3, 5:4, 32:9 windows) -> no occlusion (and no decal shadow / ghost) this frame
+        if (n_off++ % 600 == 0) LOG("[sora-draw] no world projection known: scene-depth occlusion off (%llu frames)\n", (unsigned long long)n_off);
+        mode = 0;
+    }
     VkImageView sdw_view = VK_NULL_HANDLE;  // (s124 b) BotW's sun cascade 0 + its world -> clip matrix
     float sdw_m[16];
     uint32_t sdw_w = 0, sdw_h = 0;
@@ -1890,6 +2131,8 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
     pc.z[0] = proj[0], pc.z[1] = proj[1], pc.z[2] = 0.03f, pc.z[3] = 0;
 
     VkCommandBuffer cb = vk_cmd();
+    PdRing pdr = {0};  // (s183 amd) at most one push per shadow + one per (scissor rect <= 4, pass <= 4) per drawn actor
+    pd_begin(&pdr, (uint32_t)nvalid * 17 + 1);
     if (window) vk_frame_suspend();
     vk_full_barrier(cb);  // (the game image's draw into the window image / BotW's composite before our load of it)
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = cv,
@@ -2005,7 +2248,7 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
         }
         if (decal) {  // a fan of radius 2 in NDC covers the viewport (inradius 2 cos(7.5 deg) > sqrt 2)
             for (int i = 0; i <= SHADOW_SEG; i++) sv[i * VB_F] = sv[i * VB_F + 3] * 2, sv[i * VB_F + 1] = sv[i * VB_F + 4] * 2, sv[i * VB_F + 2] = 0;
-            pc.s2[0] = cx, pc.s2[1] = cy, pc.s2[2] = cz, pc.s2[3] = 0;
+            pd.s2[0] = cx, pd.s2[1] = cy, pd.s2[2] = cz, pd.s2[3] = 0;
             memcpy(pc.mvp, mvp_inv, sizeof mvp_inv);
         }
         VkSpan svb = vk_transient_copy(sv, sizeof sv, 16), sib = vk_transient_copy(si, sizeof si, 16);
@@ -2014,18 +2257,18 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
         rec_CmdBindIndexBuffer(cb, sib.buf, sib.off, VK_INDEX_TYPE_UINT32);
         rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, P[1]);
         pc.k[0] = sh->strength, pc.k[1] = 1, pc.k[2] = mode, pc.k[3] = 0, pc.z[2] = SHADOW_BIAS, pc.z[3] = decal ? 2.0f : 1.0f;
-        memcpy(pc.t, as->tint, sizeof pc.t);  // (as before s54-party: the flat disc's colour goes through the tint too)
-        pc.s0[0] = sh->floor_y, pc.s0[1] = sh->radius, pc.s0[2] = sh->fade_h, pc.s0[3] = sh->min_scale;
-        pc.s1[0] = sh->min_alpha, pc.s1[1] = 0, pc.s1[2] = SHADOW_DROP_MAX, pc.s1[3] = SHADOW_LIFT;
-        rec_CmdPushConstants(cb, G.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+        memcpy(pd.t, as->tint, sizeof pd.t);  // (as before s54-party: the flat disc's colour goes through the tint too)
+        pd.s0[0] = sh->floor_y, pd.s0[1] = sh->radius, pd.s0[2] = sh->fade_h, pd.s0[3] = sh->min_scale;
+        pd.s1[0] = sh->min_alpha, pd.s1[1] = 0, pd.s1[2] = SHADOW_DROP_MAX, pd.s1[3] = SHADOW_LIFT;
+        pd_push(cb, &pdr, &pc, &pd);
         bind_draw_sets(cb, &g_act[ai], 0, fset, dview, sdw_view);
         rec_CmdDrawIndexed(cb, SHADOW_SEG * 3, 1, 0, 0, (uint32_t)(2 * ai + 1));
     }
     memcpy(pc.mvp, mvp_keep, sizeof mvp_keep);
     pc.z[2] = 0.03f, pc.z[3] = 0;  // (the bodies: their bias, no shadow mode)
-    pc.s2[0] = pc.s2[1] = pc.s2[2] = 0, pc.s2[3] = g_near_cut;  // (s102 leaves: occluders this close to the camera don't hide the bodies)
-    pc.s1[0] = 0;
-    memset(pc.s0, 0, sizeof pc.s0), pc.s1[2] = pc.s1[3] = 0, pc.oa[3] = 0;
+    pd.s2[0] = pd.s2[1] = pd.s2[2] = 0, pd.s2[3] = g_near_cut;  // (s102 leaves: occluders this close to the camera don't hide the bodies)
+    pd.s1[0] = 0;
+    memset(pd.s0, 0, sizeof pd.s0), pd.s1[2] = pd.s1[3] = 0, pd.oa[3] = 0;
     float sw[12];
     if (g_socc_on && !scr && linkpos_slate_model_world(sw)) {  // (s107 slateocc) world -> pc: axes 0/1 unit, the third is their cross product
         float a0[3] = {sw[0], sw[4], sw[8]}, a1[3] = {sw[1], sw[5], sw[9]}, a2[3] = {sw[2], sw[6], sw[10]};
@@ -2034,13 +2277,13 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
         const float *v = cam.view;  // camera world position = -R^T t
         if (l0 > 1e-4f && l1 > 1e-4f && l2 > 1e-4f) {
             for (int j = 0; j < 3; j++) {
-                pc.oa[j] = a0[j] / l0, pc.ob[j] = a1[j] / l1, pc.oc[j] = sw[j * 4 + 3];
-                pc.s0[j] = -(v[j] * v[3] + v[4 + j] * v[7] + v[8 + j] * v[11]);
+                pd.oa[j] = a0[j] / l0, pd.ob[j] = a1[j] / l1, pd.oc[j] = sw[j * 4 + 3];
+                pd.s0[j] = -(v[j] * v[3] + v[4 + j] * v[7] + v[8 + j] * v[11]);
             }
-            pc.oa[3] = 1, pc.s1[2] = g_socc_h[0] * 0.001f * l0, pc.s1[3] = g_socc_h[1] * 0.001f * l1, pc.s0[3] = g_socc_h[2] * 0.001f * l2;
+            pd.oa[3] = 1, pd.s1[2] = g_socc_h[0] * 0.001f * l0, pd.s1[3] = g_socc_h[1] * 0.001f * l1, pd.s0[3] = g_socc_h[2] * 0.001f * l2;
         }
     }
-    if (g_leaf_mode) pc.s2[0] = g_leaf_k / 10.0f, pc.s2[2] = g_leaf_range / 100.0f, pc.s2[3] = 0, pc.s1[0] = g_leaf_thr / 100.0f;  // (s105 leafmode 1: near cut off)
+    if (g_leaf_mode) pd.s2[0] = g_leaf_k / 10.0f, pd.s2[2] = g_leaf_range / 100.0f, pd.s2[3] = 0, pd.s1[0] = g_leaf_thr / 100.0f;  // (s105 leafmode 1: near cut off)
     // the bodies' vertices (world, skinned on the game thread) + indices, one transient copy each per present
     bool any_ghost = false;
     for (int ai = 0; ai < nact; ai++) {
@@ -2082,9 +2325,9 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
             if (!s[ai].valid || (pass >= 2 && !(s[ai].ghost > 0.004f && mode > 0 && !dbg))) continue;
             const uint64_t pf_tr = plat_now_ns();
             pc.k[0] = pass == 1 ? 0.02f : 0.5f, pc.k[1] = (float)(pass == 1), pc.k[2] = mode, pc.k[3] = dbg ? 1.0f : 0.0f;
-            pc.s1[1] = pass >= 2 ? s[ai].ghost : 0;
-            memcpy(pc.t, s[ai].tint, sizeof pc.t);
-            rec_CmdPushConstants(cb, G.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+            pd.s1[1] = pass >= 2 ? s[ai].ghost : 0;
+            memcpy(pd.t, s[ai].tint, sizeof pd.t);
+            pd_push(cb, &pdr, &pc, &pd);
             VkDeviceSize vo = vb[ai].off;
             rec_CmdBindVertexBuffers(cb, 0, 1, &vb[ai].buf, &vo);
             rec_CmdBindIndexBuffer(cb, ib[ai].buf, ib[ai].off, VK_INDEX_TYPE_UINT32);
@@ -2106,12 +2349,13 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
     rec_CmdSetScissor(cb, 0, 1, &sc);
     for (int k = 0; k < 2; k++)
         if (p_has[k]) pf_add(&g_pf.up[k], p_up[k]), pf_add(&g_pf.rec[k], p_rec[k]);
-    pc.s1[1] = 0;
+    pd.s1[1] = 0;
     if (!scr) sora_fx_draw(cb, (const float *)&pc, dview, G.nearest, fmt);  // KH2 effects over / behind his body (runtime/sora_fx.c)
     if (scr) g_last_ok = false;  // (s59: no world camera this frame for sora_draw_project)
     rec_CmdEndRendering(cb);
     vk_full_barrier(cb);
     if (window) vk_frame_resume();  // (the overlay menu draws after this)
+    if (s[g_body].valid) g_dg_drawn = vk_frame_counter(), g_dg_skip = "";  // (s183 kairi-diag)
     if (G.drawn++ % 300 == 0) {
         LOG("[sora-draw]   ui order %d: drawn into the %s %ux%u (format %d); scene passes %llu, fallbacks %llu, skipped %llu\n",
             g_ui_order, window ? "window image" : "game image", ext.width, ext.height, fmt, (unsigned long long)g_ub.passes,
@@ -2121,7 +2365,7 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
         const float *v0 = vb_done[a0] ? (const float *)vb[a0].ptr : g_act[a0].gpu.vb;
         LOG("[sora-draw] frame %llu: at %.2f %.2f %.2f, proj %s near %.3f far %.0f fovy %.1f aspect %.3f, viewport %.0f %.0f %.0fx%.0f, "
             "actors %d drawn of %d\n",
-            (unsigned long long)G.drawn - 1, v0[0], v0[1], v0[2], cam.have_proj ? "game" : "default", proj[0], proj[1],
+            (unsigned long long)G.drawn - 1, v0[0], v0[1], v0[2], cam.have_proj ? proj_src_name(cam.proj_src) : "default", proj[0], proj[1],
             proj[2] * 57.29578f, proj[3], vx, vy, vw, vh, nvalid, nact),
         LOG("[sora-draw]   scene depth %s %ux%u (%u draws) uv %.3f %.3f %.3f %.3f, depth mode %.0f\n", dview ? "yes" : "no", dw, dh,
             ddraws, pc.duv[0], pc.duv[1], pc.duv[2], pc.duv[3], mode),
@@ -2184,6 +2428,11 @@ static VkPipeline cast_pipeline(VkFormat fmt, bool ge) {
     static VkShaderModule vs;
     if (!vs) vs = vk_compile_glsl(CAST_VS, STAGE_VERTEX, "sora_cast.vert");
     if (!vs) return VK_NULL_HANDLE;
+    if (sora_push_limit() < 20 * 4) {  // (s183 amd: never on a real GPU, Vulkan's minimum is 128; SAVAGEWIND_SORA_PUSH_LIMIT below 80)
+        static bool said;
+        if (!said) said = true, LOG("[sora-draw] cast shadow: %u bytes of push constants, needs %d (off)\n", sora_push_limit(), 20 * 4);
+        return VK_NULL_HANDLE;
+    }
     if (!GC.layout) {
         VkPushConstantRange r = {VK_SHADER_STAGE_VERTEX_BIT, 0, 20 * 4};
         VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1,
@@ -2416,6 +2665,7 @@ void sora_draw_present(float vx, float vy, float vw, float vh) {
                                 (unsigned long long)vk_frame_counter());
         if (!cof && !vk_scene_depth(&dv, duv, &dw, &dh, &dn)) {  // no 3D world this frame: no new actors either
             g_last_ok = false;
+            g_dg_skip = "DB BotW's 3D scene was not found in this frame (menu / loading, or this GPU's scene pass was not recognised)";
             if (g_state == 1 && !g_ub.skips++) LOG("[sora-draw] ui order: frame %llu has no 3D scene: actors not drawn (menu / load / re-present)\n",
                                                    (unsigned long long)vk_frame_counter());
             return;
