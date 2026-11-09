@@ -3,6 +3,9 @@
   python -E -P kit/mkkit.py --out D:/SoraBotW/sb/kit --dotnet D:/Tools/dotnet8/dotnet.exe --openkh D:/KH2BusterSword/conv/out
       --openkh-apps D:/Tools/OpenKH/openkh/Apps --busybox <busybox-w64-...exe> --python <embeddable python dir with site-packages>
       --ffmpeg <ffmpeg.exe of gyan 9.0.2 full_build> [--vgmstream <dir with vgmstream-cli.exe + dlls>] [--clang C:/msys64/ucrt64/bin/clang.exe]
+  (s185) only the installer window changed: a copy of an existing kit with tools/installer_host rebuilt from this checkout
+  python -E -P kit/mkkit.py --out D:/SoraBotW/sb/kit185 --dotnet D:/Tools/dotnet8/dotnet.exe --webview2 D:/SoraBotW/sb/dl_webview2
+      --refresh-host D:/SoraBotW/sb/kit182
 
 Kit layout (sorabuild config "kit": <dir>):
   kit.json            {"src": {tool: sb.src_hash(tool)}, "files": {rel: sha256}, ...}: sorabuild refuses a tool whose sources changed
@@ -95,15 +98,83 @@ def make_licenses(out, webview2):
     print("mkkit: LICENSES/ %d files" % len(os.listdir(d)))
 
 
+def build_host(a, tmp, out, env):
+    """(s168) the installer window (tools/installer/host) -> <out>/tools/installer_host, WebView2 SDK from the pinned local nupkg"""
+    nup = os.path.join(a.webview2, "microsoft.web.webview2.%s.nupkg" % WV2_VER)
+    if sha256(nup) != WV2_SHA:
+        raise SystemExit("mkkit: %s is not the pinned WebView2 SDK (sha256)" % nup)
+    src = os.path.join(tmp, "installer_host")
+    shutil.copytree(os.path.join(SBDIR, "..", "installer", "host"), src)
+    hd = os.path.join(out, "tools", "installer_host")
+    run([a.dotnet, "build", os.path.join(src, "LegendOfKairiSetup.csproj"), "-c", "Release", "-o", hd,
+         "-p:RestoreSources=" + a.webview2.replace("\\", "/"), "--nologo", "-v", "q"], cwd=src, env=env)
+    for pat in ("*.xml", "*.pdb", "Microsoft.Web.WebView2.Wpf.dll"):
+        for f in glob.glob(os.path.join(hd, pat)):
+            os.remove(f)
+    for arch in ("win-arm64", "win-x86"):
+        shutil.rmtree(os.path.join(hd, "runtimes", arch), ignore_errors=True)
+
+
+def write_kit_json(out, src, extra=None):
+    """kit.json: sha256 of every file (+ the source hashes of the prebuilt tools)"""
+    files = {}
+    for d, _, fs in os.walk(out):
+        for f in fs:
+            p = os.path.join(d, f)
+            rel = os.path.relpath(p, out).replace("\\", "/")
+            if rel != "kit.json":
+                files[rel] = sha256(p)
+    kj = {"made": time.strftime("%Y-%m-%d %H:%M:%S"), "src": src}
+    kj.update(extra or {})
+    kj["files"] = dict(sorted(files.items()))
+    json.dump(kj, open(os.path.join(out, "kit.json"), "w", newline="\n"), indent=1)
+    mb = sum(os.path.getsize(os.path.join(out, r)) for r in files) / 1e6
+    print("mkkit: %s  %d files, %.0f MB" % (out, len(files), mb))
+
+
+def refresh_host(a, out, env):
+    """(s185) a new kit = an existing kit with ONLY tools/installer_host rebuilt from this checkout (the same build as a full run).
+    Every other file is copied as it is, after checking it against the base's kit.json (a base changed by hand is refused), and the
+    base's prebuilt tools must still match this checkout's sources (else a full mkkit run is needed)."""
+    base = os.path.abspath(a.refresh_host)
+    if not a.webview2:
+        raise SystemExit("mkkit: --refresh-host needs --webview2")
+    kj = json.load(open(os.path.join(base, "kit.json"), encoding="utf-8"))
+    stale = [t for t in sb.KIT_SRC if kj.get("src", {}).get(t) != sb.src_hash(t)]
+    if stale:
+        raise SystemExit("mkkit: the base kit's %s were built from other sources: make a full kit instead" % ", ".join(stale))
+    want = kj.get("files", {})
+    have = set()
+    for d, _, fs in os.walk(base):
+        for f in fs:
+            have.add(os.path.relpath(os.path.join(d, f), base).replace("\\", "/"))
+    have.discard("kit.json")
+    if have != set(want):
+        raise SystemExit("mkkit: the base kit's files differ from its kit.json (extra: %s; missing: %s)"
+                         % (sorted(have - set(want))[:5], sorted(set(want) - have)[:5]))
+    bad = [r for r in sorted(want) if sha256(os.path.join(base, r)) != want[r]]
+    if bad:
+        raise SystemExit("mkkit: base kit files changed since it was made: %s" % ", ".join(bad[:5]))
+    os.rmdir(out)       # (empty: checked by main) copytree makes it
+    shutil.copytree(base, out, ignore=lambda d, names: ["kit.json"] if os.path.normcase(d) == os.path.normcase(base) else [])
+    shutil.rmtree(os.path.join(out, "tools", "installer_host"))
+    tmp = os.path.join(out, "_build")
+    build_host(a, tmp, out, dict(env, DOTNET_CLI_HOME=os.path.join(tmp, "home")))
+    shutil.rmtree(tmp)
+    write_kit_json(out, kj["src"], {"base": {"kit": os.path.basename(base), "made": kj.get("made")},
+                                    "rebuilt": ["tools/installer_host"]})
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--dotnet", required=True)
-    ap.add_argument("--openkh", required=True)
-    ap.add_argument("--openkh-apps", required=True)
-    ap.add_argument("--busybox", required=True)
-    ap.add_argument("--python", required=True)
-    ap.add_argument("--ffmpeg", required=True)
+    ap.add_argument("--refresh-host", help="(s185) base kit dir: copy it and rebuild only tools/installer_host (needs --webview2)")
+    ap.add_argument("--openkh")
+    ap.add_argument("--openkh-apps")
+    ap.add_argument("--busybox")
+    ap.add_argument("--python")
+    ap.add_argument("--ffmpeg")
     ap.add_argument("--vgmstream", default=os.path.join(SBDIR, "sounds", "bin"))
     ap.add_argument("--clang", default="C:/msys64/ucrt64/bin/clang.exe")
     ap.add_argument("--webview2", help="(s168) dir with microsoft.web.webview2.%s.nupkg: builds the installer window "
@@ -116,6 +187,11 @@ def main():
     tmp = os.path.join(out, "_build")
     sdk = os.path.dirname(a.dotnet)
     env = {"DOTNET_ROOT": sdk, "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1", "DOTNET_CLI_HOME": os.path.join(tmp, "home")}
+    if a.refresh_host:
+        return refresh_host(a, out, env)
+    missing = [n for n in ("openkh", "openkh_apps", "busybox", "python", "ffmpeg") if not getattr(a, n)]
+    if missing:
+        raise SystemExit("mkkit: a full kit needs --%s" % ", --".join(m.replace("_", "-") for m in missing))
 
     # C# tools: copy the sources out (no obj/ in git), same build command as the steps
     for t, (rel, prop) in CS.items():
@@ -141,19 +217,7 @@ def main():
         env={"PATH": os.path.dirname(a.clang) + os.pathsep + os.environ.get("PATH", "")})
     # (s168) the installer window: WebView2 in a WinForms form (needs Microsoft.WindowsDesktop.App, shipped below)
     if a.webview2:
-        nup = os.path.join(a.webview2, "microsoft.web.webview2.%s.nupkg" % WV2_VER)
-        if sha256(nup) != WV2_SHA:
-            raise SystemExit("mkkit: %s is not the pinned WebView2 SDK (sha256)" % nup)
-        src = os.path.join(tmp, "installer_host")
-        shutil.copytree(os.path.join(SBDIR, "..", "installer", "host"), src)
-        hd = os.path.join(out, "tools", "installer_host")
-        run([a.dotnet, "build", os.path.join(src, "LegendOfKairiSetup.csproj"), "-c", "Release", "-o", hd,
-             "-p:RestoreSources=" + a.webview2.replace("\\", "/"), "--nologo", "-v", "q"], cwd=src, env=env)
-        for pat in ("*.xml", "*.pdb", "Microsoft.Web.WebView2.Wpf.dll"):
-            for f in glob.glob(os.path.join(hd, pat)):
-                os.remove(f)
-        for arch in ("win-arm64", "win-x86"):
-            shutil.rmtree(os.path.join(hd, "runtimes", arch), ignore_errors=True)
+        build_host(a, tmp, out, env)
     shutil.rmtree(tmp)
 
     # .NET runtime only (from the SDK): dotnet.exe + host/fxr/<v> + shared/Microsoft.NETCore.App/<v>
@@ -188,16 +252,7 @@ def main():
     shutil.copytree(a.vgmstream, os.path.join(out, "vgmstream"))
     make_licenses(out, a.webview2)
 
-    files = {}
-    for d, _, fs in os.walk(out):
-        for f in fs:
-            p = os.path.join(d, f)
-            files[os.path.relpath(p, out).replace("\\", "/")] = sha256(p)
-    kj = {"made": time.strftime("%Y-%m-%d %H:%M:%S"), "src": {t: sb.src_hash(t) for t in sb.KIT_SRC},
-          "files": dict(sorted(files.items()))}
-    json.dump(kj, open(os.path.join(out, "kit.json"), "w", newline="\n"), indent=1)
-    mb = sum(os.path.getsize(os.path.join(out, r)) for r in files) / 1e6
-    print("mkkit: %s  %d files, %.0f MB" % (out, len(files), mb))
+    write_kit_json(out, {t: sb.src_hash(t) for t in sb.KIT_SRC})
 
 
 if __name__ == "__main__":

@@ -36,7 +36,8 @@ SYSTEM_DLLS = {"kernel32.dll", "user32.dll", "shell32.dll", "winmm.dll", "ws2_32
 SKIP_TOOLS = {"tools/installer/mkzip.py", "tools/sorabuild/config.thispc.json", "tools/sorabuild/config.fxrec.json",
               # host tests and the dev-only PHH-oracle proof scripts (they name C:/Users/... paths; the build steps never call them)
               "tools/installer/test_gameside.py", "tools/installer/test_recover.py", "tools/installer/test_lock.py",
-              "tools/installer/test_update.py",
+              "tools/installer/test_update.py", "tools/installer/test_precheck.py", "tools/installer/test_selfupdate.py", "tools/installer/test_uisfx.py",
+              "tools/installer/test_shortcut.py", "tools/installer/test_play.py", "tools/installer/test_server.py", "tools/installer/signrel.py",
               "tools/sorabuild/logo/dev/gen_layers.py", "tools/sorabuild/logo/dev/README.md",
               "tools/sorabuild/ragmap/dev/dump_old.c", "tools/sorabuild/ragmap/dev/dump_new.c", "tools/sorabuild/ragmap/dev/proof.sh",
               # (s182) the old frozen sound recipe (made from PHH's mined tables; step sounds_mine mines it at install now), its retired
@@ -48,7 +49,8 @@ SKIP_TOOLS = {"tools/installer/mkzip.py", "tools/sorabuild/config.thispc.json", 
 # (s178 S9) must never be in a release. Dirs/files by name anywhere, dirs only at the top level (the kit's python has its own data/ dirs)
 BAD_ANY = {"__pycache__", "save", "saves", "extracted", "romfs", ".git", ".installer-ui", ".env"}
 BAD_TOP = {"work", "data", "logs", "play", "recon"}
-BAD_GLOB = ["*.log", "*.sav", "*.pyc", "*.key", "*.pem", "config.*.json", "live_test.txt", "sora_mod_live*", "Play Legend of Kairi*.bat"]
+BAD_GLOB = ["*.log", "*.sav", "*.pyc", "*.key", "*.pem", "config.*.json", "live_test.txt", "sora_mod_live*", "Play Legend of Kairi*.bat",
+            "*.lnk"]    # (s185) shortcuts are made on the player's PC (they hold absolute paths of the PC they were made on)
 KEEP_PEM = ("cacert.pem",)       # the kit's python (certifi) ships its CA list
 TEXT_EXT = {".py", ".json", ".txt", ".md", ".cmd", ".bat", ".cs", ".c", ".h", ".js", ".html", ".css", ".csproj", ".ps1", ".sh", ".ini",
             ".cfg", ".xml", ".toml"}
@@ -103,6 +105,8 @@ def main():
 
     # launcher + kit + tools + licenses
     shutil.copy2(os.path.join(HERE, "templates", "Install %s.cmd" % NAME), os.path.join(out, "Install %s.cmd" % NAME))
+    # (s184) Update.bat: checks GitHub for a newer release, checks its sha256, runs that release's installer Update on this folder
+    shutil.copy2(os.path.join(HERE, "templates", "Update %s.bat" % NAME), os.path.join(out, "Update %s.bat" % NAME))
     shutil.copytree(a.kit, os.path.join(out, "kit"), ignore=shutil.ignore_patterns("__pycache__"))
     n_tools = 0
     for rel in tracked("tools/sorabuild") + tracked("tools/installer"):

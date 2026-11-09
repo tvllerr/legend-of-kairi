@@ -92,6 +92,17 @@ def test_detect(base):
     make_old_install(inner, "0.1.1-alpha", {}, "A")
     ok, msg, _ = update.detect(inner, rel, "0.1.3-alpha")
     assert not ok and "inside the other" in msg, msg
+    # (s184) Update.bat unpacks the new release into <old>/.kairi-download/<zip>/<top>/: that one may update its parent
+    dl = os.path.join(old, ".kairi-download", "Legend-of-Kairi-0.1.3-alpha", "Legend of Kairi 0.1.3-alpha")
+    make_release(dl, "0.1.3-alpha", {}, "B")
+    ok, msg, info = update.detect(old, dl, "0.1.3-alpha")
+    assert ok and info["root"] == old.replace(chr(92), "/"), msg
+    other = os.path.join(old, "elsewhere", "rel")              # but not from any other folder inside it
+    make_release(other, "0.1.3-alpha", {}, "B")
+    assert not update.detect(old, other, "0.1.3-alpha")[0]
+    assert ".kairi-download" not in update.release_items(dl)
+    shutil.rmtree(os.path.join(old, ".kairi-download"))
+    shutil.rmtree(os.path.join(old, "elsewhere"))
     # choices.json missing: the folders come from work/install_config.json
     os.remove(os.path.join(old, ".installer-ui", "choices.json"))
     w(os.path.join(old, "work", "install_config.json"), json.dumps({"romfs": "E:/G/Savage Wind/extracted/romfs",
@@ -228,10 +239,97 @@ def test_busy(base):
         p.kill()
         p.wait()
     assert update.busy_message(old) == ""
+    # (s184) a program running from <old>/.kairi-download/ (the new release's installer window) does not count
+    dlbin = os.path.join(old, ".kairi-download", "x", "kit")
+    os.makedirs(dlbin)
+    shutil.copy2(os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "System32", "PING.EXE"), os.path.join(dlbin, "LegendOfKairiSetup.exe"))
+    p = subprocess.Popen([os.path.join(dlbin, "LegendOfKairiSetup.exe"), "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL)
+    try:
+        time.sleep(0.5)
+        assert update.running_from(old) == [] and update.busy_message(old) == "", update.running_from(old)
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_junction_escape(base):
+    """(s185 sec) a crafted OLD install whose data/fx is a junction to a folder outside, and whose old manifest names fx/b.bin: the update
+    must not delete the outside file (and the same for the done markers / installer's recover)"""
+    import subprocess
+    new_files = {"a.bin": "1", "fx/b.bin": "2-new", "fx/c.bin": "3", "hud/h.bin": "4"}
+    rel = make_release(os.path.join(base, "new"), "0.1.3-alpha", new_files, "B")
+    old = make_old_install(os.path.join(base, "old"), "0.1.1-alpha", {"a.bin": "1", "fx/b.bin": "2", "fx/c.bin": "3", "hud/h.bin": "4"}, "A")
+    outside = os.path.join(base, "outside")
+    w(os.path.join(outside, "b.bin"), "PRECIOUS")
+    w(os.path.join(outside, "c.bin"), "PRECIOUS2")
+    shutil.rmtree(os.path.join(old, "data", "fx"))
+    rc = subprocess.run(["cmd", "/c", "mklink", "/J", os.path.join(old, "data", "fx"), outside], capture_output=True)
+    if rc.returncode != 0 or not os.path.isdir(os.path.join(old, "data", "fx")):
+        print("skip junction test (mklink /J failed)")
+        return
+    assert update.is_reparse(os.path.join(old, "data", "fx")) and not os.path.islink(os.path.join(old, "data", "fx")) or os.name != "nt"
+    assert update.safe_member(os.path.join(old, "data"), "fx/b.bin") is None
+    assert update.safe_member(os.path.join(old, "data"), "a.bin") == os.path.normpath(os.path.join(old, "data", "a.bin"))
+    assert update.safe_member(os.path.join(old, "data"), "../logs/last.log") is None
+    logs = []
+    update.prepare(rel, old, logs.append)
+    hit = update.invalidate(old, LIST, logs.append)
+    assert r(os.path.join(outside, "b.bin")) == "PRECIOUS" and r(os.path.join(outside, "c.bin")) == "PRECIOUS2", logs
+    assert hit == ["step_b"], hit
+    assert any("skipped fx/b.bin" in l for l in logs), logs
+    # the installer's own recover step (verify said fx/c.bin is wrong) has the same guard
+    import installer
+    installer.recover_after_bad_verify(old, ["fx fx/c.bin DIFF"])
+    assert r(os.path.join(outside, "c.bin")) == "PRECIOUS2"
+    # a junction as the done folder: the marker files behind it stay
+    shutil.rmtree(os.path.join(old, "work", "done"))
+    od = os.path.join(base, "outdone")
+    w(os.path.join(od, "step_a"), "x")
+    subprocess.run(["cmd", "/c", "mklink", "/J", os.path.join(old, "work", "done"), od], capture_output=True, check=True)
+    installer.update_after_bad_verify(old, "x")
+    assert r(os.path.join(od, "step_a")) == "x"
+    print("ok junction")
+
+
+def test_relocated_folders(base):
+    """(s185 review) a NORMAL update of an install whose data/ and work/ are junctions the player made (the big folders on another
+    drive), reached through a junction above the install root too: the changed data file and its done marker are still removed"""
+    import subprocess
+    rel = make_release(os.path.join(base, "new"), "0.1.3-alpha", {"a.bin": "1", "fx/b.bin": "2-new", "fx/c.bin": "3", "hud/h.bin": "4"}, "B")
+    real = make_old_install(os.path.join(base, "real", "old"), "0.1.1-alpha", {"a.bin": "1", "fx/b.bin": "2", "fx/c.bin": "3", "hud/h.bin": "4"}, "A")
+    for n in ("data", "work"):
+        shutil.move(os.path.join(real, n), os.path.join(base, "big_" + n))
+        rc = subprocess.run(["cmd", "/c", "mklink", "/J", os.path.join(real, n), os.path.join(base, "big_" + n)], capture_output=True)
+        if rc.returncode != 0:
+            print("skip relocated-folders test (mklink /J failed)")
+            return
+    subprocess.run(["cmd", "/c", "mklink", "/J", os.path.join(base, "via"), os.path.join(base, "real")], capture_output=True, check=True)
+    old = os.path.join(base, "via", "old")
+    logs = []
+    update.prepare(rel, old, logs.append)
+    assert update.invalidate(old, LIST, logs.append) == ["step_b"]
+    assert not os.path.exists(os.path.join(base, "big_data", "fx", "b.bin")), "the changed data file is deleted through data/"
+    assert os.path.exists(os.path.join(base, "big_data", "fx", "c.bin"))
+    assert not os.path.exists(os.path.join(base, "big_work", "done", "step_b")), "the marker is removed through work/"
+    assert os.path.exists(os.path.join(base, "big_work", "done", "step_a"))
+    assert not any("skipped" in l for l in logs), logs
+    # every step rebuilt (no old manifest): the markers go, _kh2pick stays
+    os.remove(os.path.join(old, update.UPD, "old_data_manifest.json"))
+    j = update.read_journal(old)
+    j.pop("invalidated", None)
+    update.write_journal(old, j)
+    assert update.invalidate(old, LIST, logs.append) == ["*"]
+    assert sorted(os.listdir(os.path.join(base, "big_work", "done"))) == ["_kh2pick"], os.listdir(os.path.join(base, "big_work", "done"))
+    import installer
+    w(os.path.join(old, "data", "fx", "c.bin"), "wrong")
+    installer.recover_after_bad_verify(old, ["fx fx/c.bin DIFF"])
+    assert not os.path.exists(os.path.join(base, "big_data", "fx", "c.bin")), "recover deletes the wrong file through data/"
+    print("ok relocated folders")
 
 
 def main():
-    for t in (test_detect, test_swap_and_invalidate, test_unowned_rebuilds_all, test_crash_recovery, test_release_items, test_busy):
+    for t in (test_detect, test_swap_and_invalidate, test_unowned_rebuilds_all, test_crash_recovery, test_release_items, test_busy,
+              test_junction_escape, test_relocated_folders):
         with tempfile.TemporaryDirectory(dir=os.environ.get("LOK_TEST_TMP")) as base:
             t(base)
     print("ok")

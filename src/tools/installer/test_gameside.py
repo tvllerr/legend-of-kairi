@@ -168,13 +168,86 @@ def test_bugreport_text():
     ps = gameside.bugreport_ps_text()
     assert ps.isascii() and "\r\n" in ps and "Invoke-Expression" not in ps and "$env:SORA_ROOT" in ps and "<removed>" in ps
     u = gameside.bugreport_text("C:\\Spiele\\M\u00fcnchen")
-    assert "chcp 65001" in u
+    assert "System32" in u and "chcp.com" in u and " 65001 " in u
     print("OK   bug report text")
+
+
+def test_scrub():
+    """(s185 sec) the bug report holds no IPs, Windows user names, PC name or player names; versions / timestamps / loopback stay; a file that
+    is not plain text is left out (scrub_notes.txt says so)"""
+    import zipfile
+    base = tempfile.mkdtemp(prefix="loktest_", dir=os.environ.get("LOK_TEST_TMP"))
+    try:
+        root, sw, dest = (os.path.join(base, n) for n in ("root", "sw", "dest"))
+        for d in (os.path.join(root, "logs"), os.path.join(root, "work", "logs"), sw, dest):
+            os.makedirs(d, exist_ok=True)
+        log = ("12:34:56 Legend of Kairi 0.4.1 build 1.9.0 data 10.0.26200.1.5\n"
+               "[net] peer pinned to 100.64.12.200:7790\n[net] peer 2 joined: Zorbax Friend 100.101.102.103:7790\n"
+               "[net] peer 3 joined: Bob\nlocal 127.0.0.1:7790 any 0.0.0.0 bad 999.1.2.3\n"
+               "v6 fd7a:115c:a1e0::1234:5678 and 2001:db8:0:0:0:0:0:1 and fe80::1%12 ts 2026-11-09 01:02:03:456 Foo::bar\n"
+               "path C:\\Users\\Zorbax\\AppData\\Local\\x and C:/Users/Other Person/y and D:\\Users\\Jane Doe\\z; host ZORBOX-PC ok; ab zorbax. zorbaxx\n")
+        texts = {os.path.join(root, "logs", "last.log"): log,
+                 os.path.join(root, "work", "logs", "install.log"): "C:\\Users\\Zorbax\\kit\n",
+                 os.path.join(root, "manifest.json"): '{"version": "0.4.1"}', os.path.join(sw, "savagewind.ini"): "[x]\n"}
+        for p, t in texts.items():
+            with open(p, "w", newline="") as f:
+                f.write(t)
+        with open(os.path.join(root, "logs", "bin.log"), "wb") as f:      # UTF-16 (BOM + NULs): not plain text, left out
+            f.write("peer 100.1.2.3 Zorbax\r\n".encode("utf-16"))
+        with open(os.path.join(root, "logs", "prev.log"), "wb") as f:     # (s185 review) stray NULs (a crash mid-write): kept, scrubbed
+            f.write(b"12:34:56 crash at 0x00007FF6A1B2C3D4 peer 100.9.8.7:7790 C:\\Users\\Zorbax\\x\n" + b"\x00" * 512 + b"tail line\n")
+        ps1 = os.path.join(root, gameside.BUGREPORT_PS1)
+        gameside._write_bat(ps1, gameside.bugreport_ps_text())
+        env = dict(os.environ, KAIRI_BUGREPORT_DIR=dest, SORA_ROOT=root + "\\", GAME=sw, USERNAME="Zorbax", COMPUTERNAME="ZORBOX-PC")
+        pse = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        p = subprocess.run([pse, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1],
+                           capture_output=True, timeout=180, stdin=subprocess.DEVNULL, env=env)
+        out = p.stdout.decode("mbcs", "replace") + p.stderr.decode("mbcs", "replace")
+        zs = [f for f in os.listdir(dest) if f.endswith(".zip")]
+        assert len(zs) == 1, out
+        z = zipfile.ZipFile(os.path.join(dest, zs[0]))
+        blob = {n.replace("\\", "/"): z.read(n).decode("utf-8", "replace") for n in z.namelist() if not n.endswith("/")}
+        allt = "\n".join(blob.values()).lower()
+        for bad in ("100.64.12.200", "100.101.102.103", "zorbax ", "zorbax\\", "zorbax.", "zorbox", "other person", "jane","fd7a:115c", "2001:db8", "fe80::1", "zorbax friend", "joined: bob"):
+            assert bad not in allt, (bad, blob)
+        lg = blob["logs/last.log"]
+        for keep in ("0.4.1", "build 1.9.0", "10.0.26200.1.5", "12:34:56", "127.0.0.1", "0.0.0.0", "999.1.2.3", "2026-11-09 01:02:03:456", "Foo::bar", "zorbaxx"):
+            assert keep in lg, (keep, lg)
+        assert "peer pinned to <ip>:7790" in lg and "joined: <player> <ip>:7790" in lg and "joined: <player>\n" in lg, lg
+        assert "\\Users\\<user>\\AppData" in lg and "/Users/<user>/y" in lg and "host <pc> ok" in lg and "ab <user>." in lg, lg
+        assert "logs/bin.log" not in blob and "bin.log" in blob.get("scrub_notes.txt", ""), list(blob)
+        pv = blob.get("logs/prev.log", "")
+        assert pv == "12:34:56 crash at 0x00007FF6A1B2C3D4 peer <ip>:7790 C:\\Users\\<user>\\x\ntail line\n", repr(pv)
+        assert "NUL bytes removed: logs\\prev.log" in blob["scrub_notes.txt"], blob["scrub_notes.txt"]
+        assert "0.4.1" in blob["install_folder/manifest.json"]
+        assert "Users\\<user>\\kit" in blob["work_logs/install.log"]
+        print("OK   bug report scrub")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_no_bare_tools():
+    """(s185 sec) the generated .bat files start cmd / powershell / chcp / tasklist by full System32 path only"""
+    import re as _re
+    sw = r"C:\Games\Savage Wind"
+    pat = _re.compile(r"(?i)(^|[\s\"=(])(cmd|powershell|chcp|tasklist|findstr|systeminfo|ipconfig|where|timeout|reg|icacls|robocopy|tar)(\.exe|\.com)?(\s|$|\")")
+    for t in (gameside.launcher_text(False, sw), gameside.launcher_text(True, sw), gameside.bugreport_text(sw), gameside.bugreport_text("C:\\M\u00fcnchen")):
+        for l in t.split("\r\n"):
+            if l.lstrip().lower().startswith(("rem ", "echo ")):
+                continue
+            assert not pat.search(l), l
+    assert '/min "%SystemRoot%\\System32\\cmd.exe" /c' in gameside.launcher_text(False, sw)
+    for f in os.listdir(os.path.join(HERE, "templates")):
+        t = open(os.path.join(HERE, "templates", f), encoding="utf-8").read()
+        assert not _re.search(r"(?im)^\s*(cmd|powershell|chcp|tasklist|findstr|timeout)\b", t), f
+    print("OK   no bare tool names in the launchers")
 
 
 def main():
     test_peers()
     test_bugreport_text()
+    test_no_bare_tools()
+    test_scrub()
     base = tempfile.mkdtemp(prefix="loktest_", dir=os.environ.get("LOK_TEST_TMP"))
     fail = 0
     try:

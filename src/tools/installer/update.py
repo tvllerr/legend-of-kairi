@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 
 NAME = "Legend of Kairi"
@@ -25,8 +26,9 @@ UPD = ".kairi-update"
 # what a release folder ships at its top level (mkzip writes the same list into manifest.json "top"; older manifests have none)
 DEFAULT_TOP = ["bin", "kit", "tools", "LICENSES", "Install Legend of Kairi.cmd", "manifest.json"]
 # never copied over / never moved away, whatever a manifest says: the player's build, logs, choices, launchers
-NEVER = {"data", "work", "logs", ".installer-ui", UPD, "save", "saves", "extracted"}
-NEVER_GLOB = ["Play Legend of Kairi*.bat"]
+DL = ".kairi-download"   # (s184) Update.bat (selfupdate.py) downloads + unpacks the new release in here
+NEVER = {"data", "work", "logs", ".installer-ui", UPD, DL, "save", "saves", "extracted"}
+NEVER_GLOB = ["Play Legend of Kairi*.bat", "*.lnk"]     # (s185) the player's shortcuts (the game side re-makes the install folder's own)
 SUBDIRS = {"bin", "data", "work", "tools", "kit", "logs", "licenses"}
 
 
@@ -96,7 +98,9 @@ def detect(path, release, new_version):
                            "Play Legend of Kairi.bat in it)."), {}
         return False, "This is not a Legend of Kairi folder (it has no Legend of Kairi manifest.json).", {}
     rp, rr = os.path.normcase(os.path.realpath(p)), os.path.normcase(os.path.realpath(release))
-    if rr.startswith(rp + os.sep) or rp.startswith(rr + os.sep):
+    # (s184) a release that Update.bat unpacked into <old>/.kairi-download/ may update its own parent install
+    in_dl = rr.startswith(os.path.normcase(os.path.join(rp, DL)) + os.sep)
+    if (rr.startswith(rp + os.sep) and not in_dl) or rp.startswith(rr + os.sep):
         return False, "The old install and the new download must be two separate folders (one is inside the other).", {}
     if not (os.path.isdir(os.path.join(p, "data")) and os.path.isdir(os.path.join(p, "work"))):
         return False, ("This Legend of Kairi was never installed (no data and work folders). Use Install Legend of Kairi "
@@ -135,8 +139,49 @@ def release_items(release):
     return out
 
 
+def is_reparse(p):
+    """a symlink or a junction / other reparse point (os.path.islink does not see junctions)"""
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return False
+    return os.path.islink(p) or bool(getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def safe_member(base, rel):
+    """(s185 sec) base + rel as a path that is really inside base, or None. rel comes from a folder / manifest that is not ours (an old
+    install): it is refused when it climbs out (..), when ANY component below base (the file itself included) is a symlink / junction
+    (os.path.normpath + commonpath do not see those, so a junction data/x -> elsewhere could make a delete leave the install), or when
+    the resolved path is not under the resolved base."""
+    nb = os.path.normpath(base)
+    p = os.path.normpath(os.path.join(nb, rel))
+    try:
+        if os.path.normcase(os.path.commonpath([p, nb])) != os.path.normcase(nb) or p == nb:
+            return None
+    except ValueError:
+        return None
+    cur = nb
+    for c in os.path.relpath(p, nb).split(os.sep):
+        cur = os.path.join(cur, c)
+        if is_reparse(cur):
+            return None
+    rb, rp = os.path.normcase(os.path.realpath(nb)), os.path.normcase(os.path.realpath(p))
+    try:
+        if os.path.commonpath([rp, rb]) != rb:
+            return None
+    except ValueError:
+        return None
+    return p
+
+
 def _rm(p):
-    if os.path.isdir(p) and not os.path.islink(p):
+    if is_reparse(p):
+        # a link / junction is removed itself, never followed
+        try:
+            os.remove(p)
+        except OSError:
+            os.rmdir(p)
+    elif os.path.isdir(p):
         shutil.rmtree(p)
     elif os.path.lexists(p):
         os.remove(p)
@@ -155,6 +200,8 @@ def prepare(release, root, log=print):
     items = release_items(release)
     u = os.path.join(root, UPD)
     stage, bak = os.path.join(u, "stage"), os.path.join(u, "bak")
+    if any(is_reparse(x) for x in (u, stage, bak)):      # (s185 sec) a link there would send our moves / deletes somewhere else
+        raise RuntimeError("%s inside the old folder is a link, not a folder. Delete that link and press Update again." % UPD)
     j = read_journal(root)
     if not j:
         man = _read_json(os.path.join(root, "manifest.json")) or {}
@@ -256,18 +303,22 @@ def invalidate(root, steps_list_text, log=print):
         hit = {"*"}
         log("[update] %s: every step is rebuilt" % ("the old data manifest is missing" if files is None else
                                                   "no step owns %s" % ", ".join(unowned[:3])))
-        if os.path.isdir(done):
+        # (s185 review) work/ or data/ ITSELF may be a junction the player made (the big folders on another drive): the build writes
+        # through it anyway, so the update follows it too. Only links BELOW them (and done/ itself) are never followed.
+        if os.path.isdir(done) and not is_reparse(done):
             for n in os.listdir(done):
-                if not n.startswith("_"):
+                if not n.startswith("_") and safe_member(done, n):
                     _rm(os.path.join(done, n))
     else:
         for f in files:
-            p = os.path.normpath(os.path.join(data, f))
-            if os.path.commonpath([p, os.path.normpath(data)]) == os.path.normpath(data) and os.path.isfile(p):
+            p = safe_member(data, f)        # (s185 sec) names from the OLD install's manifest: never through a junction / symlink
+            if p and os.path.isfile(p):
                 os.remove(p)
+            elif os.path.lexists(os.path.join(data, f)) and not p:
+                log("[update] skipped %s (it is not an ordinary file inside data/)" % f)
         for s in hit:
-            m = os.path.join(done, s)
-            if os.path.exists(m):
+            m = safe_member(done, s)
+            if m and os.path.exists(m):
                 os.remove(m)
         log("[update] %d data file(s) changed since %s: re-running %s" % (len(files), j.get("from_version", "?"),
                                                                        ", ".join(sorted(hit)) or "no build step"))
@@ -298,6 +349,7 @@ def running_from(root):
     if not psapi.EnumProcesses(arr, ctypes.sizeof(arr), ctypes.byref(got)):
         return []
     base = os.path.normcase(os.path.realpath(root)) + os.sep
+    dl = base + os.path.normcase(DL) + os.sep      # (s184) the new release's own installer + window run from <root>/.kairi-download/
     me = os.getpid()
     out = []
     for pid in arr[: got.value // ctypes.sizeof(wintypes.DWORD)]:
@@ -311,7 +363,7 @@ def running_from(root):
             n = wintypes.DWORD(1024)
             if k32.QueryFullProcessImageNameW(wintypes.HANDLE(h), 0, buf, ctypes.byref(n)):
                 p = os.path.normcase(os.path.realpath(buf.value))
-                if p.startswith(base):
+                if p.startswith(base) and not p.startswith(dl):
                     out.append(buf.value)
         finally:
             k32.CloseHandle(wintypes.HANDLE(h))

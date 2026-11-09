@@ -3,13 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'">
 <title>Legend of Kairi</title>
 <link rel="stylesheet" href="app.css">
 </head>
-<body>
+<body class="intro">
 <canvas id="bg" aria-hidden="true"></canvas>
 
 <main class="panel" id="panel">
+  <i class="orn tl"></i><i class="orn tr"></i><i class="orn bl"></i><i class="orn br"></i><i class="sheen" id="sheen"></i>
   <!-- ============================================================ setup -->
   <section class="screen" id="s-setup">
     <h1>Welcome to Legend of Kairi</h1>
@@ -25,6 +27,7 @@
         <button class="row" id="r-upd" data-help="h-upd"><span class="lbl">Update an existing install</span><span class="val" id="v-upd">Choose...</span></button>
         <button class="row" id="r-credits" data-help="h-credits"><span class="lbl">Credits</span><span class="val">View</span></button>
         <p class="note" id="setup-note">Everything the installer writes goes into one folder:<br><span id="root-path" class="path"></span></p>
+        <svg class="ptr" id="ptr" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21C5 15.5 2.5 12 2.5 8.2A4.7 4.7 0 0 1 12 6.4a4.7 4.7 0 0 1 9.5 1.8C21.5 12 19 15.5 12 21z"/></svg>
       </div>
       <div class="help">
         <div class="hp" id="h-sw">
@@ -59,6 +62,12 @@
   <!-- ============================================================ progress / done / failed -->
   <section class="screen" id="s-run" hidden>
     <h1 id="run-title">Installing Legend of Kairi</h1>
+    <div class="card" id="card" hidden>
+      <div class="wm"><svg class="wmh" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21C5 15.5 2.5 12 2.5 8.2A4.7 4.7 0 0 1 12 6.4a4.7 4.7 0 0 1 9.5 1.8C21.5 12 19 15.5 12 21z"/></svg><span class="wt">Legend of Kairi</span></div>
+      <div class="wsub" id="wm-sub">is ready</div>
+      <button class="btn playbtn" id="b-play" type="button">Play</button>
+      <div class="wq" id="play-q" hidden>You can close this window.</div>
+    </div>
     <p class="lead" id="run-lead">You can keep using your PC. If you close this window the install stops, and the next
       time it carries on where it stopped.</p>
     <div class="now" id="now"></div>
@@ -68,16 +77,19 @@
     <div class="err" id="err" hidden></div>
     <div class="play" id="play" hidden>
       <h2>Ready to play</h2>
-      <p><b>Play Legend of Kairi</b> &ndash; plays on your own. Start it from the folder below (or make a shortcut to it).</p>
-      <p><b>Play Legend of Kairi Multiplayer</b> &ndash; plays with friends. The first time, right-click it, choose Edit, and put your
-        friend's Tailscale address on the marked line (for example 100.101.102.103:7790). Everybody needs the very same Legend of Kairi
-        release, and Windows may ask to let the game through the firewall (UDP port 7790): say yes.</p>
+      <p><b>Legend of Kairi</b> &ndash; plays on your own. Start it with the <b>Legend of Kairi</b> shortcut in the folder below (it
+        starts Play Legend of Kairi.bat), or press <b>Add a desktop shortcut</b>.</p>
+      <p><b>Legend of Kairi Multiplayer</b> &ndash; plays with friends. The first time, right-click <b>Play Legend of Kairi Multiplayer.bat</b>
+        (the .bat file, not the shortcut), choose Edit, and put your friend's Tailscale address on the marked line (for example
+        100.101.102.103:7790). Then start it with the <b>Legend of Kairi Multiplayer</b> shortcut or the .bat. Everybody needs the very
+        same Legend of Kairi release, and Windows may ask to let the game through the firewall (UDP port 7790): say yes.</p>
       <p class="note" id="play-note"></p>
     </div>
     <div class="actions">
       <button class="btn" id="b-log">Show details</button>
       <button class="btn" id="b-logs">Open logs</button>
       <button class="btn" id="b-folder" hidden>Open the game folder</button>
+      <button class="btn" id="b-shortcut" type="button" hidden>Add a desktop shortcut</button>
       <span class="grow"></span>
       <button class="btn" id="b-back" hidden>Back</button>
       <button class="btn warn" id="b-cancel">Stop</button>
@@ -94,7 +106,15 @@
   </section>
 </main>
 
+<aside class="waitcard" id="wait" hidden title="Click for the next tip">
+  <div class="wk">Now</div><div class="wnow" id="wnow"></div>
+  <div class="wk tipk">While you wait</div><div class="wtip" id="wtip"></div>
+</aside>
 <div class="ver" id="ver"></div>
+<button class="calm" id="calm" aria-pressed="false" title="Fewer moving lights, lowest frame rate">Calm</button>
+<button class="sfx-mute" id="sfx-mute" type="button" aria-label="Sounds on or off" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor"/><path class="x" d="M16 9l5 6M21 9l-5 6"/><path d="M16.5 8.5a5 5 0 0 1 0 7" opacity=".8"/></svg></button>
+<script src="sfx.js"></script>
 <script src="app.js"></script>
+<script src="feel.js"></script>
 </body>
 </html>

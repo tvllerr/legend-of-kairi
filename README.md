@@ -44,14 +44,15 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 ## Install
 
-1. Download `Legend-of-Kairi-0.1.3-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
+1. Download `Legend-of-Kairi-0.1.4-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
 2. Right-click it > **Extract All...** into an empty folder (not inside the Savage Wind folder).
 3. Double-click **Install Legend of Kairi.cmd**.
 4. Click **Choose...** next to *Savage Wind folder* and pick the `Savage Wind` folder (the one with `extracted` inside).
    Kingdom Hearts is found automatically from Steam.
 5. Click **Install** and wait for the finish screen (about 15 minutes).
 
-**Updating from an older version:** unzip the new release, double-click **Install Legend of Kairi.cmd**, choose
+**Updating:** from 0.1.4 on, double-click **Update Legend of Kairi.bat** in your install folder: it fetches the newest
+release, checks its signature and opens the installer on Update. From 0.1.0-0.1.3 (once, by hand): unzip the new release, double-click **Install Legend of Kairi.cmd**, choose
 **Update an existing install** and pick your old Legend of Kairi folder. Only what changed is rebuilt (seconds to a few
 minutes). Your saves and the friend IPs in your Multiplayer launcher are kept.
 
@@ -68,7 +69,7 @@ minutes). Your saves and the friend IPs in your Multiplayer launcher are kept.
 > Multiplayer works, but it is still glitchy and needs more development: enemy positions and copied enemy attacks can be
 > late or out of sync, and a hit may not land now and then. Please report what you see.
 
-- Every player needs this **exact same release** (0.1.1, 0.1.2 and 0.1.3 play together; 0.1.0 can't join them).
+- Every player needs this **exact same release** (0.1.1 to 0.1.4 play together; 0.1.0 can't join them).
 - Players connect directly over UDP port 7790. Easiest: everyone installs [Tailscale](https://tailscale.com) and joins
   the same tailnet.
 - Right-click **Play Legend of Kairi Multiplayer.bat** > **Edit**. On the `set PEERS` line, replace
@@ -94,7 +95,10 @@ minutes). Your saves and the friend IPs in your Multiplayer launcher are kept.
 
 ## Download check
 
-`Legend-of-Kairi-0.1.3-alpha.zip` sha256: `0eefc4028c95f3d4bb3894940e180ced42716f1118034916694acac2a1e2b8f0`
+`Legend-of-Kairi-0.1.4-alpha.zip` sha256: `e4ee7470e9e8cd7b444475c505ee268ddc6a4683450d5a702633d8732e0c7ba0`
+
+Updates fetched by **Update Legend of Kairi.bat** are checked against the author's signature
+(`Legend-of-Kairi-<version>.zip.sig`, Ed25519) before they are downloaded.
 
 ## Source code
 

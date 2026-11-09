@@ -52,3 +52,4 @@ tools_s119/hudbake/obj/
 
 # vgmstream-cli (fetched by tools/sorabuild/sounds/fetch_vgmstream.py, never committed)
 /tools/sorabuild/sounds/bin/
+.installer-ui/

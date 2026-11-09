@@ -9,6 +9,8 @@
        and (s183) a third one for bug reports:
          Make bug report.bat                    zips the logs + manifest + launchers + savagewind.ini + a systeminfo.txt (Windows, GPU,
                                                 driver, RAM) into "Legend of Kairi bug report <date-time>.zip" on the Desktop (no saves, no game files)
+       and (s185) two shortcuts with the Legend of Kairi icon that start the first two: "Legend of Kairi.lnk", "Legend of Kairi
+       Multiplayer.lnk" (shortcut.ps1; a failure is logged and never stops the install)
     Re-running overwrites bin/ and the launchers; saves (the Savage Wind folder's save\\), data/ and logs/ are never touched.
 
 The mod finds its files through SORA_ROOT (runtime/sora_path.h maps every "D:/SoraBotW/..." default to <SORA_ROOT>/...), the mod DLL
@@ -20,6 +22,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RELEASE = os.path.normpath(os.path.join(HERE, "..", ".."))      # the unpacked release folder (bin/, manifest.json)
@@ -32,6 +36,7 @@ NEEDED = ("savagewind.exe", "sora_mod.dll")
 # (s183) the body files the launcher insists on (under data/): without any of them the HUD can work while the KH2 body is missing
 KEY_FILES = ("sora_model.bin", "sora_pose.bin", "sora_motion.bin", "forms/roxas_model.bin", "ragmap/sora.bin", "hud/camp_seq.bin")
 BUILD_ID_FILE = "BUILD_ID"
+CHCP = r'"%SystemRoot%\System32\chcp.com" 65001 >nul'    # (s185 sec) full path: never a chcp from the current directory
 
 
 def _sha256(p):
@@ -53,7 +58,7 @@ def launcher_text(multi, sw_dir, peers=PLACEHOLDER):
     title = "Multiplayer" if multi else "Solo"
     L = ["@echo off"]
     if not sw.isascii():
-        L += ["chcp 65001 >nul"]
+        L += [CHCP]
     L += ["rem Legend of Kairi - %s. Written by the installer; running the installer again rewrites this file." % title,
           "rem (it keeps the friend's address below). Saves are the ones Savage Wind already uses (its save folder)."]
     if multi:
@@ -131,7 +136,7 @@ def launcher_text(multi, sw_dir, peers=PLACEHOLDER):
           "",
           'cd /d "%GAME%" || (pause & exit /b 1)',
           "rem the child cmd reads EXE and LOGS from its environment: the path never sits on the start line, so & ^ ( ) in it cannot break it",
-          'start "Legend of Kairi - %s" /min cmd /c ""%%%%EXE%%%%" extracted > "%%%%LOGS%%%%\\last.log" 2>&1"' % title]
+          'start "Legend of Kairi - %s" /min "%%SystemRoot%%\\System32\\cmd.exe" /c ""%%%%EXE%%%%" extracted > "%%%%LOGS%%%%\\last.log" 2>&1"' % title]
     L += ["exit /b 0",
           "",
           ":running",
@@ -277,8 +282,75 @@ try {
 foreach ($n in $notes) { Add-Line ('note: ' + $n) }
 $si | Set-Content -LiteralPath (Join-Path $stage 'systeminfo.txt') -Encoding UTF8
 
+# (s185 sec) privacy scrub: every file in the report folder is read as bytes (Latin-1 keeps the bytes as they are, so UTF-8 text round-trips),
+# friends' IPs, Windows user names and this PC's name are replaced, and a file that cannot be scrubbed is LEFT OUT of the zip (never shipped as it is).
+$scrubExt = @('.log', '.txt', '.bat', '.cmd', '.ps1', '.json', '.ini', '.md', '.csv', '.xml', '.cfg', '.conf', '.yaml', '.yml')
+$L1 = [Text.Encoding]::GetEncoding(28591)
+$rxOpt = [Text.RegularExpressions.RegexOptions]::IgnoreCase
+$rxIp4 = New-Object Text.RegularExpressions.Regex('(?<!\d)(?<!\d\.)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d)(?!\.\d)')
+$rxIp6a = New-Object Text.RegularExpressions.Regex('(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:])')
+$rxIp6b = New-Object Text.RegularExpressions.Regex('(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){2,7}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,5})?(?![0-9A-Fa-f:])')
+$rxIp6c = New-Object Text.RegularExpressions.Regex('(?<![0-9A-Fa-f:])fe80::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6})?(?:%\w+)?', $rxOpt)
+$rxUsers = New-Object Text.RegularExpressions.Regex('([\\/]Users[\\/]+)[^\\/\r\n"<>|:*?]+', $rxOpt)
+$rxJoin1 = New-Object Text.RegularExpressions.Regex('(\bjoined:[ \t]*)(?!<player>)([^\r\n]*?)(?=[ \t]+(?:(?:\d{1,3}\.){3}\d{1,3}|\[[0-9A-Fa-f:]+\])(?::\d+)?[ \t]*\r?$)', ([Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [Text.RegularExpressions.RegexOptions]::Multiline))
+$rxJoin2 = New-Object Text.RegularExpressions.Regex('(\bjoined:[ \t]*)(?!<player>)[^\s]+', $rxOpt)
+$ip4Eval = [Text.RegularExpressions.MatchEvaluator]{ param($m) if ($m.Value -eq '127.0.0.1' -or $m.Value -eq '0.0.0.0') { $m.Value } else { '<ip>' } }
+function Latin1-Of([string]$s) { return $L1.GetString([Text.Encoding]::UTF8.GetBytes($s)) }
+$wholeWords = New-Object System.Collections.ArrayList
+foreach ($pair in @(@($env:USERNAME, '<user>'), @($env:COMPUTERNAME, '<pc>'))) {
+    $n = [string]$pair[0]
+    if ($n -and $n.Trim().Length -ge 3) {
+        $n = $n.Trim()
+        foreach ($variant in @($n, (Latin1-Of $n))) {
+            $rx = New-Object Text.RegularExpressions.Regex(('(?<![A-Za-z0-9_])' + [regex]::Escape($variant) + '(?![A-Za-z0-9_])'), $rxOpt)
+            [void]$wholeWords.Add(@($rx, $pair[1]))
+        }
+    }
+}
+function Scrub-Text([string]$t) {
+    $t = $rxJoin1.Replace($t, '${1}<player>')    # the player name before the address
+    $t = $rxJoin2.Replace($t, '${1}<player>')
+    $t = $rxUsers.Replace($t, '${1}<user>')
+    $t = $rxIp4.Replace($t, $ip4Eval)
+    $t = $rxIp6a.Replace($t, '<ip>')
+    $t = $rxIp6b.Replace($t, '<ip>')
+    $t = $rxIp6c.Replace($t, '<ip>')
+    foreach ($w in $wholeWords) { $t = $w[0].Replace($t, $w[1]) }
+    return $t
+}
+$scrubNotes = New-Object System.Collections.ArrayList
+$scrubFailed = $false
+$nScrubbed = 0
+foreach ($f in @(Get-ChildItem -LiteralPath $stage -Recurse -File -ErrorAction SilentlyContinue)) {
+    $rel = $f.FullName.Substring($stage.Length + 1)
+    $ok = $false
+    try {
+        if ($scrubExt -contains $f.Extension.ToLowerInvariant()) {
+            $bytes = [IO.File]::ReadAllBytes($f.FullName)
+            $hasNul = [Array]::IndexOf($bytes, [byte]0) -ge 0
+            $u16 = $bytes.Length -ge 2 -and (($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) -or ($bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF))
+            if (-not ($hasNul -and $u16)) {
+                $t = $L1.GetString($bytes)
+                # (s185 review) a log with stray NUL bytes (a crash or power cut in the middle of a write) is the one the report is
+                # for: the NULs are dropped and the rest is scrubbed like any text, instead of leaving the whole log out
+                if ($hasNul) { $t = $t.Replace([string][char]0, ''); [void]$scrubNotes.Add('NUL bytes removed: ' + $rel) }
+                $t2 = Scrub-Text $t
+                if ($hasNul -or ($t2 -cne $t)) { [IO.File]::WriteAllBytes($f.FullName, $L1.GetBytes($t2)) }
+                $ok = $true
+                $nScrubbed++
+            } else { [void]$scrubNotes.Add('left out (not plain text): ' + $rel) }
+        } else { [void]$scrubNotes.Add('left out (not a text file type): ' + $rel) }
+    } catch { [void]$scrubNotes.Add('left out (could not be scrubbed: ' + $_.Exception.Message + '): ' + $rel) }
+    if (-not $ok) {
+        try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } catch { $scrubFailed = $true }
+    }
+}
+[void]$scrubNotes.Insert(0, 'privacy scrub: ' + $nScrubbed + ' text files scrubbed (IP addresses -> <ip>, Windows user / PC name and player names -> <user> <pc> <player>)')
+$scrubNotes | Set-Content -LiteralPath (Join-Path $stage 'scrub_notes.txt') -Encoding UTF8
+
 $code = 0
 try {
+    if ($scrubFailed) { throw 'a file could not be scrubbed or removed, so no zip was made' }
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force -ErrorAction Stop
     Write-Host ''
     Write-Host 'Done. The bug report is here:'
@@ -302,7 +374,7 @@ def bugreport_text(sw_dir):
     sw = _bat_path(sw_dir)
     L = ["@echo off"]
     if not sw.isascii():
-        L += ["chcp 65001 >nul"]
+        L += [CHCP]
     L += ["rem Legend of Kairi - Make bug report. Written by the installer; running the installer again rewrites this file.",
           "rem Double-click it after something went wrong: it puts ONE zip on your Desktop (game logs, install logs, the launchers,",
           "rem savagewind.ini and a systeminfo.txt with Windows / graphics card / driver / RAM). No saves, no game files.",
@@ -310,7 +382,7 @@ def bugreport_text(sw_dir):
           'set "SORA_ROOT=%~dp0"',
           'set "GAME=' + sw + '"',
           r'set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"',
-          'if not exist "%PS%" set "PS=powershell.exe"',
+          r'if not exist "%PS%" set "PS=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"',
           'if not exist "%~dp0' + BUGREPORT_PS1 + '" (',
           "    echo " + BUGREPORT_PS1 + " is missing next to this file. Run the Legend of Kairi installer again.",
           "    pause",
@@ -378,6 +450,72 @@ def write_build_id(root, release, log=print):
     return bid
 
 
+# (s185) Windows shortcuts with the Legend of Kairi icon next to the launchers (and, only when the player asks, on the Desktop).
+# The .lnk files start the .bat files above (the friend's address still lives in the Multiplayer .bat). Window style: NORMAL, not
+# minimized: a launcher that stops on a pre-check ("files are incomplete", "put your friend's address here", "already running") shows
+# its message and waits for a key; when the checks pass it hands over with `start /min` and closes at once, so the console only flashes.
+SHORTCUTS = (("Legend of Kairi.lnk", SOLO, "Play Legend of Kairi on your own"),
+             ("Legend of Kairi Multiplayer.lnk", MULTI, "Play Legend of Kairi with friends"))
+DESKTOP_LNK = SHORTCUTS[0][0]
+ICON_REL = ("tools", "installer", "host", "kairi.ico")     # our own heart-in-stained-glass icon (also the window program's); ships in tools/
+SHORTCUT_PS1 = os.path.join(HERE, "shortcut.ps1")
+POWERSHELL = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+
+def shortcut_icon(root):
+    p = os.path.join(root, *ICON_REL)
+    return p if os.path.isfile(p) else ""
+
+
+def make_shortcut(folder, name, target, workdir, icon="", desc=""):
+    """one .lnk via shortcut.ps1 (WScript.Shell). folder "" = the player's real Desktop (resolved by the shell). Every path travels in
+    the environment, nothing is pasted into a command. -> the written path; raises RuntimeError (one line) when it could not."""
+    if sys.platform != "win32":
+        raise RuntimeError("shortcuts are made on Windows only")
+    sysroot = os.environ.get("SystemRoot", r"C:\Windows")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHON", "KAIRI_LNK_"))}
+    env["PATH"] = os.pathsep.join([os.path.join(sysroot, "System32"), sysroot, os.path.join(sysroot, "System32", "WindowsPowerShell", "v1.0")])
+    env.update({"KAIRI_LNK_DIR": os.path.normpath(folder) if folder else "", "KAIRI_LNK_NAME": name, "KAIRI_LNK_TARGET": os.path.normpath(target),
+                "KAIRI_LNK_WD": os.path.normpath(workdir), "KAIRI_LNK_ICON": os.path.normpath(icon) if icon else "", "KAIRI_LNK_DESC": desc})
+    try:
+        r = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", SHORTCUT_PS1],
+                           env=env, cwd=sysroot, stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError("PowerShell did not run (%s)" % e)
+    out = r.stdout.decode("utf-8", "replace").strip()
+    if r.returncode or not out:
+        err = r.stderr.decode("mbcs" if sys.platform == "win32" else "utf-8", "replace").strip().splitlines()
+        raise RuntimeError((err[-1] if err else "exit %d" % r.returncode)[:300])
+    return out
+
+
+def install_shortcuts(root, log=print):
+    """the two shortcuts in the install folder; a failure is logged (one line) and never stops the install. -> the paths made"""
+    made = []
+    icon = shortcut_icon(root)
+    for name, bat, desc in SHORTCUTS:
+        try:
+            made.append(make_shortcut(root, name, os.path.join(root, bat), root, icon, desc))
+        except RuntimeError as e:
+            log("[game] could not make the shortcut %s (%s): start %s instead" % (name, e, bat))
+    if made:
+        log("[game] shortcuts: %s" % ", ".join(os.path.basename(p) for p in made))
+    return made
+
+
+def desktop_shortcut(root, desktop=""):
+    """(s185) the done screen's "Add a desktop shortcut": "Legend of Kairi.lnk" on the Desktop -> the solo launcher of <root>.
+    desktop "" = the real one (tests pass a folder). -> the path; raises RuntimeError in plain words."""
+    bat = os.path.join(root, SOLO)
+    if not os.path.isfile(bat):
+        raise RuntimeError("%s was not found in:\n%s" % (SOLO, root))
+    try:
+        return make_shortcut(desktop, DESKTOP_LNK, bat, root, shortcut_icon(root), SHORTCUTS[0][2])
+    except RuntimeError as e:
+        raise RuntimeError("Could not add the shortcut to your desktop (%s). You can start the game from the folder instead." % e)
+
+
 def install_game_side(root, sw_dir, log=print, release=RELEASE):
     """-> {"solo": path, "multi": path, "bin": path}. Raises RuntimeError with a plain-words message."""
     root = os.path.abspath(root)
@@ -422,5 +560,10 @@ def install_game_side(root, sw_dir, log=print, release=RELEASE):
     _write_bat(bug, bugreport_text(sw_dir))
     _write_bat(os.path.join(root, BUGREPORT_PS1), bugreport_ps_text())
     log("[game] launchers: %s, %s, %s (+ %s)" % (SOLO, MULTI, BUGREPORT, BUGREPORT_PS1))
+    try:
+        lnks = install_shortcuts(root, log)
+    except Exception as e:  # noqa: BLE001 - (s185) a shortcut is a nicety: it never fails the install
+        log("[game] could not make the shortcuts (%s): start the .bat files instead" % e)
+        lnks = []
     write_build_id(root, release, log)
-    return {"solo": solo, "multi": multi, "bugreport": bug, "bin": dst, "peers_set": peers != PLACEHOLDER}
+    return {"solo": solo, "multi": multi, "bugreport": bug, "bin": dst, "peers_set": peers != PLACEHOLDER, "shortcuts": lnks}

@@ -17,6 +17,7 @@ Paths: <root> defaults to the folder above tools/ (the unpacked friend zip); the
 import argparse
 import collections
 import hashlib
+import hmac
 import http.server
 import json
 import mimetypes
@@ -50,6 +51,7 @@ sys.path.insert(0, SBDIR)
 sys.path.insert(0, HERE)
 import gameside   # noqa: E402  (the last step: bin/ + the two launchers)
 import update     # noqa: E402  (s183: update an older install in place)
+import uisfx      # noqa: E402  (s184: menu sounds from the player's own KH2)
 try:
     import sorabuild as _sbmain   # EST (seconds per step) for the progress weights
     EST = dict(_sbmain.EST)
@@ -272,8 +274,8 @@ def recover_after_bad_verify(root, bad_lines, prev_bad=None):
             files.add(m.group(1))
     removed = 0
     for rel in sorted(files):
-        p = os.path.normpath(os.path.join(root, "data", rel))
-        if os.path.commonpath([p, os.path.normpath(os.path.join(root, "data"))]) != os.path.normpath(os.path.join(root, "data")):
+        p = update.safe_member(os.path.join(root, "data"), rel)      # (s185 sec) not through a junction / symlink
+        if not p:
             continue
         try:
             os.remove(p)
@@ -282,7 +284,7 @@ def recover_after_bad_verify(root, bad_lines, prev_bad=None):
             pass
     if not files:
         done = os.path.join(root, "work", "done")
-        if os.path.isdir(done):
+        if os.path.isdir(done) and not update.is_reparse(done):
             for n in os.listdir(done):
                 try:
                     os.remove(os.path.join(done, n))
@@ -299,7 +301,7 @@ def update_after_bad_verify(root, msg):
     """(s183) verify failed after an update: old work/ files may not fit the new steps, so the next Update rebuilds every step in that
     folder (the KH2 extract stays). -> the message for the player"""
     done = os.path.join(root, "work", "done")
-    if os.path.isdir(done):
+    if os.path.isdir(done) and not update.is_reparse(done):
         for n in os.listdir(done):
             if not n.startswith("_"):
                 try:
@@ -327,6 +329,7 @@ class State:
         self.status = "setup"          # setup | running | verifying | done | failed | cancelled
         self.sw = {"path": "", "ok": False, "msg": "", "info": {}}
         self.kh2 = {"path": "", "ok": False, "msg": "", "info": {}, "auto": False}
+        self.sfx, self.sfx_busy = False, False      # s184: menu sounds extracted from the player's KH2 (uisfx), served as /sfx/<name>
         self.log, self.seq = collections.deque(maxlen=600), 0
         self.proc, self.t0, self.t1 = None, None, None
         self.gen, self.thread, self.job = 0, None, make_job()     # gen: a Stop + new Install never mixes two runs
@@ -335,6 +338,7 @@ class State:
         self.phase_state = {k: "wait" for k, _ in PHASES}
         self.error, self.build_id = "", ""
         self.launchers = {}
+        self.desktop_dir = ""          # (s185) tests only: where /api/shortcut puts the .lnk instead of the real Desktop (never set by the page)
         self.mode = "install"          # install | update (s183: the build runs in self.upd's folder)
         self.upd = {"path": "", "ok": False, "msg": "", "info": {}}
         self.settings_file = os.path.join(self.root, ".installer-ui", "choices.json")
@@ -368,6 +372,10 @@ class State:
             if info.get("kh2") and check_kh2(info["kh2"])[0]:
                 self.set_kh2(info["kh2"])
 
+    def in_download(self):
+        """(s184) this release sits in <older install>/.kairi-download/ (unpacked there by Update.bat)"""
+        return (os.sep + update.DL + os.sep).lower() in (os.path.normpath(self.root) + os.sep).lower()
+
     def updating(self):
         return self.upd["ok"] and bool(self.upd["path"])
 
@@ -392,6 +400,31 @@ class State:
     def set_kh2(self, p, auto=False):
         ok, msg, info = check_kh2(p) if p else (False, "", {})
         self.kh2 = {"path": p, "ok": ok, "msg": msg, "info": info, "auto": auto}
+        self.sfx = bool(ok and uisfx.ready(self.root) and uisfx.cached(self.root, info["img"]))
+        if ok and not self.sfx:
+            self.start_sfx(info["img"])
+
+    def start_sfx(self, img):
+        """s184: extract the menu sounds in a background thread (about 1 s; never while the build runs); any failure = silent"""
+        if self.sfx_busy or self.status in ("running", "verifying"):
+            return
+        self.sfx_busy = True
+        uisfx.JOB = self.job
+
+        def work():
+            try:
+                ok = uisfx.build(self.root, img, self.kit, log=lambda s: self.add_log("[sounds] " + s))
+                if self.kh2.get("info", {}).get("img") == img:
+                    self.sfx = bool(ok)
+            except Exception:
+                pass
+            finally:
+                self.sfx_busy = False
+                # (s184 review) the KH2 folder changed while we worked: do the current one (else sounds stay off all session)
+                cur = self.kh2.get("info", {}).get("img") if self.kh2.get("ok") else None
+                if cur and cur != img and not self.sfx:
+                    self.start_sfx(cur)
+        threading.Thread(target=work, daemon=True).start()
 
     def add_log(self, line):
         with self.lock:
@@ -423,8 +456,8 @@ class State:
             el = (time.time() - self.t0) if self.t0 and self.status in ("running", "verifying") else \
                 ((self.t1 - self.t0) if self.t0 and self.t1 else 0)
             eta = self._eta(el) if self.status in ("running", "verifying") else None
-            return {"version": VERSION, "status": self.status, "root": self.dest(), "sw": self.sw, "kh2": self.kh2,
-                    "mode": self.mode, "upd": self.upd, "updating": self.updating(),
+            return {"version": VERSION, "status": self.status, "root": self.dest(), "sw": self.sw, "kh2": self.kh2, "sfx": self.sfx,
+                    "mode": self.mode, "upd": self.upd, "updating": self.updating(), "dlonly": self.in_download(),
                     "disk": self.disk(), "resumable": self.resumable, "phases": phases, "frac": round(frac, 4),
                     "elapsed": round(el), "eta": None if eta is None else round(eta), "error": self.error,
                     "build_id": self.build_id, "launchers": self.launchers, "seq": self.seq, "lines": lines, "sw_version": SW_VERSION}
@@ -490,6 +523,11 @@ class State:
             if not self.disk()["ok"]:
                 return "not enough free disk space"
             self.mode = "update" if self.updating() else "install"
+            if self.mode == "install" and self.in_download():
+                # (s184 review) Update.bat unpacked this release inside an older install: a full install here would be deleted by
+                # the next Update.bat; it may only update its parent folder
+                return (self.upd["msg"] or "This copy was downloaded by Update Legend of Kairi.bat and can only update the folder "
+                        "it was downloaded into.")
             if self.mode == "update":
                 d = self.upd["path"]
                 ok, msg, _ = update.detect(d, RELEASE, VERSION)      # again: the folder may have changed since it was picked
@@ -691,7 +729,7 @@ class State:
             self.resumable = True
         if p:
             if sys.platform == "win32":
-                subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True,
+                subprocess.run([os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe"), "/T", "/F", "/PID", str(p.pid)], capture_output=True,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             else:
                 p.kill()
@@ -699,6 +737,46 @@ class State:
 
 
 # ------------------------------------------------------------------------------------------------ http
+def play_solo(st, popen=None):
+    """(s185) the Play button: start the solo launcher of the finished install. Returns {} or {"error": plain words}.
+    The path is fixed here (nothing from the request). The game is NOT put into the installer's kill-on-close job (only the build
+    processes are, via job_add), so it keeps running when the installer window closes."""
+    if st.status != "done":
+        return {"error": "The install is not finished yet."}
+    dest = st.dest()
+    bat = os.path.join(dest, gameside.SOLO)
+    if not os.path.isfile(bat):
+        return {"error": "%s was not found in:\n%s" % (gameside.SOLO, dest)}
+    if sys.platform != "win32" and popen is None:
+        return {"error": "Starting the game from here only works on Windows."}
+    cmd = os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "System32", "cmd.exe")
+    try:
+        # (s185 review) by its fixed NAME from cwd=dest (".\name": cmd does not always search the current folder), never by full
+        # path: cmd /c "<path>" drops the quotes when the path holds & or ^ (an install in "D:\a & b\..."), and then nothing starts
+        (popen or subprocess.Popen)([cmd, "/c", ".\\" + gameside.SOLO], cwd=dest, close_fds=True,
+                                    creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    except OSError as e:
+        return {"error": "Could not start the game: %s" % e}
+    return {}
+
+
+def add_desktop_shortcut(st):
+    """(s185) the done screen's "Add a desktop shortcut": "Legend of Kairi.lnk" on the player's Desktop (resolved by the shell, it may be
+    redirected to OneDrive) -> the solo launcher of the finished install. Nothing from the request is used; the folder is fixed here
+    (st.desktop_dir exists only for the tests: the page has no way to set it). Returns {"ok": True} or {"error": plain words}."""
+    if st.status != "done":
+        return {"error": "The install is not finished yet."}
+    if sys.platform != "win32" and not getattr(st, "desktop_dir", ""):
+        return {"error": "Shortcuts can only be made on Windows."}
+    try:
+        p = gameside.desktop_shortcut(st.dest(), getattr(st, "desktop_dir", "") or "")
+    except RuntimeError as e:
+        return {"error": str(e)}
+    if hasattr(st, "add_log"):
+        st.add_log("[installer] desktop shortcut: %s" % p)
+    return {"ok": True}
+
+
 def make_handler(st, token):
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -713,15 +791,36 @@ def make_handler(st, token):
             self.end_headers()
             self.wfile.write(b)
 
+        def _host_ok(self):
+            """(s185 sec) only 127.0.0.1:<port> / localhost:<port> as Host (a DNS-rebinding page gets 403, also for the static files)"""
+            port = self.server.server_address[1]
+            h = (self.headers.get("Host") or "").strip().lower()
+            return h in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+        def _tok_ok(self):
+            return hmac.compare_digest((self.headers.get("X-Token") or "").encode("utf-8", "replace"), token.encode("utf-8"))
+
         def do_GET(self):
+            if not self._host_ok():
+                return self._send(403, {"error": "host"})
             u = urllib.parse.urlparse(self.path)
             if u.path.startswith("/api/"):
-                if self.headers.get("X-Token") != token:
+                if not self._tok_ok():
                     return self._send(403, {"error": "token"})
                 if u.path == "/api/state":
                     q = urllib.parse.parse_qs(u.query)
                     return self._send(200, st.snapshot(int(q.get("since", ["0"])[0])))
                 return self._send(404, {"error": "no such api"})
+            if u.path.startswith("/sfx/"):      # s184: only the 4 menu sounds, same token rule as /api/
+                if not self._tok_ok():
+                    return self._send(403, {"error": "token"})
+                nm = u.path[5:]
+                if not st.sfx or nm not in uisfx.NAMES:
+                    return self._send(404, b"not found", "text/plain")
+                try:
+                    return self._send(200, open(os.path.join(uisfx.sfx_dir(st.root), nm + ".wav"), "rb").read(), "audio/wav")
+                except OSError:
+                    return self._send(404, b"not found", "text/plain")
             rel = "index.html" if u.path in ("/", "") else u.path.lstrip("/")
             p = os.path.normpath(os.path.join(UI, rel))
             if os.path.commonpath([p, UI]) != UI or not os.path.isfile(p):
@@ -732,7 +831,9 @@ def make_handler(st, token):
             self._send(200, open(p, "rb").read(), ctype)
 
         def do_POST(self):
-            if self.headers.get("X-Token") != token:
+            if not self._host_ok():
+                return self._send(403, {"error": "host"})
+            if not self._tok_ok():
                 return self._send(403, {"error": "token"})
             n = int(self.headers.get("Content-Length") or 0)
             try:
@@ -783,9 +884,19 @@ def make_handler(st, token):
                 what = body.get("what")
                 p = {"log": os.path.join(st.dest(), "work", "logs"), "root": st.dest(),
                      "licenses": os.path.join(st.root, "LICENSES")}.get(what)
-                if p and os.path.exists(p) and sys.platform == "win32":
-                    os.startfile(p)  # noqa: S606 - opens one of our own folders in Explorer
+                if what == "licenses" and not os.path.isdir(p):   # (s185) dev tree / a zip without the copy: the kit has them
+                    p = os.path.join(st.kit, "LICENSES")
+                if what == "log" and not os.path.isdir(p):        # no logs yet (nothing ran): the install folder
+                    p = st.dest()
+                if not p or not os.path.exists(p):
+                    return self._send(200, {"error": "That folder does not exist yet:\n%s" % (p or what)})
+                if sys.platform == "win32":
+                    os.startfile(os.path.normpath(p))  # noqa: S606 - opens one of our own folders in Explorer
                 return self._send(200, {})
+            if u == "/api/play":        # (s185) fixed path, only after a finished install; no request field is used
+                return self._send(200, play_solo(st))
+            if u == "/api/shortcut":    # (s185) the same rules: only when done, fixed paths, no request field is used
+                return self._send(200, add_desktop_shortcut(st))
             return self._send(404, {"error": "no such api"})
     return H
 
@@ -906,6 +1017,7 @@ def main():
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--browser", action="store_true", help="dev: open in the default browser, serve until Ctrl+C")
     ap.add_argument("--serve", action="store_true", help="dev: only serve (print the URL), until Ctrl+C")
+    ap.add_argument("--update", help="(s184, Update.bat) the older install to update: picked already, the player presses Update")
     a = ap.parse_args()
     root = os.path.abspath(a.root)
     if not root.isascii():   # (s178 S6) the mod and the build tools open files by their ANSI name
@@ -918,6 +1030,9 @@ def main():
         print("installer: another installer is already running on this folder", flush=True)
         return 0
     st = State(a)
+    if a.update:
+        st.set_upd(a.update)
+        st.add_log("[installer] Update.bat: updating %s" % st.upd["path"] if st.upd["ok"] else "[installer] Update.bat: %s" % st.upd["msg"])
     token = secrets.token_urlsafe(18)
     srv = Server(("127.0.0.1", a.port), make_handler(st, token))
     url = "http://127.0.0.1:%d/?t=%s" % (srv.server_address[1], token)
@@ -960,7 +1075,7 @@ def show_window(st, url):
     prof = os.path.join(st.root, ".installer-ui", "edge")
     subprocess.run([edge, "--app=" + url, "--user-data-dir=" + prof, "--inprivate", "--disable-extensions", "--disable-sync",
                     "--no-first-run", "--no-default-browser-check", "--window-size=1280,760", "--disable-features=Translate",
-                    "--hide-crash-restore-bubble"])
+                    "--hide-crash-restore-bubble", "--disable-background-networking", "--disable-default-apps"])
     return True
 
 
