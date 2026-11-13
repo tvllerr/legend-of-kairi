@@ -28,7 +28,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "fx"))
+sys.path.insert(0, os.path.join(HERE, ".."))
 import mkextra  # noqa: E402  (our own ADPCM decoder)
+import pesig    # noqa: E402  (s201: the pin also matches the exe with an Authenticode signature added, e.g. by Melty)
 
 
 def scd_audio_streams(d):
@@ -53,12 +55,15 @@ VGM_KNOWN = {"29df08c557ada8269c92a6abfe3886ad2f65849b0b26ba78a0819b363bbc5b85":
 
 def find_vgmstream(arg, any_build=False):
     """--vgmstream path, else sounds/bin/ (fetch_vgmstream.py). No PATH search: an unpinned build is refused unless
-    --vgmstream-any (dev, e.g. a Linux build on the Deck until its hash is pinned)."""
+    --vgmstream-any (dev, e.g. a Linux build on the Deck until its hash is pinned). (s201) The pinned exe with an Authenticode
+    signature added (Melty signs a mod's native files at install) is the pinned build too: pesig rebuilds the unsigned bytes."""
     for c in (arg, os.path.join(HERE, "bin", "vgmstream-cli.exe"), os.path.join(HERE, "bin", "vgmstream-cli")):
         if c and os.path.isfile(c):
             sha = hashlib.sha256(open(c, "rb").read()).hexdigest()
-            if sha in VGM_KNOWN:
-                print("vgmstream-cli: %s (%s)" % (c, VGM_KNOWN[sha]), flush=True)
+            hit = next(((k, how) for k in VGM_KNOWN for how in [pesig.matches(c, k)] if how), None)
+            if hit:
+                print("vgmstream-cli: %s (%s, pinned build%s)" % (c, VGM_KNOWN[hit[0]], ", signed" if hit[1] == "signed" else ""),
+                      flush=True)
             elif any_build:
                 print("vgmstream-cli: %s UNPINNED build (sha256 %s, --vgmstream-any)" % (c, sha), flush=True)
             else:

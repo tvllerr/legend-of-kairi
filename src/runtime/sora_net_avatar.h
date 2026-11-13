@@ -10,7 +10,7 @@
 // (mp4, slice 4) per peer slot k: its own AVS[k] state, actors loaded with k + 1 "/./" inserts ("/./", "/././", ...) so each
 // slot gets actors of its own; plate / ribbon / far cull / events per slot; a refused base Sora = only that slot not drawn.
 //   draw: sora_draw_actor_pose at the sampled feet / yaw (loopback: + 2 m to his right), weapon / blades / ghost
-//   hidden: no sample, faded out, remote NF_LOADING, local load / Game Over / menu (g_av_local_ok), > 150 m away
+//   hidden: no sample, faded out, remote NF_LOADING, local load / Game Over / menu (g_av_local_ok), > 150 m away, on another map (s191 sl->hidden)
 //   events: NET.inq (sora_net.h) replayed NET_INTERP_MS after arrival (in step with the pose), only while shown
 //   sounds of his motions: sora_sfx_motion over the sampled slot's clock (peer_trigger_ranges), at his feet
 //   name plate (Task 7): his HELLO name in KH2's sys font AV_PLATE_CM over his feet, through the exe's sora_hud_label
@@ -18,6 +18,7 @@
 #pragma once
 #include "sora_net_plate.h"
 #include "sora_net_ribbon.h"  // (mp2-rib: the remote swing ribbon core)
+#include "sora_net_act.h"     // (s209 step 2: which slots are attacks / the jump, for Melty's PLAYED note)
 
 #define AV_BODIES 9          // 0 Sora, 1..6 Valor..Anti, 7 Roxas, 8 Mickey (net_fill)
 #define AV_RESERVE 4         // draw actors a remote FORM body must leave free (base Sora's copy may take any free one)
@@ -59,6 +60,7 @@ static struct {
     int oid[OF_N][AV_OBODIES];  // outfit actor of (outfit, body 0..6): 0 untried, > 0 loaded, -1 given up
     int ofails[OF_N][AV_OBODIES]; ULONGLONG ofail_at[OF_N][AV_OBODIES];
     int skact[2], skfails[2]; ULONGLONG skfail_at[2];  // (s172) his skate rider actor: 0 Sora's, 1 Roxas'; 0 untried, > 0 loaded, -1 given up
+    int act_slot;           // (s209 step 2) his SNAP slot last frame he was drawn (-1: a bone / skate pose), for PLAYED
 } AVS[NET_MAX_PEERS];
 _Static_assert(OF_N == NET_OUTFITS, "mp4: sora_outfit.h OF_N must match the wire's NET_OUTFITS");
 
@@ -244,6 +246,12 @@ static void avatar_plate(int k, const float head_world[3], const char *name, flo
 typedef void (*AvTrailEx)(int, const float *, const float *, bool, int, int);
 static struct { NetRib r[NET_MAX_PEERS]; bool inited, tried; AvTrailEx ex; int nslots; } AVRIB;
 
+// (s223 rikufx) the party stand-ins draw their ribbons on the exe's top two slots (sora_pfx.h pfx_ribbon_slot); a remote player k whose
+// ribbons are 2 + 2k / 3 + 2k and who is shown wins that slot (only with 4 players on an 8-slot exe)
+static bool av_ribbon_busy(int r) {
+    int k = (r - 2) / 2;
+    return r >= 2 && k < NET_MAX_PEERS && AVS[k].shown;
+}
 static const void *avrib_hit(void *ud, int form, int slot, int blade) { (void)ud; return hit_slot_form(form, slot, blade); }
 static bool avrib_win(void *ud, int form, int slot, float clock) { (void)ud; return ffx_trail_win_form(form, slot, clock); }
 static void avrib_blade(void *ud, const void *row, float clock, const float feet[3], float yaw, float to_u, float out[6]) {
@@ -281,7 +289,7 @@ static void avrib_tick(int k, bool active, int body, int slot, float clock, cons
         if (ex_slot >= AVRIB.nslots) continue;  // (mp4: the exe has no ribbon slot for this one)
         // (the SNAP's kb ids are kb_alt() values = KB_TAB index + 1, not item ids; 0 / bad = the Kingdom Key's row)
         const int ka = b ? kb1 : kb0, item = ka > 0 && ka <= KB_N ? KB_TAB[ka - 1].id : 0;
-        const KbfxIds *d = g_kbfx ? kbfx_ids(kbfx_row(item)) : NULL;
+        const KbfxIds *d = g_kbfx ? kbfx_use(kbfx_row(item), NULL) : NULL;  // (s216: our Keyblades: own set or placeholder)
         AVRIB.ex(ex_slot, out[b].grip, out[b].tip, out[b].on, d ? d->trail : -1, g_kbfx_vflip ? 1 : 0);
     }
 }
@@ -371,11 +379,60 @@ static bool av_bone_draw(int id, int body, const PeerPose *q, const float feet[3
     return true;
 }
 
+// (s209) one remote Sora drawn this frame, for Melty's FRAME note (sora_net_note.h): drawn, animated (a real motion,
+// his skate board slot or his bone pose), on screen (a 1 m ball at his chest inside the camera's view; no camera: not
+// counted on screen); in a Melty room he also goes to the helper's puppet meter by his room peer id.
+static void av_note_drawn(const NetPeerSlot *sl, const float feet[3], bool animated, uint64_t now) {
+    if (!NET.melty) return;  // (s209 review 5: nobody reads the counts outside a Melty room)
+    g_nnote.drawn++;
+    if (animated) g_nnote.animated++;
+    float v[12], pr[4];
+    float c[3] = {feet[0], feet[1] + NNOTE_CHEST_M, feet[2]};  // (BotW units are metres)
+    if (linkpos_camera_view(v) && linkpos_camera_proj(pr) && nnote_on_screen(v, pr, c, NNOTE_BALL_M)) g_nnote.on_screen++;
+    if (NET.melty && nmelty_is(sl->ip, sl->port))
+        sora_melty_addon_puppet(nmelty_peer(sl->ip), feet[0], feet[1], feet[2], nnote_peer_moving(&sl->p, now, 1.0f, NNOTE_MOVING_MPS),
+                                -1.0f, (float)NET_INTERP_MS);
+}
+
+// (s209 step 2) a body's attack table (sora_params*.h ptya; SNAP body 0 Sora, 1..6 Valor..Anti = g_fform + 1, 7 Roxas,
+// 8 Mickey): the same table the sender's attack start played from (sora.c PTYA for that form)
+static const KhPtya *av_ptya(int body, int *n) {
+    switch (body) {
+        case 1: *n = VALOR_PTYA_N; return valor_ptya;
+        case 2: *n = WISDOM_PTYA_N; return wisdom_ptya;
+        case 3: *n = LIMIT_PTYA_N; return limit_ptya;
+        case 4: *n = MASTER_PTYA_N; return master_ptya;
+        case 5: *n = FINAL_PTYA_N; return final_ptya;
+        case 6: *n = ANTI_PTYA_N; return anti_ptya;
+        case 7: *n = ROXAS_PTYA_N; return roxas_ptya;
+        case 8: *n = MICKEY_PTYA_N; return mickey_ptya;
+        default: *n = NPTYA_MAX; return kh_ptya;
+    }
+}
+// (s209 step 2) PLAYED: his SNAP slot turned into an attack / the jump (by HIS body's table, as his ACT judged it) while he is
+// drawn here: played with that motion when this copy has it for the body drawn, else refused ("no motion"). Not on the frame
+// he (re)appears (fresh: nothing seen start), never for a bone or skate pose.
+static void av_note_played(int k, const NetPeerSlot *sl, int sent_body, int drawn_body, int slot, bool other_pose, bool fresh) {
+    int was = AVS[k].act_slot;
+    AVS[k].act_slot = other_pose ? -1 : slot;
+    if (!NET.melty || !nmelty_is(sl->ip, sl->port) || fresh || other_pose || slot == was) return;
+    int n, motion, kind = nact_kind(slot, av_ptya(sent_body, &n), n, &motion);
+    if (kind == NACT_NONE) return;
+    char what[48];
+    nact_detail(what, (int)sizeof what, motion);
+    if (av_mot(drawn_body, slot)) sora_melty_addon_played(nmelty_peer(sl->ip), nact_name(kind), SORA_MELTY_PLAYED, what);
+    else {
+        char why[64];
+        snprintf(why, sizeof why, "no motion %s here", what);
+        sora_melty_addon_played(nmelty_peer(sl->ip), nact_name(kind), SORA_MELTY_PLAYED_REFUSED, why);
+    }
+}
+
 // one remote player (slot k): pose, plate, ribbon, sounds, events, moving fx
 static void av_slot_tick(int k, uint64_t now) {
     NetPeerSlot *sl = &NET.slot[k];
     PeerPose q = sl->used ? peer_sample(&sl->p, now) : (PeerPose){0};
-    bool show = q.valid && q.alpha > 0 && !(q.flags & NF_LOADING) && !AVS[k].dead;
+    bool show = q.valid && q.alpha > 0 && !(q.flags & NF_LOADING) && !AVS[k].dead && !sl->hidden;  // (s191: on another map = not here)
     if (show) {
         float dx = q.feet[0] - g_body[0], dy = q.feet[1] - g_body[1], dz = q.feet[2] - g_body[2];
         float far_u = AV_FAR_CM * 0.01f * g_k;
@@ -391,7 +448,10 @@ static void av_slot_tick(int k, uint64_t now) {
             show = false;
         }
     }
-    if (!show) { avatar_slot_off(k); net_slot_drop(k); return; }
+    if (!show) {
+        if (NET.melty && sl->used && nmelty_is(sl->ip, sl->port)) sora_melty_addon_forget(nmelty_peer(sl->ip));  // (s209: the puppet meter)
+        avatar_slot_off(k); net_slot_drop(k); return;
+    }
     AVS[k].outfit = q.outfit, AVS[k].oact = 0;
     if (q.outfit > 0 && body < AV_OBODIES) {  // (mp4: his outfit; a refused / missing one = his normal body, same motions)
         int oa = avatar_outfit_actor(k, q.outfit, body);
@@ -450,6 +510,8 @@ static void av_slot_tick(int k, uint64_t now) {
     if (!bdrawn) AV.pose(id, slot, clock, feet, q.yaw, 0.01f * g_k);
     avrib_tick(k, !bone && !skate, body, slot, clock, feet, q.yaw, 0.01f * g_k, q.kb_chain, q.kb_alt, now);
     AVS[k].shown = true;
+    av_note_drawn(sl, feet, skate || m != NULL || bdrawn, now);  // (s209: Melty's FRAME note counts him; sora_net_note.h)
+    av_note_played(k, sl, q.body, body, q.slot, skflag || (q.flags & NF_BONEPOSE), fresh);  // (s209 step 2: Melty's PLAYED note)
     {
         float head[3] = {feet[0], feet[1] + AV_PLATE_CM * 0.01f * g_k, feet[2]};
         avatar_plate(k, head, sl->p.name, q.alpha);

@@ -42,7 +42,10 @@
 #include <malloc.h>
 #endif
 
+#include <zlib.h>
+
 #include "../../kernel.h"
+#include "../../paths.h"
 #include "../precompile.h"
 #include "../shader_archive.h"
 #include "shaders.h"
@@ -59,7 +62,10 @@ static const struct { const char *archive; int attr, kind; } kinds[] = {
 typedef struct { int shader; ShaderKey key; bool mvec; } Job;  // (mvec: a motion vector variant made here)
 typedef struct { int vs, fs, cs; } Pair;  // (jobs: the predicted key's; vs or fs alone: that shader's libraries)
 
-typedef struct {
+// (pipe_watch) a pipelines thread: the pair it compiles (-1: none), since when, and whether it has returned
+typedef struct { struct Work *w; _Atomic int pair; _Atomic uint64_t since; _Atomic bool out; } PipeTh;
+
+typedef struct Work {
     ShaderPrecompile *p;
     SaSet *set;
     Job *jobs;
@@ -74,6 +80,7 @@ typedef struct {
     int64_t used_mb, budget_mb;
     pthread_mutex_t lock;
     pthread_cond_t cond;
+    PipeTh th[32];
 } Work;
 
 static void *worker(void *arg) {
@@ -140,9 +147,12 @@ static int by_need_desc(const void *a, const void *b) {
 }
 
 static void *pipe_worker(void *arg) {
-    Work *w = arg;
+    PipeTh *t = arg;
+    Work *w = t->w;
     int64_t mb;
     for (int i; (i = pipe_take(w, &mb)) >= 0;) {
+        atomic_store(&t->since, SDL_GetTicksNS());
+        atomic_store(&t->pair, i);
         const Pair *pr = &w->pairs[i];
         bool ok = false;
         if (pr->cs >= 0) {
@@ -170,10 +180,67 @@ static void *pipe_worker(void *arg) {
 #ifdef __GLIBC__
         if (mb >= 128) malloc_trim(0);
 #endif
+        atomic_store(&t->pair, -1);
         pipe_give_back(w, mb);
         atomic_fetch_add(&w->p->done, 1);
     }
+    atomic_store(&t->out, true);
     return NULL;
+}
+
+// The pipelines threads, waited for. A driver can take a compile and never give it back: on AMD's Windows driver, with
+// its own shader compiler, after fragment shaders went through spirv-opt (0.5.2, the sky fix), setup stopped at
+// 21502 of 21503 for good (#359), and Esc could not stop it either - it waited for that thread. So when no compile has
+// finished for PIPE_STALL_S seconds, or setup is stopped, the compiles still running are logged (their shaders) and
+// left to the driver: their threads are detached and the work they can still touch (w) is kept, never freed. Returns
+// whether any was left. SAVAGEWIND_PRECOMPILE_STALL_S=<seconds> (180).
+#define PIPE_STALL_S 180
+static bool pipe_watch(Work *w, pthread_t *th, int nt) {
+    static int stall_s = -1;
+    if (stall_s < 0) { const char *e = getenv("SAVAGEWIND_PRECOMPILE_STALL_S"); stall_s = e && atoi(e) > 0 ? atoi(e) : PIPE_STALL_S; }
+    int last = atomic_load(&w->p->done);
+    uint64_t last_t = SDL_GetTicksNS();
+    for (;;) {
+        int out = 0;
+        for (int i = 0; i < nt; i++) out += atomic_load(&w->th[i].out);
+        if (out == nt) break;
+        SDL_Delay(100);
+        uint64_t now = SDL_GetTicksNS();
+        int d = atomic_load(&w->p->done);
+        if (d != last) last = d, last_t = now;
+        bool cancel = atomic_load(&w->p->cancel);
+        if (!cancel && now - last_t < (uint64_t)stall_s * 1000000000ull) continue;
+        pthread_mutex_lock(&w->lock);  // (nothing more taken: a thread that comes back leaves)
+        w->next_big = 1, w->next_small = 0;
+        pthread_cond_broadcast(&w->cond);
+        pthread_mutex_unlock(&w->lock);
+        for (int k = 0; k < (cancel ? 100 : 20); k++) {  // (2 s for the ones between compiles; stopped, 10 s to finish theirs)
+            out = 0;
+            for (int i = 0; i < nt; i++) out += atomic_load(&w->th[i].out);
+            if (out == nt) break;
+            SDL_Delay(100);
+        }
+        bool left = false;
+        for (int i = 0; i < nt; i++) {
+            if (atomic_load(&w->th[i].out)) { pthread_join(th[i], NULL); continue; }
+            int pi = atomic_load(&w->th[i].pair);
+            uint64_t hv = 0, hf = 0, hc = 0;
+            if (pi >= 0) {
+                const Pair *pr = &w->pairs[pi];
+                if (pr->vs >= 0) hv = w->set->shaders[w->jobs[pr->vs].shader].hash;
+                if (pr->fs >= 0) hf = w->set->shaders[w->jobs[pr->fs].shader].hash;
+                if (pr->cs >= 0) hc = w->set->shaders[w->jobs[pr->cs].shader].hash;
+            }
+            LOG("[precompile] a pipeline compile the driver has not given back for %.0f s, left to it (%s): vertex %016llx "
+                "fragment %016llx compute %016llx\n", (now - atomic_load(&w->th[i].since)) / 1e9, cancel ? "setup stopped" : "stalled",
+                (unsigned long long)hv, (unsigned long long)hf, (unsigned long long)hc);
+            pthread_detach(th[i]);
+            left = true;
+        }
+        return left;
+    }
+    for (int i = 0; i < nt; i++) pthread_join(th[i], NULL);
+    return false;
 }
 
 static int pair_cmp(const void *a, const void *b) { return memcmp(a, b, sizeof(Pair)); }
@@ -284,9 +351,206 @@ static int add_mvec_jobs(Jobs *J, const SaSet *set) {
     return J->n - n0;
 }
 
+// ---- the pipeline seed: vk_pipelines.seed, the pipeline list of a playthrough in a form any install can use.
+// The list (exec.c) names shaders by translation id, which depends on the translator build and is unknown until the
+// shader is translated here; the seed names them by the hash of their binary (shader_code_hash, as the shader key
+// log does) and the key, with the pipeline's fixed state as the list holds it. `savagewind --export-pipeline-seed
+// <file>` writes one from this install's list (a developer's, after playing through the game); the precompilation
+// reads the one in the data root or next to the executable (a shipped file): its keys join the translations to make,
+// and at the end its records join the list, so a fresh install's first boot pre-warms every pipeline the playthrough
+// met instead of linking them where first drawn. A seed of another key or state layout (another build of those
+// structures) is ignored. Nothing of the game is in it: hashes, keys and render state.
+// File: SeedHeader, then the records deflated (zlib): per record kind (1 graphics, 2 compute), two binary hashes,
+// two keys and the state (state_size bytes; compute: the group size in the first 12).
+typedef struct { char magic[8]; uint32_t version, nrecs, key_size, state_size, zsize, reserved; } SeedHeader;
+#define SEED_MAGIC "SWPSEED1"
+#define SEED_NAME "vk_pipelines.seed"
+
+static size_t seed_rec_size(void) { return 4 + 16 + 2 * sizeof(ShaderKey) + vk_pso_state_size(); }
+
+// The data root's, else the shipped one: next to the executable in a release (Makefile dist, tools/linux/package.sh),
+// runtime/nvn/vulkan/vk_pipelines.seed in a source checkout.
+static bool seed_find(char *path, size_t n) {
+    snprintf(path, n, "%s/%s", rt_data_root(), SEED_NAME);
+    FILE *f = fopen(path, "rb");
+    if (f) { fclose(f); return true; }
+    return rt_resource(SEED_NAME, "runtime/nvn/vulkan/" SEED_NAME, path, n);
+}
+
+// The seed's records (malloc'd, seed_rec_size each) or NULL; *why says what is wrong with the file
+static uint8_t *seed_read(const char *path, int *nrecs, const char **why) {
+    *nrecs = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) { *why = "no file"; return NULL; }
+    SeedHeader h;
+    uint8_t *z = NULL, *d = NULL;
+    bool ok = fread(&h, sizeof h, 1, f) == 1 && !memcmp(h.magic, SEED_MAGIC, 8) && h.version == 1;
+    if (!ok) *why = "not a pipeline seed of this format";
+    else if (h.key_size != sizeof(ShaderKey) || h.state_size != vk_pso_state_size()) { ok = false; *why = "made by another build (key or state layout)"; }
+    else if (h.nrecs > (1u << 20) || h.zsize > (256u << 20)) { ok = false; *why = "damaged"; }
+    if (ok) {
+        size_t n = (size_t)h.nrecs * seed_rec_size();
+        z = malloc(h.zsize ? h.zsize : 1);
+        d = malloc(n ? n : 1);
+        uLongf len = (uLongf)n;
+        ok = z && d && fread(z, 1, h.zsize, f) == h.zsize && uncompress(d, &len, z, h.zsize) == Z_OK && len == n;
+        if (!ok) *why = "damaged";
+    }
+    fclose(f);
+    free(z);
+    if (!ok) { free(d); return NULL; }
+    *nrecs = (int)h.nrecs;
+    return d;
+}
+
+static void seed_rec(const uint8_t *r, uint32_t *kind, uint64_t code[2], ShaderKey key[2], const void **state) {
+    memcpy(kind, r, 4);
+    memcpy(code, r + 4, 16);
+    memcpy(key, r + 20, 2 * sizeof(ShaderKey));
+    *state = r + 20 + 2 * sizeof(ShaderKey);
+}
+
+// The seed's keys as translations to make (before the jobs are counted)
+static int seed_add_jobs(Jobs *J, const SaSet *set, const uint8_t *recs, int nrecs) {
+    int n0 = J->n;
+    for (int i = 0; i < nrecs; i++) {
+        uint32_t kind;
+        uint64_t code[2];
+        ShaderKey key[2];
+        const void *state;
+        seed_rec(recs + (size_t)i * seed_rec_size(), &kind, code, key, &state);
+        for (int k = 0; k < (kind == 1 ? 2 : 1); k++) {
+            int sh = shader_archive_find(set, code[k]);
+            int stage = kind == 1 ? (k == 0 ? STAGE_VERTEX : STAGE_FRAGMENT) : STAGE_COMPUTE;
+            if (sh >= 0 && set->shaders[sh].stage == stage) add_job(J, sh, &key[k], key[k].mvec || key[k].mvec_rt);
+        }
+    }
+    return J->n - n0;
+}
+
+// The seed's records into the pipeline list, by the ids their translations have with this translator
+static int seed_import(const SaSet *set, const uint8_t *recs, int nrecs) {
+    int added = 0;
+    for (int i = 0; i < nrecs; i++) {
+        uint32_t kind;
+        uint64_t code[2], id[2] = {0, 0};
+        ShaderKey key[2];
+        const void *state;
+        seed_rec(recs + (size_t)i * seed_rec_size(), &kind, code, key, &state);
+        for (int k = 0; k < (kind == 1 ? 2 : 1); k++) {
+            int sh = shader_archive_find(set, code[k]);
+            int stage = kind == 1 ? (k == 0 ? STAGE_VERTEX : STAGE_FRAGMENT) : STAGE_COMPUTE;
+            if (sh >= 0 && set->shaders[sh].stage == stage)
+                id[k] = vk_translate_id_for(set->shaders[sh].code, set->shaders[sh].max_size, stage, &key[k]);
+        }
+        if (id[0] && (kind != 1 || id[1]) && vk_pso_add((int)kind, id[0], id[1], state, kind == 1 ? vk_pso_state_size() : 12)) added++;
+    }
+    vk_pso_flush();
+    return added;
+}
+
+// --export-pipeline-seed: this install's list as a seed. The translation ids are matched to binaries and keys
+// through the shader key log (every translation the game made is in it) and the archives.
+typedef struct { uint64_t id, code; ShaderKey key; } IdMap;
+typedef struct { IdMap *m; size_t cap, n; uint8_t *out; size_t nout, cap_out; int missing; } Export;
+
+static void idmap_put(Export *e, uint64_t id, uint64_t code, const ShaderKey *key) {
+    if ((e->n + 1) * 2 > e->cap) {
+        size_t cap = e->cap ? e->cap * 2 : 1 << 16;
+        IdMap *t = calloc(cap, sizeof *t);
+        for (size_t i = 0; i < e->cap; i++) {
+            if (!e->m[i].id) continue;
+            size_t j = e->m[i].id & (cap - 1);
+            while (t[j].id) j = (j + 1) & (cap - 1);
+            t[j] = e->m[i];
+        }
+        free(e->m);
+        e->m = t;
+        e->cap = cap;
+    }
+    size_t j = id & (e->cap - 1);
+    while (e->m[j].id && e->m[j].id != id) j = (j + 1) & (e->cap - 1);
+    if (!e->m[j].id) e->n++;
+    e->m[j] = (IdMap){id, code, *key};
+}
+
+static const IdMap *idmap_get(const Export *e, uint64_t id) {
+    if (!e->cap) return NULL;
+    size_t j = id & (e->cap - 1);
+    while (e->m[j].id && e->m[j].id != id) j = (j + 1) & (e->cap - 1);
+    return e->m[j].id ? &e->m[j] : NULL;
+}
+
+static int export_rec(void *ctx, int kind, const uint64_t id[2], const void *state, size_t n) {
+    Export *e = ctx;
+    const IdMap *m[2] = {idmap_get(e, id[0]), kind == 1 ? idmap_get(e, id[1]) : NULL};
+    if (!m[0] || (kind == 1 && !m[1])) { e->missing++; return 0; }
+    size_t rs = seed_rec_size();
+    if (e->nout + rs > e->cap_out) {
+        e->cap_out = e->cap_out ? e->cap_out * 2 : rs * 1024;
+        e->out = realloc(e->out, e->cap_out);
+    }
+    uint8_t *r = e->out + e->nout;
+    memset(r, 0, rs);
+    uint32_t k = (uint32_t)kind;
+    memcpy(r, &k, 4);
+    uint64_t code[2] = {m[0]->code, m[1] ? m[1]->code : 0};
+    memcpy(r + 4, code, 16);
+    memcpy(r + 20, &m[0]->key, sizeof(ShaderKey));
+    if (m[1]) memcpy(r + 20 + sizeof(ShaderKey), &m[1]->key, sizeof(ShaderKey));
+    memcpy(r + 20 + 2 * sizeof(ShaderKey), state, n < vk_pso_state_size() ? n : vk_pso_state_size());
+    e->nout += rs;
+    return 1;
+}
+
+bool shader_precompile_export_seed(const char *romfs, const char *out, char *why, size_t nwhy) {
+    SaSet set;
+    if (!shader_archive_scan(romfs, &set, NULL, NULL, why, nwhy)) return false;
+    VkKeyLogEntry *log;
+    int nlog = vk_keylog_read(&log);
+    Export e = {0};
+    for (int i = 0; i < nlog; i++) {
+        int k = shader_archive_find(&set, log[i].code);
+        if (k < 0 || (int)log[i].stage != set.shaders[k].stage) continue;
+        uint64_t id = vk_translate_id_for(set.shaders[k].code, set.shaders[k].max_size, set.shaders[k].stage, &log[i].key);
+        idmap_put(&e, id, set.shaders[k].hash, &log[i].key);
+    }
+    int n = vk_pso_records(export_rec, &e);
+    bool ok = false;
+    uLongf zn = compressBound((uLong)e.nout);
+    uint8_t *z = malloc(zn ? zn : 1);
+    if (z && compress2(z, &zn, e.out ? e.out : (const uint8_t *)"", (uLong)e.nout, 9) == Z_OK) {
+        SeedHeader h;
+        memset(&h, 0, sizeof h);
+        memcpy(h.magic, SEED_MAGIC, 8);
+        h.version = 1;
+        h.nrecs = (uint32_t)n;
+        h.key_size = sizeof(ShaderKey);
+        h.state_size = (uint32_t)vk_pso_state_size();
+        h.zsize = (uint32_t)zn;
+        FILE *f = fopen(out, "wb");
+        ok = f && fwrite(&h, sizeof h, 1, f) == 1 && fwrite(z, 1, zn, f) == zn;
+        if (f && fclose(f)) ok = false;
+        if (!ok) snprintf(why, nwhy, "cannot write %s", out);
+    } else {
+        snprintf(why, nwhy, "deflate failed");
+    }
+    LOG("[precompile] pipeline seed: %d of the list's pipelines written to %s (%d whose shaders the key log does not name; "
+        "%d keys known), %.1f KB\n", n, out, e.missing, (int)e.n, zn / 1024.0);
+    free(z);
+    free(e.out);
+    free(e.m);
+    free(log);
+    shader_archive_free(&set);
+    return ok;
+}
+
 static void status_path(char *out, size_t n) { vk_cache_path(out, n, "precompiled.txt"); }
 
-// cache/precompiled.txt: the shader version (vk_shader_version), then "<shaders> <YYYY-MM-DD>"
+// cache/precompiled.txt: the shader version with the device's translation variant (vk_shader_version_full), then
+// "<shaders> <YYYY-MM-DD>". Another variant (the global memory switches changed with a driver, a device or a new
+// default) means the global memory shaders' translations and libraries are missing: offered again, which only redoes
+// those (the rest are cache hits).
 int shader_precompile_status(int *shaders, char *date, int n) {
     char path[512], version[128] = "", day[32] = "";
     int count = 0;
@@ -300,7 +564,7 @@ int shader_precompile_status(int *shaders, char *date, int n) {
     if (shaders) *shaders = count;
     if (date && n > 0) snprintf(date, (size_t)n, "%s", day);
     // (the shaders' libraries go with the GPU and driver: a new driver drops them)
-    return strcmp(version, vk_shader_version()) || !vk_precompiled_cache_ok() ? 2 : 1;
+    return strcmp(version, vk_shader_version_full()) || !vk_precompiled_cache_ok() ? 2 : 1;
 }
 
 bool shader_precompile_run(ShaderPrecompile *p, const char *romfs) {
@@ -367,6 +631,11 @@ bool shader_precompile_run(ShaderPrecompile *p, const char *romfs) {
         int k = shader_archive_find(&set, log[i].code);
         if (k >= 0 && (int)log[i].stage == set.shaders[k].stage) add_job(&J, k, &log[i].key, false);
     }
+    char seed_path[1100];
+    const char *seed_why = "no file";
+    int nseed = 0, nseed_keys = 0;
+    uint8_t *seed = seed_find(seed_path, sizeof seed_path) ? seed_read(seed_path, &nseed, &seed_why) : NULL;
+    if (seed) nseed_keys = seed_add_jobs(&J, &set, seed, nseed);
     int nmvec = getenv("SAVAGEWIND_PRECOMPILE_NO_MVEC") ? 0 : add_mvec_jobs(&J, &set);
     Job *jobs = J.jobs;
     int njobs = J.n;
@@ -376,6 +645,8 @@ bool shader_precompile_run(ShaderPrecompile *p, const char *romfs) {
     LOG("[precompile] %d shaders in %d archives (%llu files, %.0f MB) read in %.1f s: %d translations to make (%d of them "
         "motion vector variants)\n", set.nshaders, set.nsources, (unsigned long long)set.files, set.bytes / 1048576.0,
         (SDL_GetTicksNS() - t0) / 1e9, njobs, nmvec);
+    if (seed) LOG("[precompile] pipeline seed %s: %d pipelines, %d keys of its own\n", seed_path, nseed, nseed_keys);
+    else LOG("[precompile] pipeline seed: none (%s: %s)\n", seed_path, seed_why);
     // translate and compile them
     Work w = {.p = p, .set = &set, .jobs = jobs, .njobs = njobs};
     atomic_store(&p->done, 0);
@@ -424,40 +695,57 @@ bool shader_precompile_run(ShaderPrecompile *p, const char *romfs) {
         int nu = 0;
         for (int i = 0; i < np; i++)
             if (!nu || memcmp(&pairs[i], &pairs[nu - 1], sizeof *pairs)) pairs[nu++] = pairs[i];
-        w.pairs = pairs;
-        w.npairs = nu;
-        w.need_mb = malloc(sizeof *w.need_mb * (size_t)(nu ? nu : 1));
-        w.order = malloc(sizeof *w.order * (size_t)(nu ? nu : 1));
-        for (int i = 0; i < nu; i++) w.need_mb[i] = pair_need_mb(&w, &pairs[i]), w.order[i] = i;
-        sort_need = w.need_mb;
-        qsort(w.order, (size_t)nu, sizeof *w.order, by_need_desc);
-        w.next_big = 0;
-        w.next_small = nu - 1;
-        w.used_mb = 0;
+        Work *pw = malloc(sizeof *pw);  // (on the heap: pipe_watch may leave threads that still touch it)
+        memcpy(pw, &w, sizeof w);
+        pw->pairs = pairs;
+        pw->npairs = nu;
+        pw->need_mb = malloc(sizeof *pw->need_mb * (size_t)(nu ? nu : 1));
+        pw->order = malloc(sizeof *pw->order * (size_t)(nu ? nu : 1));
+        for (int i = 0; i < nu; i++) pw->need_mb[i] = pair_need_mb(pw, &pairs[i]), pw->order[i] = i;
+        sort_need = pw->need_mb;
+        qsort(pw->order, (size_t)nu, sizeof *pw->order, by_need_desc);
+        pw->next_big = 0;
+        pw->next_small = nu - 1;
+        pw->used_mb = 0;
         const char *mem = getenv("SAVAGEWIND_PRECOMPILE_MEM_MB");
-        w.budget_mb = mem && atoll(mem) > 0 ? atoll(mem) : (int64_t)SDL_GetSystemRAM() / 4;
-        pthread_mutex_init(&w.lock, NULL);
-        pthread_cond_init(&w.cond, NULL);
-        atomic_store(&w.next, 0);
+        pw->budget_mb = mem && atoll(mem) > 0 ? atoll(mem) : (int64_t)SDL_GetSystemRAM() / 4;
+        pthread_mutex_init(&pw->lock, NULL);
+        pthread_cond_init(&pw->cond, NULL);
+        atomic_store(&pw->next, 0);
         atomic_store(&p->done, 0);
         atomic_store(&p->total, nu);
         atomic_store(&p->state, SP_PIPELINES);
         uint64_t tp = SDL_GetTicksNS();
-        for (int i = 0; i < nt; i++) pthread_create(&th[i], NULL, pipe_worker, &w);
-        for (int i = 0; i < nt; i++) pthread_join(th[i], NULL);
-        p->pipelines = atomic_load(&w.built);
+        for (int i = 0; i < nt; i++) {
+            pw->th[i].w = pw;
+            atomic_store(&pw->th[i].pair, -1);
+            atomic_store(&pw->th[i].out, false);
+            pthread_create(&th[i], NULL, pipe_worker, &pw->th[i]);
+        }
+        bool left = pipe_watch(pw, th, nt);
+        p->pipelines = atomic_load(&pw->built);
         extern void vk_pipeline_cache_save(void);
         vk_pipeline_cache_save();
         if (g_vk.gpl) vk_precompiled_cache_save();
         LOG("[precompile] %d %s: %d built in %.1f s\n", nu, g_vk.gpl ? "shaders and compute programs (pipeline libraries)" : "programs",
             p->pipelines, (SDL_GetTicksNS() - tp) / 1e9);
-        free(pairs);
+        if (seed && !atomic_load(&p->cancel)) {  // (the list's header names the device: only with one)
+            int added = seed_import(&set, seed, nseed);
+            LOG("[precompile] pipeline seed: %d pipelines added to the pipeline list (%d were there or have no shader here)\n",
+                added, nseed - added);
+            if (added) vk_pso_rewarm();  // (so that the boot right after this setup pre-warms them, not only the next start)
+        }
         free(first);
-        free(w.order);
-        free(w.need_mb);
-        pthread_mutex_destroy(&w.lock);
-        pthread_cond_destroy(&w.cond);
+        if (!left) {
+            free(pairs);
+            free(pw->order);
+            free(pw->need_mb);
+            pthread_mutex_destroy(&pw->lock);
+            pthread_cond_destroy(&pw->cond);
+            free(pw);
+        }
     }
+    free(seed);
     p->shaders = set.nshaders;
     p->keys = njobs;
     p->made = atomic_load(&w.made);
@@ -477,7 +765,7 @@ bool shader_precompile_run(ShaderPrecompile *p, const char *romfs) {
         time_t now = time(NULL);
         char date[32];
         strftime(date, sizeof date, "%Y-%m-%d", localtime(&now));
-        fprintf(f, "%s\n%d %s\n", vk_shader_version(), p->shaders, date);
+        fprintf(f, "%s\n%d %s\n", vk_shader_version_full(), p->shaders, date);
         fclose(f);
     }
     atomic_store(&p->state, SP_DONE);

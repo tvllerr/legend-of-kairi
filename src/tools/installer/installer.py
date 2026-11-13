@@ -40,7 +40,6 @@ VERSION = DEFAULT_VERSION + "-dev"
 KH2_DIRNAME = "KINGDOM HEARTS -HD 1.5+2.5 ReMIX-"
 KH2_EXE = "KINGDOM HEARTS II FINAL MIX.exe"
 KH2_EXE_SHA1 = "2548F1191FE6587A34947952763CE6BB4F3B5C1A"
-SW_VERSION = "0.4.1-alpha.4"
 GAME_VERSION = "1.9.0"      # the BotW version the mod is built for
 NEED_UPDATE_GB = 5         # (s183) stage + old copies of the program files (~1.1 GB) + the steps that re-run (GUESS: fxrec needs more)
 RELEASE = os.path.normpath(os.path.join(HERE, "..", ".."))   # this download's folder (bin/ kit/ tools/ manifest.json)
@@ -49,7 +48,9 @@ WINDOW_TITLE = "Legend of Kairi"
 
 sys.path.insert(0, SBDIR)
 sys.path.insert(0, HERE)
-import gameside   # noqa: E402  (the last step: bin/ + the two launchers)
+import gameside   # noqa: E402  (the last step: bin/ + the launcher)
+import swsetup    # noqa: E402  (s223: Savage Wind 0.5.3, the in-place upgrade from 0.4.1)
+SW_VERSION = swsetup.SW_WANT     # (s223) Savage Wind 0.5.3-alpha.5; a 0.4.1-alpha.4 folder is upgraded in place first
 import update     # noqa: E402  (s183: update an older install in place)
 import uisfx      # noqa: E402  (s184: menu sounds from the player's own KH2)
 try:
@@ -61,10 +62,15 @@ except Exception:
 PHASES = [("kh2", "Unpack the KH2 files the mod needs"), ("bakes", "Bake Sora, the Drive Forms, the party and the summons"),
           ("fxrec", "Record the KH2 effects"), ("fx", "Build the effect and sound packs"),
           ("other", "Build the HUD, sounds, text and logos"), ("verify", "Check every file"),
-          ("game", "Set up the game program and the launchers")]
+          ("game", "Set up the game program and the launcher")]
 GROUP_PHASE = {"bakes": "bakes", "fxrec": "fxrec", "fx": "fx", "hud": "other", "levels": "other", "logo": "other", "ragmap": "other", "ours": "other", "sounds": "other"}
-PHASE_W = {"kh2": 5, "verify": 25, "game": 2, "copy": 3}
+PHASE_W = {"kh2": 5, "verify": 25, "game": 2, "copy": 3, "sw": 2}
 COPY_PHASE = ("copy", "Bring the program files up to date")     # (s183) update only, before the others
+SW_PHASE = ("sw", "Get Savage Wind %s ready" % SW_VERSION)    # (s223) always first: a 0.4.1 folder is upgraded in place here
+SW_UPGRADE_W = 30          # (s223) the phase's weight when it upgrades (download + unpack + stock's game code build, GUESS)
+NEED_SW_GB = 6             # (s223) upgrade: the stock zip + its unpacked files + the new game code and shader caches. (s226 review
+#                            G4: was 2) stock's setup itself refuses to build the game code under 5 GB free: ask before the folder is touched
+WORK_FOR = "made-for.txt"  # (s223, the s221 Melty fix) in work/: the release whose build made work/done's markers + its state
 PAR = 2.8    # (s168) serial step seconds / wall seconds of the parallel build (s168kit3: 36.5 min of steps in 12.9 min, jobs 3)
 
 
@@ -78,7 +84,9 @@ def sha1(path):
 
 
 def check_sw(path):
-    """-> (ok, message, info). Savage Wind folder: savagewind.exe + extracted/romfs (its own 'set up game files' done)."""
+    """-> (ok, message, info). Savage Wind folder: savagewind.exe + extracted/romfs (its own 'set up game files' done).
+    (s223) 0.5.3-alpha.5 = ready; 0.4.1-alpha.4 (0.1.4's version) or an upgrade that was cut off = ok with info["upgrade"]:
+    the install's first phase brings it up to 0.5.3 in place (swsetup.py); any other version = refused, nothing changed."""
     if not path:
         return False, "Choose your Savage Wind folder.", {}
     if not path.isascii():
@@ -86,25 +94,28 @@ def check_sw(path):
                        "with plain letters only, for example C:/Games/Savage Wind, then choose it again."), {}
     if not os.path.isfile(os.path.join(path, "savagewind.exe")):
         return False, "No savagewind.exe in this folder. Choose the folder you unpacked Savage Wind %s into." % SW_VERSION, {}
-    readme = os.path.join(path, "README.md")
-    try:
-        txt = open(readme, encoding="utf-8", errors="replace").read()
-    except OSError:
-        txt = ""
-    if "SavageWind-%s" % SW_VERSION not in txt:
-        return False, "This is not Savage Wind %s. Legend of Kairi works with that version only." % SW_VERSION, {}
+    kind = swsetup.sw_kind(path)
+    refuse = swsetup.kind_message(kind)
+    if refuse:
+        return False, refuse, {"kind": kind}
+    upgrade = kind != "0.5.3"
+    have = SW_VERSION if not upgrade else (swsetup.SW_OLD if kind == "0.4.1" else "%s (upgrade to %s started)" % (swsetup.SW_OLD, SW_VERSION))
     data = os.environ.get("SAVAGEWIND_DATA_ROOT") or path
     romfs = os.path.join(data, "extracted", "romfs")
     if not os.path.isfile(os.path.join(romfs, "Pack", "Bootup.pack")):
         return False, ("Savage Wind %s is here, but its game files are not set up yet. Start Savage Wind once, choose your "
-                       "game files folder and let it finish, then come back." % SW_VERSION), {}
+                       "game files folder and let it finish, then come back." % have), {"kind": kind}
     ver = game_version(romfs)
     if ver and ver != GAME_VERSION:
-        return False, "Legend of Kairi needs Breath of the Wild %s; your Savage Wind has %s." % (GAME_VERSION, ver), {}
-    msg = "Savage Wind %s with your game files." % SW_VERSION
+        return False, "Legend of Kairi needs Breath of the Wild %s; your Savage Wind has %s." % (GAME_VERSION, ver), {"kind": kind}
+    msg = "Savage Wind %s with your game files." % have
+    if upgrade:
+        msg += (" The installer brings it up to Savage Wind %s first: it downloads Savage Wind %s (94 MB) into this folder and "
+                "keeps your game files, saves and settings (about 15 minutes more). Legend of Kairi 0.1.4's co-op will no longer "
+                "run from this folder." % (SW_VERSION, SW_VERSION))
     if not ver:
         msg += " (Could not read the game version: Legend of Kairi needs Breath of the Wild %s.)" % GAME_VERSION
-    return True, msg, {"romfs": romfs.replace("\\", "/"), "game_version": ver}
+    return True, msg, {"romfs": romfs.replace("\\", "/"), "game_version": ver, "kind": kind, "upgrade": upgrade}
 
 
 def game_version(romfs):
@@ -168,6 +179,84 @@ def free_gb(path):
         return shutil.disk_usage(p or ".").free / 2**30
     except OSError:
         return None
+
+
+def same_drive(a, b):
+    return os.path.splitdrive(os.path.abspath(a))[0].lower() == os.path.splitdrive(os.path.abspath(b))[0].lower()
+
+
+# ------------------------------------------------------------------------------------------------ (s223) whose work is in work/done?
+def work_tag(release, kit):
+    """the release a build belongs to: the data build id it makes (manifest.json) + the kit whose tools it copies (kit.json lists
+    every kit tool's sources and files: a release that only fixes a tool has another tag too). The s221 Melty fix, ported."""
+    try:
+        bid = json.load(open(os.path.join(release, "manifest.json"), encoding="utf-8"))["data"]["build_id"]
+    except (OSError, ValueError, KeyError, TypeError):
+        bid = "none"
+    try:
+        with open(os.path.join(kit, "kit.json"), "rb") as f:
+            k = hashlib.sha256(f.read()).hexdigest()[:16]
+    except OSError:
+        k = "none"
+    return "%s kit %s" % (bid, k)
+
+
+def _kit_of(tag):
+    """the kit part of a work_tag ("<build id> kit <kit sha>" -> "<kit sha>"; "" when the tag has none)"""
+    return tag.split(" kit ", 1)[1].strip() if " kit " in tag else ""
+
+
+def read_work_for(work):
+    """-> (tag, state) of work/made-for.txt; ("", "") when there is none (a build of 0.1.4 or older, or none yet)"""
+    try:
+        lines = open(os.path.join(work, WORK_FOR), encoding="utf-8", errors="replace").read(1024).splitlines()
+    except OSError:
+        return "", ""
+    return (lines[0].strip() if lines else ""), (lines[1].strip() if len(lines) > 1 else "")
+
+
+def write_work_for(work, tag, state):
+    os.makedirs(work, exist_ok=True)
+    p = os.path.join(work, WORK_FOR)
+    with open(p + ".tmp", "w", encoding="utf-8", newline="\n") as f:
+        f.write("%s\n%s\n" % (tag, state))
+    os.replace(p + ".tmp", p)
+
+
+def drop_other_release_work(work, tag, update_mode, log=print):
+    """(s223, the s221 Melty fix) work/done's markers say "this step's files are made": they hold only for the release whose
+    tools made them. A build that was closed (or failed) part-way leaves them behind; a NEWER release started on that folder
+    then skips those steps and keeps the old release's files and tools (0.1.6's Melty setup on 0.1.5's sorabake.exe: s221).
+      same tag                      -> kept (the same release tried again carries on)
+      other tag, state "running"    -> dropped (another release's build was cut off)
+      other tag, state "done"       -> install: dropped; update: kept only when the KIT is the same (update.invalidate drops
+                                       what changed between the two data builds); another kit = dropped
+      no file, install              -> dropped (a folder with markers of a build from before this file existed)
+      no file, update               -> dropped (a finished 0.1.4 or older install: its kit is unknown, so its tools are too)
+    (s224 run B: the 0.1.4 -> new update kept cs_build's marker = 0.1.4's sorabake.exe in work/cs, which does not know the new
+    Keyblades -> form_final FAILED, and every retry failed the same: update.invalidate only knows DATA changes, never tools.)
+    Markers whose name starts with "_" (sorabuild's own bookkeeping, e.g. the KH2 extract) stay, as update.invalidate's "*".
+    Then made-for.txt = tag + "running". -> how many markers were dropped"""
+    old, state = read_work_for(work)
+    same_kit = bool(old) and _kit_of(old) == _kit_of(tag)
+    drop = old != tag and (state == "running" or not update_mode or not same_kit)
+    done = os.path.join(work, "done")
+    n = 0
+    if drop and os.path.isdir(done) and not update.is_reparse(done):
+        for name in os.listdir(done):
+            if name.startswith("_"):
+                continue
+            p = os.path.join(done, name)
+            if os.path.isdir(p) and not update.is_reparse(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
+            n += 1
+        if n:
+            log("[installer] %d step marker(s) of another build (%s) dropped: those steps run again with this release's tools"
+                % (n, old or "made before %s existed" % WORK_FOR))
+    write_work_for(work, tag, "running")
+    return n
 
 
 # ------------------------------------------------------------------------------------------------ folder dialog (Windows)
@@ -326,6 +415,7 @@ class State:
             pass
         self.kit = os.path.abspath(a.kit or os.path.join(self.root, "kit")).replace("\\", "/")
         self.kh2img_dev = a.kh2img
+        self.stock_zip = getattr(a, "stock_zip", None)   # (s223, dev / tests) a local Savage Wind 0.5.3 zip (its sha256 is still checked)
         self.status = "setup"          # setup | running | verifying | done | failed | cancelled
         self.sw = {"path": "", "ok": False, "msg": "", "info": {}}
         self.kh2 = {"path": "", "ok": False, "msg": "", "info": {}, "auto": False}
@@ -386,7 +476,7 @@ class State:
         return self.root
 
     def phases(self):
-        return ([COPY_PHASE] if self.mode == "update" else []) + PHASES
+        return [SW_PHASE] + ([COPY_PHASE] if self.mode == "update" else []) + PHASES
 
     @property
     def sbdir(self):
@@ -434,7 +524,15 @@ class State:
     def disk(self):
         g = free_gb(self.dest())
         need = NEED_UPDATE_GB if self.updating() else NEED_DISK_GB
-        return {"free": None if g is None else round(g, 1), "need": need, "ok": g is None or g >= need}
+        ok = g is None or g >= need
+        if self.sw.get("info", {}).get("upgrade") and self.sw["path"]:   # (s223) the 0.5.3 upgrade writes into the Savage Wind folder
+            if same_drive(self.dest(), self.sw["path"]):
+                need += NEED_SW_GB
+                ok = g is None or g >= need
+            else:
+                gs = free_gb(self.sw["path"])
+                ok = ok and (gs is None or gs >= NEED_SW_GB)
+        return {"free": None if g is None else round(g, 1), "need": need, "ok": ok}
 
     def snapshot(self, since):
         with self.lock:
@@ -442,16 +540,17 @@ class State:
             phases = []
             for k, label in self.phases():
                 st = [s for s in self.steps.values() if s["phase"] == k and s["state"] != "skip"]
-                w = sum(s["w"] for s in st) or (PHASE_W.get(k, 0) if k in ("copy", "kh2", "verify", "game") else 0)
+                w = sum(s["w"] for s in st) or (PHASE_W.get(k, 0) if k in ("copy", "kh2", "verify", "game", "sw") else 0)
                 dw = sum(s["w"] for s in st if s["state"] == "done")
                 ps = self.phase_state.get(k, "wait")
                 frac = 1.0 if ps == "done" else (dw / w if w else 0.0)
                 phases.append({"key": k, "label": label, "state": ps, "frac": round(frac, 3),
                                "running": [n for n, s in self.steps.items() if s["phase"] == k and s["state"] == "run"]})
             fixed = [k for k, _ in self.phases() if k in PHASE_W]
-            tot = sum(s["w"] for s in self.steps.values() if s["state"] != "skip") + sum(PHASE_W[k] for k in fixed)
+            pw = dict(PHASE_W, sw=SW_UPGRADE_W if self.sw.get("info", {}).get("upgrade") else PHASE_W["sw"])
+            tot = sum(s["w"] for s in self.steps.values() if s["state"] != "skip") + sum(pw[k] for k in fixed)
             done = sum(s["w"] for s in self.steps.values() if s["state"] == "done") + \
-                sum(PHASE_W[k] for k in fixed if self.phase_state.get(k) == "done")
+                sum(pw[k] for k in fixed if self.phase_state.get(k) == "done")
             frac = done / tot if tot else 0.0
             el = (time.time() - self.t0) if self.t0 and self.status in ("running", "verifying") else \
                 ((self.t1 - self.t0) if self.t0 and self.t1 else 0)
@@ -460,7 +559,8 @@ class State:
                     "mode": self.mode, "upd": self.upd, "updating": self.updating(), "dlonly": self.in_download(),
                     "disk": self.disk(), "resumable": self.resumable, "phases": phases, "frac": round(frac, 4),
                     "elapsed": round(el), "eta": None if eta is None else round(eta), "error": self.error,
-                    "build_id": self.build_id, "launchers": self.launchers, "seq": self.seq, "lines": lines, "sw_version": SW_VERSION}
+                    "build_id": self.build_id, "launchers": self.launchers, "seq": self.seq, "lines": lines, "sw_version": SW_VERSION,
+                    "sw_upgrade": bool(self.sw.get("info", {}).get("upgrade"))}
 
     def _eta(self, el):
         """seconds left: the rest of the serial work / PAR, never less than the longest step still to finish, scaled by
@@ -595,9 +695,36 @@ class State:
             if self.mode == "update":
                 release_lock(os.path.join(self.dest(), ".installer-ui", "lock"))
 
+    def _sw_phase(self, gen):
+        """(s223) first: Savage Wind 0.5.3 with its game code for this release (a 0.4.1 folder upgraded in place; before
+        anything else is written, so a failed download leaves the old install as it was). -> False when the run was stopped"""
+        with self.lock:
+            self.phase_state["sw"] = "run"
+
+        def on_proc(p):
+            job_add(self.job, p)
+            with self.lock:
+                self.proc = p
+        try:
+            r = swsetup.ensure_ready(self.sw["path"], os.path.join(RELEASE, "bin", "savagewind.exe"), os.path.join(self.dest(), "work"),
+                                     log=self.add_log, local_zip=self.stock_zip, on_proc=on_proc, alive=lambda: self._live(gen))
+        except swsetup.Fail as e:
+            raise RuntimeError(str(e))
+        finally:
+            with self.lock:
+                self.proc = None
+        if r == "stopped" or not self._live(gen):
+            return False
+        with self.lock:
+            self.phase_state["sw"] = "done"
+            self.set_sw(self.sw["path"])     # it is 0.5.3 now
+        return True
+
     def _run2(self, gen):
         try:
             upd = self.mode == "update"
+            if not self._sw_phase(gen):
+                return
             gameside.clear_build_id(self.dest())   # (s183) until verify passes again the launchers refuse to start (stale data)
             if upd:   # (s183) the old folder gets this release's program files, then only what changed is rebuilt
                 with self.lock:
@@ -605,6 +732,8 @@ class State:
                 self.add_log("[update] %s: %s -> %s" % (self.dest(), self.upd["info"].get("version", "?"), VERSION))
                 update.prepare(RELEASE, self.dest(), self.add_log)
                 self.save_choices(os.path.join(self.dest(), ".installer-ui", "choices.json"))
+            tag = work_tag(RELEASE, self.kit)
+            drop_other_release_work(os.path.join(self.dest(), "work"), tag, upd, self.add_log)   # (s223: the s221 fix)
             cfgp = self.config()
             self.add_log("[installer] config %s" % cfgp)
             if upd:
@@ -665,6 +794,7 @@ class State:
                     self.set_upd(self.dest())     # it is this version now
             else:
                 self.launchers = gameside.install_game_side(self.root, self.sw["path"], self.add_log)
+            write_work_for(os.path.join(self.dest(), "work"), tag, "done")
             with self.lock:
                 if not self._live(gen):
                     return
@@ -1018,6 +1148,7 @@ def main():
     ap.add_argument("--browser", action="store_true", help="dev: open in the default browser, serve until Ctrl+C")
     ap.add_argument("--serve", action="store_true", help="dev: only serve (print the URL), until Ctrl+C")
     ap.add_argument("--update", help="(s184, Update.bat) the older install to update: picked already, the player presses Update")
+    ap.add_argument("--stock-zip", help="(s223) dev / tests: a local copy of the Savage Wind 0.5.3 zip instead of the download (its sha256 is still checked)")
     a = ap.parse_args()
     root = os.path.abspath(a.root)
     if not root.isascii():   # (s178 S6) the mod and the build tools open files by their ANSI name

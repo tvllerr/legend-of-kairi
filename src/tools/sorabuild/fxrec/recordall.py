@@ -57,8 +57,15 @@ class Gate:
     file needs nothing running at all. A waiting heavy file holds `gate`, so newer files cannot overtake it (no starvation).
     `slock` guards the state and is never held while sleeping (finish() must not wait on gate)."""
 
-    def __init__(self, free_mb, grow_s=60.0, min_free=4000, poll=(0.5, 2.0), log=None):
-        self.free_mb, self.grow_s, self.min_free, self.poll = free_mb, grow_s, min_free, poll
+    def __init__(self, free_mb, grow_s=60.0, min_free=4000, poll=(0.5, 2.0), log=None, idle_wait=120.0, idle_wait_after=5.0):
+        # s224: `idle_wait` = how long a file waits for free RAM while NOTHING of ours runs. Then the RAM is held by something
+        # else (a game, a browser, or a PC with 8 GB in all) and waiting cannot free it: the file starts anyway (one file alone,
+        # like the old jobs 1), instead of the setup hanging forever on "waits for 4 GB free RAM" (s224 run A: 2.3 GB free with
+        # a game open = stuck 17+ min with nothing running).
+        # s226 (review G7): the long wait is paid ONCE. After the first forced start the RAM is known to be held by something
+        # else, so later files wait only `idle_wait_after` (else 87 files x 120 s = about 3 hours of waiting on an 8 GB PC).
+        self.free_mb, self.grow_s, self.min_free, self.poll, self.idle_wait = free_mb, grow_s, min_free, poll, idle_wait
+        self.idle_wait_after = idle_wait_after
         self.log = log or (lambda m: print(m, flush=True))
         self.gate = threading.Lock()
         self.slock = threading.Lock()
@@ -70,13 +77,24 @@ class Gate:
         """blocks until `name` may start; returns its number for finish()"""
         with self.gate:
             told = told_h = False
+            idle_since = None
             while True:
                 with self.slock:
                     left = 0 if self.last["done"] else self.grow_s - (time.time() - self.last["t"])
                     busy = self.running > 0 if heavy else self.heavy_running
+                    idle = self.running == 0
                 fm = self.free_mb()
                 if left <= 0 and not busy and (fm is None or fm >= self.min_free):
                     break
+                if idle and left <= 0:
+                    idle_since = idle_since or time.time()
+                    if time.time() - idle_since >= self.idle_wait:
+                        self.log("recordall: %s starts with %s MB free RAM (nothing else of ours runs; waited %d s)" %
+                                 (name, fm, self.idle_wait))
+                        self.idle_wait = min(self.idle_wait, self.idle_wait_after)
+                        break
+                else:
+                    idle_since = None
                 if busy and not told_h:
                     self.log("recordall: %s is %s, waits for %s" % (name, "HEAVY" if heavy else "light",
                              "all running files to finish" if heavy else "the running heavy file to finish"))

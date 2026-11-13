@@ -54,7 +54,7 @@ def test_install_folder(base):
         fake_install(root)
         logs = []
         made = gameside.install_shortcuts(root, logs.append)
-        assert len(made) == 2, (name, logs)
+        assert len(made) == len(gameside.SHORTCUTS), (name, logs)
         for (lnk, bat, _), p in zip(gameside.SHORTCUTS, made):
             assert same(p, os.path.join(root, lnk)) and os.path.isfile(p), (p, lnk)
             tgt, wd, icon, style = read_lnk(p)
@@ -70,7 +70,7 @@ def test_install_folder(base):
             time.sleep(0.1)
         assert os.path.isfile(mk), "the shortcut did not start its .bat (%s)" % name
         # made again (an update / a second install): replaced in place
-        assert len(gameside.install_shortcuts(root, logs.append)) == 2
+        assert len(gameside.install_shortcuts(root, logs.append)) == len(gameside.SHORTCUTS)
         print("OK   install-folder shortcuts: %s" % name)
 
 
@@ -92,7 +92,7 @@ def test_failure_never_fails_install(base):
     rel, sw = fake_release(base)
     logs = []
     r = gameside.install_game_side(rel, sw, logs.append, release=rel)
-    assert len(r["shortcuts"]) == 2 and all(os.path.isfile(p) for p in r["shortcuts"]), logs
+    assert len(r["shortcuts"]) == len(gameside.SHORTCUTS) and all(os.path.isfile(p) for p in r["shortcuts"]), logs
     for lnk, _, _ in gameside.SHORTCUTS:
         os.remove(os.path.join(rel, lnk))
     for attr, bad in (("POWERSHELL", os.path.join(base, "no", "powershell.exe")), ("SHORTCUT_PS1", os.path.join(base, "no", "x.ps1"))):
@@ -103,9 +103,9 @@ def test_failure_never_fails_install(base):
             r = gameside.install_game_side(rel, sw, logs.append, release=rel)
         finally:
             setattr(gameside, attr, old)
-        assert r["shortcuts"] == [] and os.path.isfile(r["solo"]) and os.path.isfile(r["multi"]), (attr, r)
+        assert r["shortcuts"] == [] and os.path.isfile(r["solo"]) and "multi" not in r, (attr, r)
         miss = [l for l in logs if "could not make the shortcut" in l]
-        assert len(miss) == 2 and all(len(l.splitlines()) == 1 for l in miss), (attr, logs)
+        assert len(miss) == len(gameside.SHORTCUTS) and all(len(l.splitlines()) == 1 for l in miss), (attr, logs)
         assert not any(os.path.exists(os.path.join(rel, lnk)) for lnk, _, _ in gameside.SHORTCUTS)
     print("OK   a failing shortcut step does not fail install_game_side")
 

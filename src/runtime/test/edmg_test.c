@@ -52,6 +52,34 @@ static void test_pending_full(void) {
     CHECK(T.n == EDMG_PEND_MAX && T.evicted == 1 && !edmg_pend_take(&T, 1, 5000, &o) && edmg_pend_take(&T, 2000, 5000, &o));
 }
 
+// (s191, Melty spec 4.1) a player inside a shrine for a long time gets every overworld hit / kill of the others as "not loaded here"
+// = pending (linkpos.c: edmg_pend_expire + edmg_pend_add on each pending hit, expire again every 600 frames). Nothing piles up past
+// EDMG_PEND_MAX, damage-only entries never outlive the TTL, the newest kills are kept (an hid is unique across maps, s166 data:
+// a pending entry can only ever meet its own enemy).
+static void test_pending_other_map_flood(void) {
+    memset(&T, 0, sizeof T);
+    int maxn = 0, stale_dmg = 0;
+    uint64_t f = 0;
+    uint32_t last_kill = 0;
+    for (int i = 0; i < 20000; i++, f += 6) {  // (~33 min at 60 fps: 4000 overworld enemies hit, 80 of them killed)
+        uint32_t hid = 0x10000u + (uint32_t)(i % 4000);
+        int kill = i % 50 == 49;
+        edmg_pend_expire(&T, f);
+        edmg_pend_add(&T, hid, 7, 15, 0, kill, f);
+        if (kill) last_kill = hid;
+        if (f % 600 == 0) edmg_pend_expire(&T, f);
+        if (T.n > maxn) maxn = T.n;
+        for (int k = 0; k < T.n; k++) stale_dmg += !T.e[k].kill && f - T.e[k].first > EDMG_PEND_TTL;
+    }
+    CHECK(maxn <= EDMG_PEND_MAX && T.n == EDMG_PEND_MAX && stale_dmg == 0 && T.evicted > 0);
+    int kills = 0;
+    for (int k = 0; k < T.n; k++) kills += T.e[k].kill;
+    for (uint64_t g = f; g <= f + EDMG_PEND_TTL + 600; g += 600) edmg_pend_expire(&T, g);  // (she stays in: the 600-frame expiry runs on)
+    CHECK(kills == 80 && T.n == 80);  // (only the kills are left)
+    EdmgPend o;
+    CHECK(edmg_pend_take(&T, last_kill, f + 100 * EDMG_PEND_TTL, &o) && o.kill);  // (the newest far kill waits as long as it takes)
+}
+
 static void test_amount_plan(void) {
     CHECK(edmg_remote_amount(13, 4, 0) == 4);
     CHECK(edmg_remote_amount(13, 40, 0) == 12);               // a hit that did not kill there never kills here
@@ -138,10 +166,36 @@ static void test_args(void) {
     CHECK(a.n == EDMG_ARG_N);
 }
 
+// s194 BUG A: a ride entry made only for a remote hit had f54 = 15 as a placeholder and kept the higher value, so the
+// attacker's f54 7 (Shock: upright stagger) was applied as 15 (small flinch + partial ragdoll) on the owner's game.
+typedef struct { int32_t f54, f40; } RideArgs;
+static void test_ride_f54(void) {
+    RideArgs r = {EDMG_RIDE_F54_NONE, 0};                     // fresh entry (memset): no real hit yet
+    CHECK(edmg_ride_f54(r.f54) == EDMG_F54_SMALL);            // nothing merged: the ride uses the small default
+    edmg_f54_merge(&r.f54, &r.f40, 7, 0);                     // remote f54 7 on a fresh entry stays 7
+    CHECK(r.f54 == 7 && edmg_ride_f54(r.f54) == 7);
+    edmg_f54_merge(&r.f54, &r.f40, 7, 0);                     // a local f54 7 hit on the same enemy, same frame: still 7
+    CHECK(r.f54 == 7);
+    edmg_f54_merge(&r.f54, &r.f40, 0x15, 1);                  // between real hits the highest wins, with its f40
+    CHECK(r.f54 == 0x15 && r.f40 == 1);
+    edmg_f54_merge(&r.f54, &r.f40, 7, 2);                     // a lower one later does not undo it
+    CHECK(r.f54 == 0x15 && r.f40 == 1);
+    RideArgs s = {EDMG_RIDE_F54_NONE, 0};
+    edmg_f54_merge(&s.f54, &s.f40, 0, 3);                     // f54 <= 0 from a caller = small (15), counts as a real hit
+    CHECK(s.f54 == EDMG_F54_SMALL && s.f40 == 3);
+    edmg_f54_merge(&s.f54, &s.f40, 7, 0);                     // a real 15 beats a real 7 (the old rule between real hits)
+    CHECK(s.f54 == EDMG_F54_SMALL && s.f40 == 3);
+    RideArgs u = {EDMG_RIDE_F54_NONE, 0};
+    edmg_f54_merge(&u.f54, &u.f40, 3, 2);                     // remote low f54 + element on a fresh entry: both kept
+    CHECK(u.f54 == 3 && u.f40 == 2);
+}
+
 int main(void) {
+    test_ride_f54();
     test_pending_basic();
     test_pending_ttl_and_kill();
     test_pending_full();
+    test_pending_other_map_flood();
     test_amount_plan();
     test_echo();
     test_echo_flow();

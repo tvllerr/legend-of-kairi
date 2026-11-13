@@ -24,7 +24,7 @@
 
 #define UL_EVERY 2.0f      // game s between milestone reads
 #define UL_SYNC_MAX 60.0f  // game s after a slot change before the live flags are trusted anyway
-enum { UL_ALWAYS, UL_GLIDER, UL_BEAST, UL_BEASTS, UL_TOWERS, UL_SHRINES, UL_KILLS, UL_BOOL, UL_S32 };
+enum { UL_ALWAYS, UL_GLIDER, UL_BEAST, UL_BEASTS, UL_TOWERS, UL_SHRINES, UL_KILLS, UL_BOOL, UL_S32, UL_TOWER };  // (s214: UL_TOWER = MapTower_<n> itself)
 enum { UL_K_HINOX, UL_K_TALUS, UL_K_LYNEL, UL_K_MOLDUGA, UL_K_GUARDIAN, UL_NKILL };
 static const char *const UL_BEAST_FLAG[4] = {"Clear_RemainsWater", "Clear_RemainsWind", "Clear_RemainsFire", "Clear_RemainsElectric"};
 // BotW's Defeated_<actor>_Num counters (+1 per death up to 10, no attacker check: Sora's kills count too = GUESS until
@@ -67,11 +67,14 @@ static const UlRule UL_RULES[] = {
     {0x21f, UL_BOOL, 1, "IsGet_Weapon_Sword_070", "the Master Sword"},  // Two Become One
     {0x1f4, UL_SHRINES, 100, NULL, "100 shrines cleared"},           // Ultima Weapon
     {0x220, UL_BOOL, 1, "GameClear", "Calamity Ganon defeated"},     // Winner's Proof
+    // (s214 kb) our own two (user s212): the Master Sword pulled (the same flag as Two Become One) / the Great Plateau Tower
+    {0x7e01, UL_BOOL, 1, "IsGet_Weapon_Sword_070", "the Master Sword pulled"},  // Sealing Blade
+    {0x7e02, UL_TOWER, 7, NULL, "the Great Plateau Tower activated"},          // Guardian Core (MapTower_07, as sl_story's count)
 };
 #define UL_NRULES ((int)(sizeof UL_RULES / sizeof UL_RULES[0]))
 _Static_assert(sizeof UL_RULES / sizeof UL_RULES[0] == sizeof KB_TAB / sizeof KB_TAB[0], "one rule per Keyblade");
 
-typedef struct { int glider, beast[4], beasts, towers, shrines, kills[UL_NKILL], korok, msword, ganon; } UlState;
+typedef struct { int glider, beast[4], beasts, towers, shrines, kills[UL_NKILL], korok, msword, ganon, tower_mask; } UlState;  // (s214: bit n = MapTower_<n>)
 static struct {
     int kball, filter, beasts_fake, slot_seen, synced, logq;
     float next, sync_by;
@@ -96,7 +99,10 @@ static bool ul_read(UlState *st) {
     st->glider = probe != 0;
     for (int i = 0; i < 4; i++) st->beasts += st->beast[i] = ul_b(UL_BEAST_FLAG[i]);
     char nm[40];
-    for (int i = 1; i <= 15; i++) snprintf(nm, sizeof nm, "MapTower_%02d", i), st->towers += ul_b(nm);
+    for (int i = 1; i <= 15; i++) {
+        snprintf(nm, sizeof nm, "MapTower_%02d", i);
+        if (ul_b(nm)) st->towers++, st->tower_mask |= 1 << i;  // (s214: which one too)
+    }
     for (int i = 0; i < 160; i++) snprintf(nm, sizeof nm, "Clear_Dungeon%03d", i), st->shrines += ul_b(nm);  // (as sl_story)
     for (int k = 0; k < UL_NKILL; k++)
         for (int j = 0; j < 6 && UL_KILL_FLAGS[k][j]; j++) st->kills[k] += ul_i(UL_KILL_FLAGS[k][j]);
@@ -114,16 +120,17 @@ static bool ul_met(const UlRule *r, const UlState *s) {
     case UL_KILLS: return r->n >= 0 && r->n < UL_NKILL && s->kills[r->n] >= 1;
     case UL_BOOL: return !strcmp(r->flag, "GameClear") ? s->ganon : s->msword;
     case UL_S32: return s->korok >= r->n;
+    case UL_TOWER: return r->n >= 1 && r->n <= 15 && (s->tower_mask >> r->n & 1);
     }
     return false;
 }
 static void ul_log_state(const char *why) {
     const UlState *s = &UL.st;
     LOG("[sora] unlock: milestones (%s%s): paraglider %d, beasts %d (Ruta %d Medoh %d Rudania %d Naboris %d), towers %d, "
-        "shrines %d, koroks %d, kills Hinox %d Talus %d Lynel %d Molduga %d Guardian %d, Master Sword %d, Ganon %d; "
+        "shrines %d, koroks %d, kills Hinox %d Talus %d Lynel %d Molduga %d Guardian %d, Master Sword %d, Ganon %d, tower mask 0x%x; "
         "owned 0x%06x, beasts for forms %d%s%s\n", why, UL.src_file ? ", from the save file" : "", s->glider, s->beasts,
         s->beast[0], s->beast[1], s->beast[2], s->beast[3], s->towers, s->shrines, s->korok, s->kills[0], s->kills[1],
-        s->kills[2], s->kills[3], s->kills[4], s->msword, s->ganon, KB.own, UL.beasts_fake >= 0 ? UL.beasts_fake : s->beasts,
+        s->kills[2], s->kills[3], s->kills[4], s->msword, s->ganon, s->tower_mask, KB.own, UL.beasts_fake >= 0 ? UL.beasts_fake : s->beasts,
         UL.beasts_fake >= 0 ? " (fake: set beasts)" : "", UL.kball ? ", kball ON" : !UL.filter ? ", owned filter OFF" : "");
 }
 

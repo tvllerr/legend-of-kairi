@@ -133,6 +133,25 @@ ACTORS = [
     dict(id="54", name="summon_hb040", char=1, mset="N_HB040_BTL", weapons=[], fx="hb040", voice="stitch", barks=None,
          names=False, vtbl=False, nested_hits=True),
 ]
+# (s220 riku2) the party STAND-INS (sora_pchar.h: a world member in Donald's / Goofy's slot). id = "6" + the KH2 character id
+# (2 digits, = 00battle vtbl / lvup character) so more members never collide: Riku 13 -> "613" (Auron 5 -> "605" ...).
+# voice = his own battle voice file (the world he fights in: Riku only in The World That Never Was = eh0). Packed by
+# fx/sfxparty2.py (names <key>_<set>.<k>, <key>_step<f>.<k>, <key>_swing<n>, his atkp hit rows).
+STANDINS = [
+    dict(id="613", name="riku", char=13, mset="P_EH000", weapons=[W("W_EH000", "W_EH000")], fx="riku", voice="eh0_riku",
+         barks=[("ko", 2)], names=True),
+    # (s223 voices) the four world members of s220 members (objentry P_HE000 / P_MU000 / P_AL000 / P_CA000_HUMAN, msets as
+    # partybake's: Sparrow's body + weapon msets are P_CA000 / W_CA000, his drawn blade W_CA000_HUMAN); voice = his world's battle file
+    dict(id="605", name="auron", char=5, mset="P_HE000", weapons=[W("W_HE000", "W_HE000")], fx="auron", voice="he0_auron",
+         barks=[("ko", 2)], names=True),
+    dict(id="606", name="mulan", char=6, mset="P_MU000", weapons=[W("W_MU000", "W_MU000")], fx="mulan", voice="mu0_mulan",
+         barks=[("ko", 2)], names=True),
+    dict(id="607", name="aladdin", char=7, mset="P_AL000", weapons=[W("W_AL000", "W_AL000")], fx="aladdin", voice="al0_aladdin",
+         barks=[("ko", 2)], names=True),
+    dict(id="608", name="sparrow", char=8, mset="P_CA000", weapons=[W("W_CA000", "W_CA000_HUMAN")], fx="sparrow",
+         voice="ca0_sparrow", barks=[("ko", 2)], names=True),
+]
+ACTORS += STANDINS
 
 
 # The multi-actor motions Sora plays (nested mset entries: sub-anb "00<c>0" = party member c's body, "00<c>1" = his

@@ -1,7 +1,8 @@
 """Legend of Kairi installer, last step (s177): the game side. Runs after `verify --expect` passed.
 
   install_game_side(root, sw_dir, log)
-    1. bin/ (savagewind.exe + sora_mod.dll + the runtime DLLs of the release) is checked against manifest.json (size + sha256)
+    1. bin/ (savagewind.exe + sora_mod.dll + the runtime DLLs of the release) is checked against manifest.json (size + sha256;
+       (s201) a file with an Authenticode signature added, e.g. by Melty, matches when its unsigned bytes do: sorabuild/pesig.py)
        and copied into <root>/bin (when the release folder IS the install root, that is the check only).
     2. two launchers are written into <root> (CRLF .bat):
          Play Legend of Kairi.bat               solo, net off
@@ -17,7 +18,6 @@ The mod finds its files through SORA_ROOT (runtime/sora_path.h maps every "D:/So
 sits next to the exe (runtime/sora_host.c: <exe dir>/sora_mod.dll). The game runs with the Savage Wind folder as its working
 directory (its savagewind.ini, extracted\\ game files and save\\), so the player's saves are the ones Savage Wind already uses.
 """
-import hashlib
 import json
 import os
 import re
@@ -26,6 +26,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "sorabuild"))
+import pesig  # noqa: E402  (s201: bin/ files with an Authenticode signature added still match the manifest)
 RELEASE = os.path.normpath(os.path.join(HERE, "..", ".."))      # the unpacked release folder (bin/, manifest.json)
 SOLO = "Play Legend of Kairi.bat"
 MULTI = "Play Legend of Kairi Multiplayer.bat"
@@ -36,15 +38,10 @@ NEEDED = ("savagewind.exe", "sora_mod.dll")
 # (s183) the body files the launcher insists on (under data/): without any of them the HUD can work while the KH2 body is missing
 KEY_FILES = ("sora_model.bin", "sora_pose.bin", "sora_motion.bin", "forms/roxas_model.bin", "ragmap/sora.bin", "hud/camp_seq.bin")
 BUILD_ID_FILE = "BUILD_ID"
+GAME_ID_FILE = "GAME_ID"    # (s223) data/GAME_ID: the Savage Wind game code id this release's savagewind.exe carries (the launcher compares)
+SW_WANT = "0.5.3-alpha.5"   # (s223) the Savage Wind version of this release (swsetup.SW_WANT; test_swinstall checks they agree)
+REMOVED_DIR = ("work", "removed")   # (s223) a 0.1.4 Multiplayer launcher is kept here as .txt (its friend's address), never run
 CHCP = r'"%SystemRoot%\System32\chcp.com" 65001 >nul'    # (s185 sec) full path: never a chcp from the current directory
-
-
-def _sha256(p):
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for b in iter(lambda: f.read(1 << 22), b""):
-            h.update(b)
-    return h.hexdigest()
 
 
 def _bat_path(p):
@@ -92,6 +89,18 @@ def launcher_text(multi, sw_dir, peers=PLACEHOLDER):
           'for /f "tokens=1 delims=," %%a in (\'""%SYS%\\tasklist.exe" /fi "imagename eq savagewind.exe" /nh /fo csv"\') do if /i "%%~a"=="savagewind.exe" goto :running',
           'if not exist "%EXE%" goto :noexe',
           'if not exist "%GAME%\\savagewind.ini" if not exist "%GAME%\\extracted" goto :nogame',
+          "rem (s223) Savage Wind must still be %s (its own updater may have moved it on) and its game code the one this" % SW_WANT,
+          "rem release's program was made for (data\\GAME_ID, written by the installer; no file = no check)",
+          'set "SWV="',
+          'if exist "%GAME%\\sw-manifest.txt" for /f "usebackq tokens=1,2" %%a in ("%GAME%\\sw-manifest.txt") do if "%%a"=="version" if not defined SWV set "SWV=%%b"',
+          'if not "%%SWV%%"=="%s" goto :swversion' % SW_WANT,
+          'if not exist "%SORA_ROOT%data\\GAME_ID" goto :gameidok',
+          'set "GID="',
+          'set "HAVEGID="',
+          'set /p GID=<"%SORA_ROOT%data\\GAME_ID"',
+          'if exist "%GAME%\\extracted\\swgame.dll.id" set /p HAVEGID=<"%GAME%\\extracted\\swgame.dll.id"',
+          'if /i not "%GID%"=="%HAVEGID%" goto :gameid',
+          ":gameidok",
           "rem (s183) pre-checks: the body files must be there, and data\\BUILD_ID (written by the installer once verify passed) must match",
           "rem manifest.json. A manifest that cannot be read skips the second check (never blocks on a parse problem)."]
     for k in KEY_FILES:
@@ -123,12 +132,17 @@ def launcher_text(multi, sw_dir, peers=PLACEHOLDER):
               "rem enemy attacks synced: 3 = the copy's attack runs in the game's AI phase (s182: 0.05 ms per step, 0 = off)",
               "set SAVAGEWIND_LINK_ESYNC_ATK=3"]
     else:
-        L += ["rem solo: multiplayer off",
+        L += ["rem solo: multiplayer off (s223: this release plays on your own; SORA_SOLO also keeps the mod's co-op code off)",
+              "set SAVAGEWIND_SORA_SOLO=1",
               "set SAVAGEWIND_SORA_NET=0",
               'set "SAVAGEWIND_SORA_NET_PEERS="',
-              'set "SAVAGEWIND_LINK_EDMG="',
-              'set "SAVAGEWIND_LINK_ESYNC="',
-              'set "SAVAGEWIND_LINK_ESYNC_ATK="']
+              "set SAVAGEWIND_LINK_EDMG=0",
+              "set SAVAGEWIND_LINK_ESYNC=0",
+              "set SAVAGEWIND_LINK_ESYNC_ATK=0"]
+    L += ["rem (s223) Savage Wind's own update check off (it would offer the stock program over the mod's), and 0.5.3's",
+          "rem vertex-copy feature off (s219: about 14 fps less after a death / load with the mod)",
+          "set SAVAGEWIND_NO_UPDATE_CHECK=1",
+          "set SAVAGEWIND_VK_VDYN=0"]
     L += ["rem title logos, when this release has them (remove = BotW's own logos)",
           'if exist "%SORA_ROOT%data\\logo\\Logo3DGameTitle_00.bin" set "SAVAGEWIND_LOGO_TEX=%SORA_ROOT%data\\logo\\Logo3DGameTitle_00.bin"',
           'if exist "%SORA_ROOT%data\\logo\\Logo2D_00.bin" set "SAVAGEWIND_LOGO2D_TEX=%SORA_ROOT%data\\logo\\Logo2D_00.bin"',
@@ -136,7 +150,7 @@ def launcher_text(multi, sw_dir, peers=PLACEHOLDER):
           "",
           'cd /d "%GAME%" || (pause & exit /b 1)',
           "rem the child cmd reads EXE and LOGS from its environment: the path never sits on the start line, so & ^ ( ) in it cannot break it",
-          'start "Legend of Kairi - %s" /min "%%SystemRoot%%\\System32\\cmd.exe" /c ""%%%%EXE%%%%" extracted > "%%%%LOGS%%%%\\last.log" 2>&1"' % title]
+          'start "Legend of Kairi - %s" /min "%%SystemRoot%%\\System32\\cmd.exe" /c ""%%%%EXE%%%%" extracted --no-launch-flags > "%%%%LOGS%%%%\\last.log" 2>&1"' % title]
     L += ["exit /b 0",
           "",
           ":running",
@@ -156,6 +170,18 @@ def launcher_text(multi, sw_dir, peers=PLACEHOLDER):
           ":otherversion",
           "echo Legend of Kairi's files are from another version.",
           "echo Run Install Legend of Kairi.cmd and choose Update.",
+          "pause",
+          "exit /b 1",
+          ":swversion",
+          "if not defined SWV set \"SWV=an unknown version\"",
+          "echo Your Savage Wind folder has Savage Wind %SWV%, but this Legend of Kairi is made for Savage Wind " + SW_WANT + ".",
+          "echo Did Savage Wind update itself? Wait for a Legend of Kairi release made for that version, or unpack",
+          "echo Savage Wind " + SW_WANT + " into that folder again and run Install Legend of Kairi.cmd. Folder: \"%GAME%\"",
+          "pause",
+          "exit /b 1",
+          ":gameid",
+          "echo Savage Wind's game code in your Savage Wind folder is not the one this Legend of Kairi was made for.",
+          "echo (Savage Wind set it up again, or it is another version's.) Run Install Legend of Kairi.cmd again: it fixes it.",
           "pause",
           "exit /b 1",
           ":nogame",
@@ -454,8 +480,8 @@ def write_build_id(root, release, log=print):
 # The .lnk files start the .bat files above (the friend's address still lives in the Multiplayer .bat). Window style: NORMAL, not
 # minimized: a launcher that stops on a pre-check ("files are incomplete", "put your friend's address here", "already running") shows
 # its message and waits for a key; when the checks pass it hands over with `start /min` and closes at once, so the console only flashes.
-SHORTCUTS = (("Legend of Kairi.lnk", SOLO, "Play Legend of Kairi on your own"),
-             ("Legend of Kairi Multiplayer.lnk", MULTI, "Play Legend of Kairi with friends"))
+SHORTCUTS = (("Legend of Kairi.lnk", SOLO, "Play Legend of Kairi on your own"),)   # (s223) single player: no Multiplayer shortcut
+OLD_MULTI_LNK = "Legend of Kairi Multiplayer.lnk"     # (s223) 0.1.4's: removed by an update
 DESKTOP_LNK = SHORTCUTS[0][0]
 ICON_REL = ("tools", "installer", "host", "kairi.ico")     # our own heart-in-stained-glass icon (also the window program's); ships in tools/
 SHORTCUT_PS1 = os.path.join(HERE, "shortcut.ps1")
@@ -491,7 +517,7 @@ def make_shortcut(folder, name, target, workdir, icon="", desc=""):
 
 
 def install_shortcuts(root, log=print):
-    """the two shortcuts in the install folder; a failure is logged (one line) and never stops the install. -> the paths made"""
+    """the shortcut in the install folder; a failure is logged (one line) and never stops the install. -> the paths made"""
     made = []
     icon = shortcut_icon(root)
     for name, bat, desc in SHORTCUTS:
@@ -516,8 +542,52 @@ def desktop_shortcut(root, desktop=""):
         raise RuntimeError("Could not add the shortcut to your desktop (%s). You can start the game from the folder instead." % e)
 
 
+def write_game_id(root, release, sw_dir, log=print):
+    """(s223) data/GAME_ID = the id of the game code in the Savage Wind folder, when this release's savagewind.exe carries it
+    (else the install stops: the game would not load that code). -> the id ('' = none to check: no game code id file)"""
+    import swsetup
+    gid = swsetup.game_id(sw_dir)
+    p = os.path.join(root, "data", GAME_ID_FILE)
+    if not gid:
+        log("[game] no game code id in %s: the launcher skips that check" % sw_dir)
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+        return ""
+    if not swsetup.exe_has_id(os.path.join(release, "bin", "savagewind.exe"), gid):
+        raise RuntimeError("Savage Wind's game code in %s (%s) is not the one this Legend of Kairi was made for. Run the installer "
+                           "again." % (sw_dir, gid))
+    os.makedirs(os.path.join(root, "data"), exist_ok=True)
+    with open(p, "w", newline="") as f:
+        f.write(gid + "\r\n")
+    log("[game] game code id %s" % gid)
+    return gid
+
+
+def remove_old_multiplayer(root, log=print):
+    """(s223) single player release: 0.1.4's "Play Legend of Kairi Multiplayer.bat" + its .lnk go. The .bat is kept as text under
+    work/removed (it holds the friend's address, for going back to 0.1.4), never as a .bat. -> the removed names"""
+    gone = []
+    bat = os.path.join(root, MULTI)
+    if os.path.isfile(bat):
+        keep = os.path.join(root, *REMOVED_DIR)
+        os.makedirs(keep, exist_ok=True)
+        shutil.copy2(bat, os.path.join(keep, MULTI + ".txt"))
+        os.remove(bat)
+        gone.append(MULTI)
+    lnk = os.path.join(root, OLD_MULTI_LNK)
+    if os.path.isfile(lnk):
+        os.remove(lnk)
+        gone.append(OLD_MULTI_LNK)
+    if gone:
+        log("[game] removed %s (co-op is not in this release; a copy of the old launcher is in %s)" % (", ".join(gone), os.path.join(*REMOVED_DIR)))
+    return gone
+
+
 def install_game_side(root, sw_dir, log=print, release=RELEASE):
-    """-> {"solo": path, "multi": path, "bin": path}. Raises RuntimeError with a plain-words message."""
+    """-> {"solo": path, "bin": path, ...}. Raises RuntimeError with a plain-words message. (s223) single player: the
+    Multiplayer launcher is neither written nor kept."""
     root = os.path.abspath(root)
     src, dst = os.path.join(release, "bin"), os.path.join(root, "bin")
     man = os.path.join(release, "manifest.json")
@@ -531,13 +601,17 @@ def install_game_side(root, sw_dir, log=print, release=RELEASE):
     for n in NEEDED:
         if n not in names or not os.path.isfile(os.path.join(src, n)):
             raise RuntimeError("%s is missing from this download. Download Legend of Kairi again." % n)
+    nsigned = 0
     for n in names:
         p = os.path.join(src, n)
         if not os.path.isfile(p):
             raise RuntimeError("%s is missing from this download. Download Legend of Kairi again." % n)
-        if want and (os.path.getsize(p) != want[n]["size"] or _sha256(p) != want[n]["sha256"]):
+        how = pesig.matches(p, want[n]["sha256"], want[n]["size"]) if want else "unsigned"
+        if not how:
             raise RuntimeError("%s is damaged (it does not match the release). Download Legend of Kairi again." % n)
-    log("[game] %d program files checked" % len(names))
+        if how == "signed":
+            nsigned += 1
+    log("[game] %d program files checked%s" % (len(names), " (%d with a signature added)" % nsigned if nsigned else ""))
     if os.path.normcase(os.path.realpath(src)) != os.path.normcase(os.path.realpath(dst)):
         os.makedirs(dst, exist_ok=True)
         for n in names:
@@ -552,18 +626,18 @@ def install_game_side(root, sw_dir, log=print, release=RELEASE):
         log("[game] program files are already in %s" % dst)
     if not os.path.isdir(sw_dir):
         raise RuntimeError("The Savage Wind folder %s is gone. Choose it again." % sw_dir)
-    solo, multi = os.path.join(root, SOLO), os.path.join(root, MULTI)
-    peers = _kept_peers(multi)
+    solo = os.path.join(root, SOLO)
+    write_game_id(root, release, sw_dir, log)
     _write_bat(solo, launcher_text(False, sw_dir))
-    _write_bat(multi, launcher_text(True, sw_dir, peers))
+    removed = remove_old_multiplayer(root, log)
     bug = os.path.join(root, BUGREPORT)
     _write_bat(bug, bugreport_text(sw_dir))
     _write_bat(os.path.join(root, BUGREPORT_PS1), bugreport_ps_text())
-    log("[game] launchers: %s, %s, %s (+ %s)" % (SOLO, MULTI, BUGREPORT, BUGREPORT_PS1))
+    log("[game] launchers: %s, %s (+ %s)" % (SOLO, BUGREPORT, BUGREPORT_PS1))
     try:
         lnks = install_shortcuts(root, log)
     except Exception as e:  # noqa: BLE001 - (s185) a shortcut is a nicety: it never fails the install
         log("[game] could not make the shortcuts (%s): start the .bat files instead" % e)
         lnks = []
     write_build_id(root, release, log)
-    return {"solo": solo, "multi": multi, "bugreport": bug, "bin": dst, "peers_set": peers != PLACEHOLDER, "shortcuts": lnks}
+    return {"solo": solo, "bugreport": bug, "bin": dst, "shortcuts": lnks, "removed": removed}

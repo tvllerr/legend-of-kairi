@@ -254,7 +254,7 @@ void sora_hud_set(float hp, float hp_max, float mp, float mp_max) {
 
 // (s57 party) the members' values (game thread -> render thread, under g_lock) and the live ring placement (0 = env /
 // default). at = vk_frame_counter() of the member's last call (30 presents without one = not shown).
-typedef struct { bool shown; float hp, hp_max, mp, mp_max; uint64_t at; } PtIn;
+typedef struct { bool shown; float hp, hp_max, mp, mp_max; uint64_t at; int ch; } PtIn;  // (s220: ch = sora_hud_party_face's character, 0 = the slot's own)
 static PtIn g_pt_in[2];
 static float g_place_x, g_place_y;
 
@@ -268,6 +268,17 @@ void sora_hud_party(int member, float hp, float hp_max, float mp, float mp_max, 
     o->mp_max = mp_max > 0 ? mp_max : 0;
     o->mp = mp < -o->mp_max ? -o->mp_max : mp > o->mp_max ? o->mp_max : mp;  // (< 0: MP Charge, -mp = progress)
     o->at = vk_frame_counter();
+    pthread_mutex_unlock(&g_lock);
+}
+
+// (s220 riku2) who stands in a party slot (the DLL calls it on change, sora_party.h party_face_sync): kh2_char = the KH2 character
+// id (00battle lvup / vtbl character: 2 Donald, 3 Goofy, 5 Auron, 6 Mulan, 7 Aladdin, 8 Jack Sparrow, 13 Riku, 15 Ping), 0 = the
+// slot's own member. The plate shows that character's face from party.bin's face table (the draw logs the pick once per change);
+// a character without a face there (a party.bin from before s220) keeps the slot's own face (Donald / Goofy), as before.
+void sora_hud_party_face(int slot, int kh2_char) {
+    if (slot < 0 || slot > 1) return;
+    pthread_mutex_lock(&g_lock);
+    g_pt_in[slot].ch = kh2_char > 0 && kh2_char < 0x10000 ? kh2_char : 0;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -724,6 +735,12 @@ static const PtFrame *g_ptf;
 static const LPart *g_ptp;
 static uint32_t g_pt_face;  // byte offset of the first face
 static int g_pt_state;      // 0 not tried, 1 ready, -1 off / missing / bad (logged once; nothing else is affected)
+// (s220 riku2) the face table: face k shows KH2 character g_pt_ch[k] (a party.bin from before s220 has none: 0 Donald, 1 Goofy).
+// Texture 7 holds all faces stacked (face k at y = k x (face_h + PT_FACE_GAP), transparent gaps against filter bleed); 8 is unused.
+#define PT_MAX_FACE 16
+#define PT_FACE_GAP 4
+static uint16_t g_pt_ch[PT_MAX_FACE];
+static uint32_t g_pt_nface;
 // the groups the draw uses (indices into g_ptg, found once by id): KH2 ids 64-74 and the face groups
 enum { PG_TRACK, PG_HP, PG_MP, PG_LOW, PG_HIT, PG_INTRO, PG_NORMAL, PG_SLIDE_UP, PG_SLIDE_BACK, PG_F_LOW, PG_F_HURT, PG_F_KO, PG_F_NORMAL, PG_N };
 static const uint16_t PG_ID[PG_N] = {64, 65, 66, 67, 70, 71, 72, 73, 74, 0x100, 0x101, 0x102, 0x103};
@@ -754,7 +771,20 @@ static bool party_load(void) {
     g_ptg = (const PtGrp *)(g_pt + sizeof(PtHdr));
     g_ptf = (const PtFrame *)(g_ptg + g_pth->n_grp);
     g_ptp = (const LPart *)(g_pt + parts0);
-    uint64_t nparts = (g_pt_face - parts0) / sizeof(LPart);
+    uint64_t pend = g_pt_face;  // (s220) the parts end at the face table when there is one
+    g_pt_nface = 2, g_pt_ch[0] = 2, g_pt_ch[1] = 3;
+    uint32_t to = (uint32_t)g_pth->reserved, tn = 0;
+    if (to) {
+        if ((uint64_t)to >= parts0 && (uint64_t)to + 8 <= g_pt_face) memcpy(&tn, g_pt + to + 4, 4);
+        if ((uint64_t)to < parts0 || (uint64_t)to + 8 > g_pt_face || memcmp(g_pt + to, "SKPC", 4) || tn != g_pth->n_face || tn > PT_MAX_FACE ||
+            (uint64_t)to + 8 + 2ull * tn > g_pt_face) {
+            LOG("[sora-hud] %s: bad face table at %u: faces 0 / 1 = Donald / Goofy only\n", p, to);
+        } else {
+            memcpy(g_pt_ch, g_pt + to + 8, 2ull * tn);
+            g_pt_nface = tn, pend = to;
+        }
+    }
+    uint64_t nparts = (pend - parts0) / sizeof(LPart);
     for (uint32_t i = 0; i < g_pth->n_grp; i++)
         if (!g_ptg[i].n || (uint64_t)g_ptg[i].first + g_ptg[i].n > g_pth->n_frames || (g_ptg[i].loop != 0xFFFF && g_ptg[i].loop >= g_ptg[i].n)) {
             LOG("[sora-hud] %s: group %u frames out of range: no party gauges\n", p, g_ptg[i].id);
@@ -768,8 +798,11 @@ static bool party_load(void) {
             if (g_ptg[i].id == PG_ID[k]) g_pg[k] = (int)i;
         if (g_pg[k] < 0) { LOG("[sora-hud] %s: no group %#x: no party gauges\n", p, PG_ID[k]); return false; }
     }
-    LOG("[sora-hud] %s: %u groups, %u frames, %llu parts, faces %ux%u; plate at orb + %d,%d, member 2 + %d\n", p, g_pth->n_grp,
-        g_pth->n_frames, (unsigned long long)nparts, g_pth->face_w, g_pth->face_h, g_pth->slot_dx, g_pth->slot_dy, g_pth->pitch);
+    char chs[96] = "";
+    for (uint32_t k = 0; k < g_pt_nface; k++) snprintf(chs + strlen(chs), sizeof chs - strlen(chs), "%s%u", k ? " " : "", g_pt_ch[k]);
+    LOG("[sora-hud] %s: %u groups, %u frames, %llu parts, %u faces %ux%u (KH2 characters %s%s); plate at orb + %d,%d, member 2 + %d\n", p,
+        g_pth->n_grp, g_pth->n_frames, (unsigned long long)nparts, g_pt_nface, g_pth->face_w, g_pth->face_h, chs,
+        g_pt_nface > 2 ? "" : ", a bake from before s220", g_pth->slot_dx, g_pth->slot_dy, g_pth->pitch);
     return true;
 }
 
@@ -1489,7 +1522,41 @@ static struct {
     float hp, hurt;  // ratios: HP now, and the track's (the HP before the last loss)
     PtAn slot, face;
     double track_t;  // KH2 frames into ag 64 (< 0: no track)
+    int ch, row;     // (s220) the character shown and its face row (ch 0 = not resolved yet)
 } PT[2];
+// (s220 riku2) a character's name (logs only: the plate draws no text) and its face row (-1: not in party.bin's face table)
+static const char *pt_name(int ch) {
+    switch (ch) {
+    case 2: return "Donald";
+    case 3: return "Goofy";
+    case 5: return "Auron";
+    case 6: return "Mulan";
+    case 7: return "Aladdin";
+    case 8: return "Jack Sparrow";
+    case 13: return "Riku";
+    case 15: return "Ping";
+    default: return "a party member";
+    }
+}
+static int pt_row(int ch) {
+    for (uint32_t k = 0; k < g_pt_nface; k++)
+        if (g_pt_ch[k] == ch) return (int)k;
+    return -1;
+}
+// slot k's face for the wanted character (0 = the slot's own): resolved + logged once per change
+static void pt_pick(int k, int want) {
+    int home = k ? 3 : 2, ch = want > 0 ? want : home;
+    if (ch == PT[k].ch) return;
+    int row = pt_row(ch);
+    if (row < 0) {
+        int hr = pt_row(home);
+        LOG("[sora-hud] party %d: no face for %s (KH2 character %d) in party.bin (a bake from before s220): %s's face\n", k, pt_name(ch), ch,
+            pt_name(home));
+        row = hr >= 0 ? hr : k;
+    } else
+        LOG("[sora-hud] party %d: %s's face (KH2 character %d, face %d of %u)\n", k, pt_name(ch), ch, row, g_pt_nface);
+    PT[k].ch = ch, PT[k].row = row;
+}
 
 static int pt_plate(int st) { return st == 1 ? PG_LOW : PG_NORMAL; }
 static int pt_face(int st) { return st == 2 ? PG_F_KO : st == 1 ? PG_F_LOW : PG_F_NORMAL; }
@@ -1521,19 +1588,22 @@ static const PtFrame *pt_steady(int pg) {  // a looping child's steady frame (ag
 // face_ps2); mode 5 = the arc clip at cut (radians from 6 o'clock). Corner colours as lvup_draw / pquad.
 // (s67 drive: parts0 = the bake's parts, so drive.bin's frames go through here too; addit: a part with blend 1 draws
 // additive (mode 4) in a batch of its own, as the lock-on icon's, where mode is 0)
+static int g_lp_face;  // (s220 riku2) the face row lp_parts draws (render thread: party_draw sets it before a face)
 static void lp_parts(const LPart *parts0, const PtFrame *fr, int tex, int mode, float cut, bool addit) {
     bool face = tex >= 7;
     float W = face ? (float)g_pth->face_w : (float)g_img[0].w, H = face ? (float)g_pth->face_h : (float)g_img[0].h;
     float sc = face ? W / (float)g_pth->face_ps2 : W / 512.0f;
+    float vo = 0;  // (s220) a face = row g_lp_face of texture 7's stack
+    if (face) vo = (float)g_lp_face * (float)(g_pth->face_h + PT_FACE_GAP), H = (float)g_pt_nface * (float)(g_pth->face_h + PT_FACE_GAP);
     batch_begin(tex, cut, 0, (float)mode);
     float cur = (float)mode;
     const LPart *p = parts0 + fr->off;
     for (uint32_t i = 0; i < fr->n; i++, p++) {
         float want = addit && mode == 0 && p->blend ? 4.0f : (float)mode;
         if (want != cur) batch_begin(tex, cut, 0, cur = want);
-        float u0 = p->l * sc / W, u1 = p->r * sc / W, v0 = p->t * sc / H, v1 = p->b * sc / H;
+        float u0 = p->l * sc / W, u1 = p->r * sc / W, v0 = (p->t * sc + vo) / H, v1 = (p->b * sc + vo) / H;
         if (p->r == p->l) u0 = u1 = (p->l * sc + 0.5f) / W;
-        if (p->b == p->t) v0 = v1 = (p->t * sc + 0.5f) / H;
+        if (p->b == p->t) v0 = v1 = (p->t * sc + 0.5f + vo) / H;
         float cl[4], ct[4], cr[4], cb[4], c[4][4];
         col4(p->col[0], cl), col4(p->col[1], ct), col4(p->col[2], cr), col4(p->col[3], cb);
         for (int j = 0; j < 4; j++)
@@ -1546,10 +1616,11 @@ static void pt_parts(const PtFrame *fr, int tex, int mode, float cut) { lp_parts
 
 // both plates around the ring centre (T.ox, T.oy) = KH2's orb; dt = seconds since the last present (clocks x 60)
 static void party_draw(const PtIn in[2], double dt) {
-    static const char *NAME[2] = {"Donald", "Goofy"};
     float sox = T.ox, soy = T.oy;
     for (int k = 1; k >= 0; k--) {  // (KH2's creation order: member 2's plate, member 1's, then the player gauge)
         const PtIn *v = &in[k];
+        pt_pick(k, v->ch);  // (s220 riku2: who stands there; NAME = his name in the lines below)
+        const char *NAME[2] = {pt_name(PT[0].ch ? PT[0].ch : 2), pt_name(PT[1].ch ? PT[1].ch : 3)};
         if (!v->shown) {
             if (PT[k].shown) LOG("[sora-hud] party %d (%s): hidden\n", k, NAME[k]);
             PT[k].shown = false;
@@ -1576,10 +1647,10 @@ static void party_draw(const PtIn in[2], double dt) {
             } else if (prev != st) pt_want(&PT[k].slot, pt_plate(st)), pt_want(&PT[k].face, pt_face(st));
             if (k == 1 && !in[0].shown && !PT[k].slid) {
                 PT[k].slid = true, pt_set(&PT[k].slot, PG_SLIDE_UP, pt_plate(st));
-                LOG("[sora-hud] party 1 (Goofy): slides into member 1's place\n");
+                LOG("[sora-hud] party 1 (%s): slides into member 1's place\n", NAME[1]);
             } else if (k == 1 && in[0].shown && PT[k].slid) {
                 PT[k].slid = false, pt_set(&PT[k].slot, PG_SLIDE_BACK, pt_plate(st));
-                LOG("[sora-hud] party 1 (Goofy): slides back up\n");
+                LOG("[sora-hud] party 1 (%s): slides back up\n", NAME[1]);
             }
         }
         double df = dt * 60.0;
@@ -1600,7 +1671,8 @@ static void party_draw(const PtIn in[2], double dt) {
         if (hp > 0) pt_parts(pt_steady(PG_HP), 0, 5, PT_CUT(hp));
         if (mp > 0) pt_parts(pt_steady(PG_MP), 0, 5, PT_CUT(mp));
 #undef PT_CUT
-        pt_parts(pt_frame(&PT[k].face), 7 + k, 0, 0);
+        g_lp_face = PT[k].row;
+        pt_parts(pt_frame(&PT[k].face), 7, 0, 0);  // (s220: texture 7 = every face, row = the member's)
     }
     T.ox = sox, T.oy = soy;
 }
@@ -1907,6 +1979,7 @@ static bool gpu_init(void) {
         if (i == 5 && g_dm_state != 1) continue;  // (s54 dream: texture 5 = dream.bin's atlas)
         if (i == 6 && g_lv_state != 1) continue;  // (s55 HUD: texture 6 = lvup.bin's text atlas)
         if ((i == 7 || i == 8) && g_pt_state != 1) continue;  // (s57 party: textures 7 / 8 = party.bin's faces)
+        if (i == 8) continue;  // (s220 riku2: texture 7 holds every face, stacked)
         if (i >= 9 && i <= 10 && g_cp_state != 1) continue;
         if (i == 11 && g_rf.state != 1) continue;  // (s111 roxhud: texture 11 = roxface.bin)
         if (i == 12 && g_mf.state != 1) continue;  // (s116 mkface: texture 12 = mkface.bin)  // (s78 camp: textures 9 / 10 = camp.bin's sheet / font)
@@ -1916,14 +1989,22 @@ static bool gpu_init(void) {
         if (i == 4) lk.w = g_lkh->w, lk.h = g_lkh->h, lk.off = g_lk_sheet;
         if (i == 5) lk.w = g_dm_w, lk.h = g_dm_h, lk.off = g_dm_off;
         if (i == 6) lk.w = g_lvh->w, lk.h = g_lvh->h, lk.off = g_lv_atlas;
-        if (i == 7 || i == 8) lk.w = g_pth->face_w, lk.h = g_pth->face_h, lk.off = g_pt_face + (i - 7) * 4 * g_pth->face_w * g_pth->face_h;
+        uint8_t *stack = NULL;  // (s220) texture 7 = the faces stacked with transparent gaps (lp_parts' rows)
+        if (i == 7) {
+            uint32_t fw = g_pth->face_w, fh = g_pth->face_h, rh = fh + PT_FACE_GAP;
+            stack = calloc((size_t)fw * rh * g_pt_nface, 4);
+            if (!stack) continue;
+            for (uint32_t k = 0; k < g_pt_nface; k++)
+                memcpy(stack + (size_t)k * rh * fw * 4, g_pt + g_pt_face + (size_t)k * fh * fw * 4, (size_t)fh * fw * 4);
+            lk.w = fw, lk.h = rh * g_pt_nface, lk.off = 0;
+        }
         if (i == 11) lk.w = g_rf.w, lk.h = g_rf.h, lk.off = 16;
         if (i == 12) lk.w = g_mf.w, lk.h = g_mf.h, lk.off = 16;
         if (i == 14) lk.w = g_sf.w, lk.h = g_sf.h, lk.off = g_sf.off;
         if (i == 13) lk.w = g_ip_w, lk.h = g_ip_h, lk.off = g_ip_off;
         if (i >= 9 && i <= 10) lk.w = g_cpimg[i - 9].w, lk.h = g_cpimg[i - 9].h, lk.off = g_cpimg[i - 9].off;
         const HImg *t = i < 2 ? &g_img[i] : i < 4 ? &g_cimg[i - 2] : &lk;
-        const uint8_t *src = (i == 14 ? g_sf.buf : i == 11 ? g_rf.buf : i == 12 ? g_mf.buf : i == 13 ? g_ip : i < 2 ? g_bake : i < 4 ? g_cmd : i == 4 ? g_lk : i == 5 ? g_dm : i == 6 ? g_lv : i < 9 ? g_pt : g_cp) + t->off;
+        const uint8_t *src = (i == 7 ? stack : i == 14 ? g_sf.buf : i == 11 ? g_rf.buf : i == 12 ? g_mf.buf : i == 13 ? g_ip : i < 2 ? g_bake : i < 4 ? g_cmd : i == 4 ? g_lk : i == 5 ? g_dm : i == 6 ? g_lv : i < 9 ? g_pt : g_cp) + t->off;
         VkImageCreateInfo ic = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
                                 .extent = {t->w, t->h, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
                                 .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
@@ -1931,6 +2012,7 @@ static bool gpu_init(void) {
         VK_CHECK(vmaCreateImage(g_vk.vma, &ic, &ai, &G.tex[i], &G.tex_mem[i], NULL));
         vk_image_init_layout(ucb, G.tex[i], VK_IMAGE_ASPECT_COLOR_BIT);
         VkSpan s = vk_transient_copy(src, (uint64_t)t->w * t->h * 4, 16);
+        free(stack);
         VkBufferImageCopy rg = {.bufferOffset = s.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {t->w, t->h, 1}};
         rec_CmdCopyBufferToImage(ucb, s.buf, G.tex[i], VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
         VkImageViewCreateInfo vc = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = G.tex[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
@@ -2316,8 +2398,9 @@ void sora_hud_present(float vx, float vy, float vw, float vh) {
             (unsigned long long)G.frames, in.hp, in.hp_max, D.ghost_hp, low ? ", LOW" : "", in.mp, in.mp_max, T.ox, T.oy, T.unit, L,
             !m.on ? "off" : m.shortcut ? "shortcuts" : "on", m.cursor, m.sub, m.sub_cursor, en.life, en.max, g_nvtx);
     if (G.frames % 600 == 1 && g_pt_state == 1)  // (s57 party)
-        LOG("[sora-hud] frame %llu: party Donald %s hp %.0f/%.0f mp %.0f/%.0f, Goofy %s hp %.0f/%.0f mp %.0f/%.0f%s\n", (unsigned long long)G.frames,
-            pt[0].shown ? "on" : "off", pt[0].hp, pt[0].hp_max, pt[0].mp, pt[0].mp_max, pt[1].shown ? "on" : "off", pt[1].hp, pt[1].hp_max,
+        LOG("[sora-hud] frame %llu: party %s %s hp %.0f/%.0f mp %.0f/%.0f, %s %s hp %.0f/%.0f mp %.0f/%.0f%s\n", (unsigned long long)G.frames,
+            pt_name(PT[0].ch ? PT[0].ch : 2), pt[0].shown ? "on" : "off", pt[0].hp, pt[0].hp_max, pt[0].mp, pt[0].mp_max,
+            pt_name(PT[1].ch ? PT[1].ch : 3), pt[1].shown ? "on" : "off", pt[1].hp, pt[1].hp_max,
             pt[1].mp, pt[1].mp_max, PT[1].slid ? " (slid)" : "");
 }
 

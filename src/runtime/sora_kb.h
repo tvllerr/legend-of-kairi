@@ -6,7 +6,7 @@
 // Ids = KH2 item ids (03system.bin). alt = the sorabake alt id (group attr bits 24..31) = KB_TAB index + 1.
 // Sidecar pack: main u16 | valor u16 << 16 (the default packs to 0x01e00029).
 // Adding a Keyblade later = a KB_TAB row + camp_text keys + a sorabake SORABAKE_KB_ALT entry (no exe link).
-// (s89 kb) every KH2 FM Sora Keyblade (24). VERIFIED bytes, read with tools_s89/kb/kb_items.py from
+// (s89 kb) every KH2 FM Sora Keyblade (24) + (s214) our own two (rows 25, 26). VERIFIED bytes, read with tools_s89/kb/kb_items.py from
 // kh2_first/original/03system.bin: 'item' table @0x1087c (24-byte entries: id u16 +0, type u8 +2 (2 = Sora weapon),
 // went index u8 +4, stat row u16 +6, name / desc sys.bar ids +8 / +10) and the stat table right after it @0x13aac
 // (16-byte rows: id u16, ability u16, Attack u8, Magic u8). Model = 'went' @0x8f74 Sora set (+0x118) [went index] ->
@@ -39,10 +39,13 @@ typedef struct {
 } KbRow;
 
 // camp_text keys: name = KB_TEXT + 2 * index, desc = + 1 for the first KB_TEXT_N1 rows (166..173: key 174 is taken);
-// rows from KB_TEXT_N1 on at KB_TEXT2 + 2 * (index - KB_TEXT_N1) (s89 kb: 400..439). Use kb_text_key().
+// rows from KB_TEXT_N1 on at KB_TEXT2 + 2 * (index - KB_TEXT_N1) (s89 kb: 400..439); (s214) rows from KB_TEXT_N2 on at
+// KB_TEXT3 + 2 * (index - KB_TEXT_N2) (450.. : 440..443 are the Master / Final rows). Use kb_text_key().
 #define KB_TEXT 166
 #define KB_TEXT_N1 4
 #define KB_TEXT2 400
+#define KB_TEXT_N2 24
+#define KB_TEXT3 450
 static const KbRow KB_TAB[] = {
     {KB_KINGDOM_KEY, "Kingdom Key", 3, 1, 542},  // Damage Control (no effect yet)       W_EX010     stat 0x50
     {KB_STAR_SEEKER, "Star Seeker", 3, 1, 163},  // Air Combo Plus                      W_EX010_30  stat 0x7b
@@ -69,6 +72,11 @@ static const KbRow KB_TAB[] = {
     {0x1f4, "Ultima Weapon", 6, 4, 422},         // MP Hastega                          W_EX010_N0  stat 0x8f
     {0x21f, "Two Become One", 5, 4, 541},        // Light & Darkness (FM)               W_EX010_P0  stat 0x94
     {0x220, "Winner's Proof", 5, 7, 404},        // No Experience (FM)                  W_EX010_R0  stat 0x95
+    // (s214 kb) OUR OWN Keyblades (BotW motifs, modelled by us; not KH2 items, no KH2 data): ids above every 03system.bin item
+    // id (1..0x259, 535 rows) and away from the 0x777 / 0x999 test values; model = tools/sorabuild/ours/kb/<name>.skkb (+ .png).
+    // Stats GUESS (no vanilla values exist: close to the mid-game Keyblades), ability none yet (0 = no Ability line).
+    {0x7e01, "Sealing Blade", 5, 2, 0},          // (none yet) GUESS                    ours sealing_blade.skkb
+    {0x7e02, "Guardian Core", 3, 3, 0},          // (none yet) GUESS                    ours guardian_core.skkb
 };
 #define KB_N ((int)(sizeof KB_TAB / sizeof KB_TAB[0]))
 
@@ -78,7 +86,9 @@ static int kb_index(int id) {
     return -1;
 }
 static int kb_alt(int id) { return kb_index(id) + 1; }
-static int kb_text_key(int i) { return i < KB_TEXT_N1 ? KB_TEXT + 2 * i : KB_TEXT2 + 2 * (i - KB_TEXT_N1); }  // + 1 = desc
+static int kb_text_key(int i) {  // + 1 = desc
+    return i < KB_TEXT_N1 ? KB_TEXT + 2 * i : i < KB_TEXT_N2 ? KB_TEXT2 + 2 * (i - KB_TEXT_N1) : KB_TEXT3 + 2 * (i - KB_TEXT_N2);
+}
 
 // (s89 kb) the owned set: bit i = KB_TAB[i] (the sidecar "kb_owned"). Kingdom Key + Star Seeker are always owned (the
 // start blade and the default Valor sub-weapon; KH2 gives Star Seeker at Yen Sid's tower, before the first world).

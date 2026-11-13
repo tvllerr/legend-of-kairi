@@ -39,6 +39,23 @@
 #define ES_CLAIM_BAN_MS 5000    // after a refused claim, no new claim of that enemy this long
 #define ES_RECLAIM_MS 3000      // after we yielded to a claim, we do not claim it back this long (views 100-200 ms apart)
 #define ES_QUIET_MS 500         // a non-owner's samples while the owner is quiet this long = follow him (a missed claim)
+// s195 eshit (live `set eshit 1`, default 0): the HIT CLAIM. "My Sora just hit this enemy" (es_note_hit, from sora_airhold.h ah_hit:
+// blade, spells, limits, summons; never world damage) and another player runs it -> I claim it at once (a normal s180 claim: CLAIM
+// flag, claim_progress, refused -> ban, yield -> ES_RECLAIM_MS), if it is loaded here, not banned, my hit is younger than
+// ES_HIT_FRESH_MS, and the owner is not HOT. On the wire, two more DLL-only bits on the OWNER's samples (computed at send time from
+// the owner's own last hit, so the receiver needs no clock of its own; it keeps what the owner's newest sample said):
+//   ES_FL_HELD 0x4000 = the owner hit it within its hold (`set eshitms`, default ES_HIT_HOLD_MS): nobody makes a "closer" claim
+//   ES_FL_HOT  0x2000 = the owner hit it within ES_HIT_STICKY_MS: nobody makes a hit claim either ("stays with the first")
+// An owner that is away (another map, or dead with `set esdead 1`) is never held: it sends no bits, and its bits are ignored.
+// eshit 0 = no bit sent, received bits ignored (but stripped: the exe sees flags 1 / 2 only), elections exactly as before.
+#define ES_FL_HELD 0x4000u
+#define ES_FL_HOT 0x2000u
+#define ES_FL_DLL (ES_FL_CLAIM | ES_FL_HELD | ES_FL_HOT)  // stripped before a sample is stored (never reaches the exe's puppet_apply)
+#define ES_HIT_FRESH_MS 1500    // GUESS: a hit claim must follow a hit this recent (an old hit never claims later)
+#define ES_HIT_STICKY_MS 1500   // the user's pick: a second attacker does not take it while the owner hit it this recently
+#define ES_HIT_HOLD_MS 4000     // GUESS: default `set eshitms`: the owner's hits keep "closer" claims off this long
+#define ES_HIT_HOLD_MIN 500     // (eshitms clamp)
+#define ES_HIT_HOLD_MAX 30000
 
 typedef NetEsEnt EsState;       // the state struct of the exe interface = the wire entry (40 B)
 typedef NetEsEv EsEvent;        // sensor event of the exe interface (seq is filled by the DLL)
@@ -65,7 +82,9 @@ typedef struct {
     void (*puppet_sensor)(uint32_t hid, int on, uint32_t name, const uint32_t params[4]);
 } EsIface;
 
-typedef struct { uint8_t id; char name[16]; float pos[3]; } EsPlayer;
+// (s191) away = on another map (sora_net_area.h hidden): still a player whose samples / claims we take, but never "nearest" / "closer"
+// and his feet never count against ours (his feet are another map's coordinates). 0 for everyone on one map = the rules as before.
+typedef struct { uint8_t id; char name[16]; float pos[3]; uint8_t away; } EsPlayer;
 typedef struct {
     bool used, local, have_pos;
     uint32_t hid;
@@ -80,12 +99,16 @@ typedef struct {
     int claim_from;                   // s180: >= 0 = we claimed it from this player and send ES_FL_CLAIM until he is quiet (-1 none)
     uint64_t claim_ms, claim_heard;   //   when we claimed / last heard the old owner's samples
     uint64_t claim_ban, yield_ms;     //   0 = never: a refused claim / we yielded to a claim at this time
+    uint64_t hit_ms, hit_blk;         // s195: my Sora's last hit on it (0 never); the hit last counted as blocked
+    bool o_held, o_hot, closer_blk;   //   the owner's newest sample had ES_FL_HELD / ES_FL_HOT; a "closer" claim is blocked now
 } EsEnt;
 typedef struct {
     uint32_t tx_ent, tx_ev, tx_pkt, tx_bytes, rx_ent, rx_ev, rx_pkt, rx_bytes, rx_dup, rx_bad, rx_notowner, rx_conflict, rx_off, rx_ev_dup, rx_ev_notowner,
         rx_ev_nolocal, hid0_skip, handovers, stale, full, sensor_off, ev_dropped, yielded;
     uint32_t claims, claim_done, claim_refused, claim_yield, rx_claimwait, tx_claim;  // s180
     uint32_t pup_apply, pup_notlocal, pup_nosample, steps;  // s179 diag: puppet frames applied / skipped (not in this frame's enum, no fresh sample)
+    uint32_t hit_sync;                // s195b: hit claims made at the hit itself (es_note_hit; also counted in hit_claims)
+    uint32_t hit_notes, hit_claims, hit_blocked, closer_blocked, tx_held;  // s195: hits noted, hit claims, hits blocked (owner HOT), closer blocked (HELD), held samples sent
 } EsStats;
 typedef struct {
     EsEnt e[ES_MAX];
@@ -95,6 +118,8 @@ typedef struct {
     uint64_t next_send, t0;
     EsEvent evq[ES_EVQ]; uint8_t evrep[ES_EVQ]; int nevq; uint8_t evseq;
     bool log;                         // esynclog: per tx / rx lines
+    bool hit_on;                      // s195 eshit: hit claims + HELD / HOT (set by the glue every tick)
+    uint32_t hit_hold_ms;             //   eshitms (0 = ES_HIT_HOLD_MS)
     EsStats st;
     // s178 R2 club sync (DLL only, optional): owner-side extra events (same owner + loaded filter as take_events) and the
     // receiver for events whose name is ES_EV_CLUB (never handed to the exe's puppet_sensor). now = GetTickCount64 ms.
@@ -163,7 +188,7 @@ static inline int es_nearest(const EsCtx *c, const float *p, int excl) {
     int best = -1;
     float bd = 0;
     for (int i = 0; i < c->np; i++) {
-        if (c->pl[i].id == excl) continue;
+        if (c->pl[i].id == excl || c->pl[i].away) continue;  // (s191: a player on another map is nobody's nearest)
         float d = es_dist(c->pl[i].pos, p);
         bool better = best < 0 || d < bd - ES_TIE_M;
         if (!better && best >= 0 && d <= bd + ES_TIE_M) {
@@ -180,6 +205,7 @@ static void es_assign(EsCtx *c, EsEnt *e, int idx, const char *why, uint64_t now
     int old = e->owner;
     ES_LOG("[esync] hid=%08x owner %s -> %s%s\n", e->hid, es_pname(c, old, b1), es_pname(c, c->pl[idx].id, b2), why);
     e->owner = c->pl[idx].id, e->alive_ms = now, e->cand = -1;
+    e->o_held = e->o_hot = e->closer_blk = false;        // (s195: what the OLD owner's samples said is not the new owner's)
     if (old >= 0) c->st.handovers++;
     if (old >= 0) es_sensors_off(c, e);                  // (a sensor left on mid-swing would stay on)
     if (old == c->me || e->owner == c->me) es_drop_events(c, e->hid);
@@ -214,6 +240,36 @@ static void es_claim_progress(EsCtx *c, EsEnt *e, uint64_t now) {
 static bool es_banned(const EsEnt *e, uint64_t now) {
     return (e->claim_ban && es_age(now, e->claim_ban) < ES_CLAIM_BAN_MS) || (e->yield_ms && es_age(now, e->yield_ms) < ES_RECLAIM_MS);
 }
+// s195b: THE hit-claim test, the one es_elect and es_note_hit both use (they can never disagree). YES = claim it now: eshit on, my hit
+// fresh, another player owns it (in the list, not silent > ES_STALE_MS: a silent / gone owner is the stale path's), loaded here, not
+// banned (refused / yielded), I am in the list; HOT = all that, but the owner (alive, on our map) still hits it: no claim.
+enum { ES_HC_NO = 0, ES_HC_YES, ES_HC_HOT };
+static int es_hit_claim_ok(const EsCtx *c, const EsEnt *e, uint64_t now) {
+    if (!c->hit_on || !e->hit_ms || es_age(now, e->hit_ms) >= ES_HIT_FRESH_MS) return ES_HC_NO;
+    if (c->np == 0 || !e->have_pos || e->claim_from >= 0 || e->owner < 0 || e->owner == c->me || es_pidx(c, c->me) < 0) return ES_HC_NO;
+    int cur = es_pidx(c, e->owner);
+    if (cur < 0 || es_age(now, e->alive_ms) > ES_STALE_MS) return ES_HC_NO;
+    if (!e->local || es_banned(e, now)) return ES_HC_NO;
+    return !c->pl[cur].away && e->o_hot ? ES_HC_HOT : ES_HC_YES;  // (s195: away = never held)
+}
+// s195: MY Sora just hit this enemy (any hit through ah_hit). Stored whatever eshit says (so `set eshit 1` mid-fight works at once).
+// An enemy not in the table (not loaded here, never heard of) is skipped. (s195b) A hit that qualifies (es_hit_claim_ok YES) claims
+// it RIGHT HERE, before ah_hit asks netreact, so this very hit is ours: its KH2 reaction plays here, no NET_REACT to the old owner. The
+// exe is told brain(1) at once too (es_step would only next net tick): a brain-off enemy skips RootAi::calc (linkpos_esync_block.inc
+// esx_rootai_hook), so BotW's own AI reaction to this hit would wait for that tick. The old owner's sensors are forced off by
+// es_assign as on any claim. true = claimed now.
+static bool es_note_hit(EsCtx *c, uint32_t hid, uint64_t now) {
+    c->st.hit_notes++;
+    EsEnt *e = hid ? es_find(c, hid) : NULL;
+    if (!e) return false;
+    e->hit_ms = now ? now : 1;
+    if (es_hit_claim_ok(c, e, now) != ES_HC_YES) return false;
+    c->st.hit_claims++, c->st.hit_sync++;
+    es_claim(c, e, " (hit: claim)", now);
+    if (e->owner != c->me) return false;
+    if (e->brain != 1 && c->io.set_brain) c->io.set_brain(e->hid, 1), e->brain = 1;
+    return true;
+}
 
 static void es_elect(EsCtx *c, EsEnt *e, uint64_t now) {
     if (c->np == 0 || !e->have_pos) return;
@@ -238,11 +294,22 @@ static void es_elect(EsCtx *c, EsEnt *e, uint64_t now) {
         return;
     }
     if (!e->local || es_banned(e, now)) { e->cand = -1; return; }
+    bool held = c->hit_on && !c->pl[cur].away && e->o_held;  // (s195; away = never held)
+    int hc = es_hit_claim_ok(c, e, now);  // s195: I just hit it: take it now, unless he keeps hitting it (s195b: the shared test; a hit that
+    if (hc == ES_HC_YES) { c->st.hit_claims++; es_claim(c, e, " (hit: claim)", now); return; }  // qualified at once claimed in es_note_hit)
+    if (hc == ES_HC_HOT && e->hit_blk != e->hit_ms) e->hit_blk = e->hit_ms, c->st.hit_blocked++;  // (each blocked hit counted once)
     int n = es_nearest(c, e->pos, -1);                   // only WE can claim it as "closer"; others wait for our claim samples
-    if (n >= 0 && c->pl[n].id == c->me && es_dist(c->pl[cur].pos, e->pos) - es_dist(c->pl[n].pos, e->pos) >= ES_HANDOVER_M) {
+    float dcur = c->pl[cur].away ? INFINITY : es_dist(c->pl[cur].pos, e->pos);  // (s191: an owner on another map is not really here)
+    if (n >= 0 && c->pl[n].id == c->me && dcur - es_dist(c->pl[n].pos, e->pos) >= ES_HANDOVER_M) {
+        if (held) {                                      // s195: the owner is fighting it: no "closer" hand-over (the 1 s starts after)
+            e->cand = -1;
+            if (!e->closer_blk) e->closer_blk = true, c->st.closer_blocked++;
+            return;
+        }
+        e->closer_blk = false;
         if (e->cand != c->me) e->cand = c->me, e->cand_since = now;
         if (es_age(now, e->cand_since) >= ES_HANDOVER_MS) es_claim(c, e, " (closer: claim)", now);
-    } else e->cand = -1;
+    } else e->cand = -1, e->closer_blk = false;
 }
 
 // the pose a puppet should have `now`: samples sm[0..nsm-1] ascending by arrival; render ES_INTERP_MS behind
@@ -319,6 +386,9 @@ static void es_step(EsCtx *c, uint64_t now, EsOut *out) {
         EsEnt *e = ev[i].hid ? es_find(c, ev[i].hid) : NULL;
         if (e && e->local && e->owner == c->me && ev[i].on <= 1) es_queue_event(c, &ev[i]);
     }
+    int mi = es_pidx(c, c->me);
+    bool held_tx = c->hit_on && mi >= 0 && !c->pl[mi].away;  // (s195: a dead / away owner is never held)
+    uint32_t hold = c->hit_hold_ms ? c->hit_hold_ms : ES_HIT_HOLD_MS;
     for (int i = 0; i < ES_MAX; i++) {
         EsEnt *e = &c->e[i];
         if (!e->used) continue;
@@ -339,6 +409,11 @@ static void es_step(EsCtx *c, uint64_t now, EsOut *out) {
                 if (out->nent < ES_MAX) {
                     out->ent[out->nent] = e->cur;
                     if (e->claim_from >= 0) out->ent[out->nent].flags |= ES_FL_CLAIM, c->st.tx_claim++;  // (s180)
+                    if (held_tx && e->hit_ms) {   // (s195: my own hits on it, at send time)
+                        uint64_t ha = es_age(now, e->hit_ms);
+                        uint16_t hf = (uint16_t)((ha < hold ? ES_FL_HELD : 0) | (ha < ES_HIT_STICKY_MS ? ES_FL_HOT : 0));
+                        if (hf) out->ent[out->nent].flags |= hf, c->st.tx_held++;
+                    }
                     out->nent++;
                 }
                 e->alive_ms = now;
@@ -441,7 +516,8 @@ static void es_on_recv(EsCtx *c, uint8_t sender, const EsState *s, int ns, const
         }
         if (e->owner != sender) { c->st.rx_notowner++; continue; }
         EsState sv = s[i];
-        sv.flags &= (uint16_t)~ES_FL_CLAIM;
+        e->o_held = (sv.flags & ES_FL_HELD) != 0, e->o_hot = (sv.flags & ES_FL_HOT) != 0;  // (s195: only es_elect with hit_on reads them)
+        sv.flags &= (uint16_t)~ES_FL_DLL;
         es_push_sample(e, &sv, now);
         e->alive_ms = now;
         if (e->stale_pl == sender) e->stale_pl = -1;  // (s177: he has it loaded again)
@@ -483,6 +559,9 @@ static int es_count_owned(const EsCtx *c, int *puppets) {
 // ===================== GLUE (needs NET, net_dests, net_send_to, LOG from sora_net.h) =====================
 static bool g_net_esync;      // live "set esync 1" (default 0 = today's behaviour exactly: nothing sent, nothing applied)
 static bool g_net_esynclog;   // live "set esynclog 1"
+static bool g_net_eshit = true;   // s195 live "set eshit 0|1": hit claims + HELD / HOT (s196: default 1, user verified; 0 = the elections exactly as before)
+static int g_net_eshitms = ES_HIT_HOLD_MS;  // s195 live "set eshitms <ms>" (clamped ES_HIT_HOLD_MIN..MAX)
+static bool g_net_esdead = true;  // s195 live "set esdead 0|1": a dead player (NET.dead / SNAP NF_DEAD) is "away" in the election (s196: default 1, user verified)
 
 static struct { bool bound, active; EsCtx c; uint16_t seq; } NETES;
 
@@ -507,6 +586,15 @@ static void net_esync_bind(void) {
     }
 }
 static bool net_esync_ready(void) { return NETES.c.io.enum_enemies != NULL; }
+// s195: sora_airhold.h ah_hit asks this first (cheap): only then is the actor's hid worth reading
+static bool net_esync_hit_wanted(void) { return g_net_esync && NETES.active && NET.on; }
+// s195: every Sora hit (ah_hit: blade, spells, limits, summons). No-op with esync off / not active / hid 0 (a spawned enemy).
+// (s195b) true = this hit claimed the enemy at once (es_note_hit): it is ours for this very hit, so ah_hit's netreact question that
+// follows says "local" (nr_puppet needs owner != me) and ah_hit_ex plays the reaction here.
+static bool net_esync_note_hit(uint32_t hid) {
+    if (!hid || !net_esync_hit_wanted()) return false;
+    return es_note_hit(&NETES.c, hid, GetTickCount64());
+}
 
 static void net_esync_stop(void) {
     if (NETES.active) { es_release_all(&NETES.c); NETES.active = false; LOG("[esync] stopped: every enemy brain is back on\n"); }
@@ -515,7 +603,7 @@ static void net_esync_stop(void) {
 typedef struct { NetAddr d[NET_DESTS_MAX]; int nd; } NetEsDest;
 static void net_esync_send(const uint8_t *b, int len, void *user) {
     NetEsDest *t = (NetEsDest *)user;
-    for (int i = 0; i < t->nd; i++) net_send_to(t->d[i].ip, t->d[i].port, b, len);
+    net_send_all(t->d, t->nd, b, len);
 }
 
 // every net_tick (link_pos NULL = no world / loading)
@@ -532,17 +620,20 @@ static void net_esync_tick(const float link_pos[3], uint64_t now) {
     if (!net_esync_ready()) return;
     EsCtx *c = &NETES.c;
     if (!NETES.active) NETES.active = true, c->t0 = now, memset(&c->st, 0, sizeof c->st), NETES.seq = (uint16_t)(now * 2654435761u >> 8);
-    c->me = NET.me, c->log = g_net_esynclog;
+    c->me = NET.me, c->log = g_net_esynclog, c->hit_on = g_net_eshit, c->hit_hold_ms = (uint32_t)g_net_eshitms;  // (s195)
     if (!link_pos || NET.loading || !NET.have_feet) return;  // (no world: nothing to run, nothing to send)
     EsPlayer pl[ES_PLAYERS];
+    memset(pl, 0, sizeof pl);  // (s191: away 0 unless set)
     int np = 0;
-    pl[np].id = NET.me, snprintf(pl[np].name, sizeof pl[np].name, "%s", NET.name), memcpy(pl[np].pos, NET.feet, sizeof NET.feet), np++;
+    pl[np].id = NET.me, snprintf(pl[np].name, sizeof pl[np].name, "%s", NET.name), memcpy(pl[np].pos, NET.feet, sizeof NET.feet);
+    pl[np++].away = g_net_esdead && NET.dead;  // (s195 esdead: dead = never nearest / closer; what we own we keep sending until claimed)
     for (int k = 0; k < NET_MAX_PEERS && !g_net_loop && np < ES_PLAYERS; k++) {
         const NetPeerSlot *sl = &NET.slot[k];
         if (!sl->used || sl->p.st != PEER_LIVE || sl->p.n <= 0) continue;
         const NetSnap *s = &sl->p.ring[sl->p.n - 1];
         if (s->flags & NF_LOADING) continue;
-        pl[np].id = sl->p.player, snprintf(pl[np].name, sizeof pl[np].name, "%s", sl->p.name), memcpy(pl[np].pos, s->feet, sizeof s->feet), np++;
+        pl[np].id = sl->p.player, snprintf(pl[np].name, sizeof pl[np].name, "%s", sl->p.name), memcpy(pl[np].pos, s->feet, sizeof s->feet);
+        pl[np++].away = sl->hidden || (g_net_esdead && (s->flags & NF_DEAD));  // (s191: on another map; s195 esdead: dead): never nearest / closer here
     }
     es_set_players(c, pl, np);
     static EsOut out;
@@ -591,5 +682,8 @@ static void net_esync_diag(void) {
         g_net_esync ? "on" : "OFF", NETES.bound && !net_esync_ready() ? ", NO EXE SUPPORT" : "", c->st.tx_pkt, c->st.tx_ent, c->st.tx_ev, c->st.tx_bytes, el ? (double)c->st.tx_pkt / (double)el : 0.0,
         c->st.rx_pkt, c->st.rx_ent, c->st.rx_ev, c->st.rx_bytes, own, pup, c->st.handovers, c->st.stale, c->st.claims, c->st.claim_done, c->st.claim_refused, c->st.claim_yield, c->st.rx_claimwait, c->st.tx_claim, c->st.rx_bad, c->st.rx_dup, c->st.rx_off, c->st.rx_notowner,
         c->st.rx_conflict, c->st.yielded, c->st.full, c->st.hid0_skip, c->st.rx_ev_dup, c->st.rx_ev_notowner, c->st.rx_ev_nolocal, c->st.ev_dropped, c->st.sensor_off);
+    LOG("[esync] hit claim %s (hold %d ms): hits noted %u, hit claims %u (%u at the hit), hits blocked (owner still hitting) %u, closer claims blocked (owner fighting it) %u, "
+        "held samples sent %u; dead players %s\n", g_net_eshit ? "on" : "OFF (set eshit 1)", g_net_eshitms, c->st.hit_notes, c->st.hit_claims, c->st.hit_sync, c->st.hit_blocked,
+        c->st.closer_blocked, c->st.tx_held, g_net_esdead ? "away (set esdead 0 = as before)" : "count as before (set esdead 1)");
 }
 #endif

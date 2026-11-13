@@ -8,13 +8,17 @@
 // The page owns its copy of the values (p->db_*); the glue (sora_camp.h) applies out->db_set / db_val to the game and writes the
 // values really in force back (a refusal shows), then p->db_rebuild redraws.
 #pragma once
+#include "sora_pchar.h"  // (s220 members: the Party rows' characters + offer rules; pure)
 
 // (s146 outfit) the arrays are by SHOWN row; CP_DB_ORD (sora_camp_page.h) gives the backend row of each. Become Sora / Outfit / Auto Outfits on top.
-static const char *const CP_DB_NAME[CP_DB_ROWS] = { "Become Sora", "Outfit", "Auto Outfits", "Sora Level", "Unlock Keyblades", "Unlock Drive Forms", "Unlock Summons", "All Abilities", "God Mode", "No Clip" };
-static const char *const CP_DB_HELP[CP_DB_ROWS] = { "Roxas turns into Sora now (Off: story)", "Halloween/Christmas Town, Space Paranoids, Timeless River", "Night: Halloween, cold: Christmas", "Left/Right: set level", "A or Left/Right: toggle", "A or Left/Right: toggle", "A or Left/Right: toggle", "A or Left/Right: toggle", "A or Left/Right: toggle", "Stick, B up, Y down" };
+static const char *const CP_DB_NAME[CP_DB_ROWS] = { "Become Sora", "Outfit", "Auto Outfits", "Party 1", "Party 2", "Sora Level", "Unlock Keyblades", "Unlock Drive Forms", "Unlock Summons", "All Abilities", "God Mode", "No Clip" };
+static const char *const CP_DB_HELP[CP_DB_ROWS] = { "Roxas turns into Sora now (Off: story)", "Halloween/Christmas Town, Space Paranoids, Timeless River", "Night: Halloween, cold: Christmas", "Left/Right: who stands in Donald's place (this session)", "Left/Right: who stands in Goofy's place (this session)", "Left/Right: set level", "A or Left/Right: toggle", "A or Left/Right: toggle", "A or Left/Right: toggle", "A or Left/Right: toggle", "A or Left/Right: toggle", "Stick, B up, Y down" };
 #define CP_DB_VIS 7  // (s146) rows shown at once = the 7-row list the window was built for (s140); the list scrolls (p->db_top)
 #define CP_DB_OUTFITS 5  // (s146) Outfit row values: Normal, Halloween Town, Christmas Town, Space Paranoids, Timeless River
 static const char *const CP_DB_OUTFIT_TAG[CP_DB_OUTFITS] = { "Normal", "Halloween", "Christmas", "Paranoids", "Timeless" };  // (<= 9 chars: the tag column is as wide as "L+Triangle"; GUESS that fits)
+
+// (s220 members) Party 1 / Party 2 (backend rows 10 / 11): the value = the character id in Donald's / Goofy's place (sora_pchar.h PCH_*),
+// shown by name; the row offers its slot's own member + every installed stand-in not standing in the other slot (pchar_offer)
 
 static void cp_db_title_(CsDesc title[1]) {
     title[0] = (CsDesc){ CP_SEQ_(75, 76, 77), .stack_index = 0, .stack_w = CS_DEFAULT_STACK, .anchor = CS_BOTTOM_LEFT,
@@ -25,6 +29,7 @@ static void cp_db_value_(char *b, int n, const CampPage *p, int row) {
     int be = CP_DB_ORD[row], v = p->db_v[be];
     if (be == 0) { if (v > 0) snprintf(b, (size_t)n, "LV %d", v); else snprintf(b, (size_t)n, "Off"); }
     else if (be == 8) snprintf(b, (size_t)n, "%s", CP_DB_OUTFIT_TAG[v < 0 || v >= CP_DB_OUTFITS ? 0 : v]);
+    else if (be == 10 || be == 11) snprintf(b, (size_t)n, "%s", pchar_valid(v) ? PCH_TAB[v].name : "?");  // (s217 riku / s220)
     else snprintf(b, (size_t)n, "%s", v ? "On" : "Off");
 }
 
@@ -102,6 +107,17 @@ static void cp_dbg_input_(CampPage *p, const CampSeq *s, uint64_t press, float s
         p->db_v[8] = nv;
         out->db_set = 9, out->db_val = nv;
         out->se = CP_SE_CURSOR; out->log = "debug outfit";
+        return;
+    }
+    if (row == 10 || row == 11) {  // (s220 members) Party 1 / 2: Left / Right step through the offered characters (clamped), A = the next (wraps);
+        // a row that offers nobody else (no stand-in installed, or the only one stands in the other slot): every press = the error SE
+        int slot = row - 10, cur[PCH_SLOTS] = {p->db_v[10], p->db_v[11]};
+        if (!lr && !(press & CP_BTN_A)) return;
+        int nv = pchar_step(slot, cur, v->db_party_have, lr > 0 ? 1 : lr < 0 ? -1 : 0);
+        if (nv < 0 || nv == p->db_v[row]) { out->se = CP_SE_ERROR; return; }
+        p->db_v[row] = nv;
+        out->db_set = (uint8_t)(row + 1), out->db_val = nv;
+        out->se = CP_SE_DECIDE; out->log = slot ? "debug party 2" : "debug party 1";
         return;
     }
     if (row == 0) {  // the level slider: Off <-> 1..99; Right from Off starts at the real level

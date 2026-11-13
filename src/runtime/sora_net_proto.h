@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stddef.h>
 #include <math.h>
 
 #define NET_MAGIC0 'S'
@@ -25,7 +26,14 @@
 #define NET_ESYNC_EVMAX 6
 #define NET_PKT_MAX 768  // (v8: 512 -> 768 for the NF_BONES block;  slice 3: 256 -> 512; a full SNAP with both party members + a shield is 309)
 
-enum { NET_HELLO = 1, NET_SNAP = 2, NET_BYE = 3, NET_EDMG = 4, NET_ESYNC = 5, NET_FIRE = 6 };
+enum { NET_HELLO = 1, NET_SNAP = 2, NET_BYE = 3, NET_EDMG = 4, NET_ESYNC = 5, NET_FIRE = 6, NET_AREA = 7, NET_REACT = 8, NET_KILLS = 9 };  // (s191: AREA, s194: REACT, s196: KILLS, no NET_VERSION change: see the end of this file)
+#define NET_REACT_ENT 24  // (s194, see the end of this file)
+#define NET_REACT_MAX 8
+#define NET_KILLS_CHUNK 106       // (s197) kills in one NET_KILLS part: 6 B each (u32 hid + u16 age), 17 + 636 = 653 <= the s196 657 (see the end of this file)
+#define NET_KILLS_CHUNKS_MAX 64   // parts of one answer (a u64 bitmap)
+#define NET_KILLS_ENT 6           // (s197) one kill in a part: u32 hid, u16 age (s)
+#define NET_KILLS_ASK_LEN (NET_HDR + 17)   // 24 (s197: + u16 moon age)
+#define NET_KILLS_PART_HDR (NET_HDR + 10)  // 17
 enum { NF_WEAPON = 1, NF_AIR = 2, NF_GHOST = 4, NF_GUARD = 8, NF_DEAD = 16, NF_LOADING = 32, NF_BONEPOSE = 64, NF_BONES = 128, NF_SKATE = 256 };
 // (v9, s172) NF_SKATE = he rides a skateboard: the SNAP's slot / clock are the KH2 skate rider's board slot (151..170, SKB_SLOTS) and
 // its clock (60 Hz frames), body 7 = Roxas' rider, any other = Sora's; the receiver draws its own copy of the rider actor (rider + board).
@@ -338,6 +346,16 @@ static inline int net_pack_bye(uint8_t player, uint16_t seq, uint8_t *out, int c
     return net_hdr(out, NET_BYE, player, seq);
 }
 
+// (s191) NET_AREA text rules (used by net_unpack_ex; the packet itself is at the end of this file)
+#define NET_AREA_MAX 31  // (sora_area.h AREA_CAP 32 with its 0)
+static inline bool net_area_chars(const char *s, int n) {  // letters, digits, '-', '_' only (sora_area.h area_text's set)
+    for (int i = 0; i < n; i++) {
+        char c = s[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+    }
+    return true;
+}
+
 // false on bad magic/version/type/size; snap filled for NET_SNAP, name for NET_HELLO
 // (mp4) pa[NET_HELLO_PEERS] / *npa get a HELLO's peer list (entries with ip 0 or port 0 are dropped); NULL = not wanted
 static inline bool net_unpack_ex(const uint8_t *in, int len, int *type, uint8_t *player, uint16_t *seq, NetSnap *snap,
@@ -463,6 +481,16 @@ static inline bool net_unpack_ex(const uint8_t *in, int len, int *type, uint8_t 
         if (len < NET_HDR + NET_FIRE_ENT || (len - NET_HDR) % NET_FIRE_ENT || (len - NET_HDR) / NET_FIRE_ENT > NET_FIRE_MAX) return false;
     } else if (t == NET_ESYNC) {  // (s168 v7) entries are read by net_unpack_esync; here only the exact size is checked
         if (len < NET_HDR + 2 || len != NET_HDR + 2 + p[0] * NET_ESYNC_ENT + p[1] * NET_ESYNC_EV || p[0] > NET_ESYNC_MAX || p[1] > NET_ESYNC_EVMAX || !(p[0] + p[1])) return false;
+    } else if (t == NET_AREA) {  // (s191) the text is read by net_unpack_area; here the exact size and the letters are checked
+        if (len < NET_HDR + 1 || p[0] > NET_AREA_MAX || len != NET_HDR + 1 + p[0] || !net_area_chars((const char *)p + 1, p[0])) return false;
+    } else if (t == NET_REACT) {  // (s194) the entries are read by net_unpack_react; here only the size is checked
+        if (len < NET_HDR + NET_REACT_ENT || (len - NET_HDR) % NET_REACT_ENT || (len - NET_HDR) / NET_REACT_ENT > NET_REACT_MAX) return false;
+    } else if (t == NET_KILLS) {  // (s196) the body is read by net_unpack_kills; here the op, the exact size and the part numbers are checked
+        if (len < NET_HDR + 1) return false;
+        if (p[0] == 1) { if (len != NET_KILLS_ASK_LEN) return false; }  // (NKO_ASK)
+        else if (p[0] == 2) {  // (NKO_PART: i < n <= 64, k <= 106, length exact)
+            if (len < NET_KILLS_PART_HDR || p[8] < 1 || p[8] > NET_KILLS_CHUNKS_MAX || p[7] >= p[8] || p[9] > NET_KILLS_CHUNK || len != NET_KILLS_PART_HDR + NET_KILLS_ENT * p[9]) return false;
+        } else return false;
     } else {
         return false;
     }
@@ -733,4 +761,191 @@ static inline int net_unpack_fire(const uint8_t *in, int len, uint8_t *player, u
     if (player) *player = in[4];
     if (seq) *seq = net_r16(in + 5);
     return k;
+}
+
+// ---- (s191, Melty spec 4.1) NET_AREA: the map this player is on ("MainField", "Dungeon012", "RemainsWater"; "" = not known) ----
+// Packet = hdr (player, seq = this kind's OWN u16 counter) + u8 n (0..NET_AREA_MAX) + n letters (no 0). A NEW type, NET_VERSION
+// unchanged: a 0.1.1-0.1.4 game (NET v11) finds no such type in net_unpack_ex, counts the packet "bad" and goes on (no log: the
+// version byte is its own, no slot touched; recon/s191/S191_ESAREA.md task 2). Sent on every change, on a join and every
+// NET_AREA_MS (Melty: NET_AREA_MELTY_MS); the receiver keeps the newest (net_esseq_fresh) and forgets it after 5 periods of silence.
+#define NET_AREA_PKT (NET_HDR + 1 + NET_AREA_MAX)  // 39
+static inline int net_pack_area(uint8_t player, uint16_t seq, const char *area, uint8_t *out, int cap) {
+    int n = area ? (int)strlen(area) : 0;
+    if (n > NET_AREA_MAX || !net_area_chars(area ? area : "", n) || cap < NET_HDR + 1 + n) return -1;
+    net_hdr(out, NET_AREA, player, seq);
+    out[NET_HDR] = (uint8_t)n;
+    if (n) memcpy(out + NET_HDR + 1, area, (size_t)n);
+    return NET_HDR + 1 + n;
+}
+// -> true = a valid NET_AREA packet; out = its text with a 0 (cap NET_AREA_MAX + 1)
+static inline bool net_unpack_area(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, char out[NET_AREA_MAX + 1]) {
+    int t = 0;
+    if (!in || len < NET_HDR + 1 || in[3] != NET_AREA || !net_unpack_ex(in, len, &t, player, seq, NULL, NULL, NULL, NULL)) return false;
+    memcpy(out, in + NET_HDR + 1, in[NET_HDR]), out[in[NET_HDR]] = 0;
+    return true;
+}
+// two players are in different areas only when both say where they are and the texts differ ("" = not known = one world)
+static inline bool net_area_apart_txt(const char *a, const char *b) { return a && b && a[0] && b[0] && strcmp(a, b) != 0; }
+
+// ---- (s194) NET_REACT: "play this KH2 hit reaction on your enemy" (recon/s194/S194_REACT_FACTS.md). Sora hit an enemy that is a
+// PUPPET on his game (another game owns it, ESYNC): instead of starting the KH2 slide / hop / blow there (it fought the puppet apply
+// = the jitter) he sends what his ah_hit would have used, and the OWNER runs that ah_hit; its pose stream carries the result.
+// Packet = hdr (player, seq = this kind's OWN u16 counter) + n x 24 B (n = (len - 7) / 24, 1..8, no count byte):
+//   u32 hid, u8 react (atkp EnemyReaction), u8 kind (NRK_*: ah_hit's `what`), i16 kb1, i16 kb2 (atkp KnockbackStrength 1 / 2),
+//   u8 f54 (the BotW damage type the hit was sent with), u8 flags (NRF_FORM: the attacker is in a Drive form), f32 from[3] (the attack
+//   point, world units: Sora's feet / the spell / the shot). A NEW type, NET_VERSION unchanged: a 0.1.1-0.1.4 game (NET v11) finds no
+//   such type in net_unpack_ex, counts the packet "bad" and goes on (no log). Sent NET_EVENT_REPEAT times with the SAME seq over UDP
+//   (net_edout_*), once in a Melty room; the receiver de-dupes per peer (net_edseq_fresh).
+#define NET_REACT_PKT (NET_HDR + NET_REACT_MAX * NET_REACT_ENT)  // 199
+enum { NRK_BLADE = 0, NRK_THUNDER = 1, NRK_OTHER = 2, NRK_N = 3 };  // (ah_hit tells only "blade" (the grounded slide) and "thunder" (the apex hang) apart)
+enum { NRF_FORM = 1 };
+#define NET_REACT_KB_MAX 1000      // |kb| above this is refused (garbage), except the 0x7fff "no row" default
+// (s197 review S5) what is accepted is clamped into the span of Sora's atkp KnockbackStrength rows (sora_airhold.h AH_ATKP:
+// -100 (the Master Form slams) .. 350 (atkp 968)): a peer can no longer fling an enemy we own harder than any real hit would
+#define NET_REACT_KB_LO (-100)
+#define NET_REACT_KB_HI 350
+#define NET_REACT_KB_DEFAULT 0x7fff
+typedef struct { uint32_t hid; uint8_t react, kind, f54, flags; int16_t kb1, kb2; float from[3]; } NetReactEnt;
+
+// re:0x3CE980 (VERIFIED decompile, airhold_kh2a.c): atkp EnemyReaction -> KH2 reaction class (sora_airhold.h ah_class uses this one)
+static inline int net_react_class(int r) {
+    switch (r & 0xff) {
+    case 1: case 0xc: return 1;
+    case 3: case 6: case 8: case 10: case 0xd: case 0x10: case 0x12: return 3;
+    case 4: case 7: case 9: case 0xb: case 0xf: case 0x11: return 4;
+    default: return r & 0xff;
+    }
+}
+// ah_hit only starts something for class 3 (hop / slide) and class 4 (blow): any other reaction is never sent
+static inline bool net_react_plays(int r) { int c = net_react_class(r); return c == 3 || c == 4; }
+// ah_hit's `what` <-> the wire kind; the strings handed back are the SAME literals ah_hit compares against (static: AhEnt keeps them)
+static inline int net_react_kind(const char *what) { return !what ? NRK_OTHER : !strcmp(what, "blade") ? NRK_BLADE : !strcmp(what, "thunder") ? NRK_THUNDER : NRK_OTHER; }
+static inline const char *net_react_what(int kind) { return kind == NRK_BLADE ? "blade" : kind == NRK_THUNDER ? "thunder" : "other"; }
+// (s197 S5) the sender clamps into the table span too (an honest one never has to: every AH_ATKP row is inside it)
+static inline int16_t net_react_kb(int kb) { return (int16_t)(kb == NET_REACT_KB_DEFAULT ? kb : kb > NET_REACT_KB_HI ? NET_REACT_KB_HI : kb < NET_REACT_KB_LO ? NET_REACT_KB_LO : kb); }
+static inline bool net_react_kb_ok(int kb) { return kb == NET_REACT_KB_DEFAULT || (kb >= -NET_REACT_KB_MAX && kb <= NET_REACT_KB_MAX); }
+// one entry is good: hid set, a known kind, a reaction ah_hit plays, kb in range, a finite attack point (< 1e6 u)
+static inline bool net_react_ent_ok(const NetReactEnt *e) {
+    if (!e->hid || e->kind >= NRK_N || !net_react_plays(e->react) || !net_react_kb_ok(e->kb1) || !net_react_kb_ok(e->kb2)) return false;
+    for (int j = 0; j < 3; j++) if (!(e->from[j] > -1e6f && e->from[j] < 1e6f)) return false;  // (also false for NaN)
+    return true;
+}
+
+static inline int net_pack_react(uint8_t player, uint16_t seq, const NetReactEnt *e, int n, uint8_t *out, int cap) {
+    if (!e || n < 1 || n > NET_REACT_MAX) return -1;
+    int len = NET_HDR + n * NET_REACT_ENT;
+    if (cap < len) return -1;
+    net_hdr(out, NET_REACT, player, seq);
+    uint8_t *p = out + NET_HDR;
+    for (int i = 0; i < n; i++, p += NET_REACT_ENT) {
+        net_w32(p, e[i].hid), p[4] = e[i].react, p[5] = e[i].kind;
+        net_w16(p + 6, (uint16_t)e[i].kb1), net_w16(p + 8, (uint16_t)e[i].kb2), p[10] = e[i].f54, p[11] = e[i].flags;
+        for (int j = 0; j < 3; j++) net_w32f(p + 12 + 4 * j, e[i].from[j]);
+    }
+    return len;
+}
+// -> the entry count (0 = not a valid NET_REACT packet, or no good entry in it); a bad entry (net_react_ent_ok) is dropped alone,
+// *bad (optional) = how many
+static inline int net_unpack_react(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, NetReactEnt out[NET_REACT_MAX], int *bad) {
+    if (bad) *bad = 0;
+    if (!in || len < NET_HDR + NET_REACT_ENT || in[0] != NET_MAGIC0 || in[1] != NET_MAGIC1 || in[2] != NET_VERSION || in[3] != NET_REACT) return 0;
+    if ((len - NET_HDR) % NET_REACT_ENT || (len - NET_HDR) / NET_REACT_ENT > NET_REACT_MAX) return 0;
+    int n = (len - NET_HDR) / NET_REACT_ENT, k = 0;
+    const uint8_t *p = in + NET_HDR;
+    for (int i = 0; i < n; i++, p += NET_REACT_ENT) {
+        NetReactEnt *e = &out[k];
+        e->hid = net_r32(p), e->react = p[4], e->kind = p[5];
+        e->kb1 = (int16_t)net_r16(p + 6), e->kb2 = (int16_t)net_r16(p + 8), e->f54 = p[10], e->flags = p[11];
+        for (int j = 0; j < 3; j++) e->from[j] = net_r32f(p + 12 + 4 * j);
+        if (net_react_ent_ok(e)) e->kb1 = net_react_kb(e->kb1), e->kb2 = net_react_kb(e->kb2), k++;  // (s197 S5: into -100..350)
+        else if (bad) (*bad)++;
+    }
+    if (player) *player = in[4];
+    if (seq) *seq = net_r16(in + 5);
+    return k;
+}
+
+// ---- (s196 killsync) NET_KILLS: "which placed enemies did you see die since your last Blood Moon?" (sora_net_kills.h) ----
+// A game that loads a save, or sees a new peer, ASKS each peer for his kill list; the peer ANSWERS with PARTS of up to 106 kills.
+// (s197 review M1) Every kill carries its AGE, and the ask says how long ago the asker's own last Blood Moon was: over plain UDP
+// each game has its own Blood Moons, so a kill from before MY Blood Moon must never come back to me (its enemy respawned here).
+// Packet = hdr (player, seq = this kind's OWN u16 counter, not used to de-dupe: the nonce + part bitmap do that) + u8 op + body:
+//   op 1 ASK  (len 24): u32 nonce (the asker's, never 0), u16 tag (the answer snapshot the bitmap is for, 0 = none yet),
+//                       u64 have (bit i = part i of that snapshot already here; 0 = send all),
+//                       u16 moon (s197: seconds since the asker's last Blood Moon, saturating at 0xFFFE; 0xFFFF = NET_KILLS_MOON_NONE
+//                       = none seen in this session (a fresh start / join / DLL hot reload) = send every kill)
+//   op 2 PART (len 17 + 6k): u32 nonce (the ask's), u16 tag (the answerer's snapshot, never 0), u8 i (0..n-1), u8 n (1..64),
+//                       u8 k (0..106), k x { u32 hid (map HashId; a 0 is dropped alone), u16 age (s197: seconds since that kill,
+//                       saturating: 0xFFFF = NET_KILLS_AGE_OLD = that old or older / not known) }. An empty list = one part, k 0.
+//   The answerer sends a kill only when it is YOUNGER than the asker's moon (sora_net_kills.h ks_cut); an OLD age only when the
+//   asker saw no moon. The asker drops what is not younger than its own moon again on receive (an answer started before it).
+//   Ages are relative, so the two clocks never have to agree; a forwarded kill keeps its true age (game C hears B's catch-up
+//   kills from A with A's age, plus the transit, never "received now").
+// A NEW type, NET_VERSION unchanged: a 0.1.1-0.1.4 / 7be3a1d game (NET v11) finds no such type in net_unpack_ex, counts the
+// packet "bad" and goes on (no log: the version byte is its own, no slot touched). A b020355 (s196/s197 killsync, never shipped)
+// game refuses the new lengths as "bad" too. UDP: an ASK is re-sent until every part is in (or a timeout), each part goes once
+// per ask; in a Melty room (reliable events) the same, the re-ask is only a late safety.
+enum { NKO_ASK = 1, NKO_PART = 2 };
+#define NET_KILLS_PKT (NET_KILLS_PART_HDR + NET_KILLS_ENT * NET_KILLS_CHUNK)  // 653
+#define NET_KILLS_AGE_OLD 0xFFFF   // a part's age: 18.2 h or more / not known
+#define NET_KILLS_MOON_NONE 0xFFFF // an ask's moon: no Blood Moon seen in this session (the largest real value is 0xFFFE)
+typedef struct { uint8_t op, i, n, k; uint32_t nonce; uint16_t tag, moon; uint64_t have; uint32_t hid[NET_KILLS_CHUNK]; uint16_t age[NET_KILLS_CHUNK]; } NetKillsMsg;
+
+static inline int net_pack_kills_ask(uint8_t player, uint16_t seq, uint32_t nonce, uint16_t tag, uint64_t have, uint16_t moon, uint8_t *out, int cap) {
+    if (!out || !nonce || cap < NET_KILLS_ASK_LEN) return -1;
+    net_hdr(out, NET_KILLS, player, seq);
+    uint8_t *p = out + NET_HDR;
+    p[0] = NKO_ASK, net_w32(p + 1, nonce), net_w16(p + 5, tag), net_w32(p + 7, (uint32_t)have), net_w32(p + 11, (uint32_t)(have >> 32));
+    net_w16(p + 15, moon);
+    return NET_KILLS_ASK_LEN;
+}
+// age NULL = every kill NET_KILLS_AGE_OLD
+static inline int net_pack_kills_part(uint8_t player, uint16_t seq, uint32_t nonce, uint16_t tag, int i, int n, const uint32_t *hid,
+                                      const uint16_t *age, int k, uint8_t *out, int cap) {
+    if (!out || !nonce || !tag || n < 1 || n > NET_KILLS_CHUNKS_MAX || i < 0 || i >= n || k < 0 || k > NET_KILLS_CHUNK || (k && !hid)) return -1;
+    int len = NET_KILLS_PART_HDR + NET_KILLS_ENT * k;
+    if (cap < len) return -1;
+    net_hdr(out, NET_KILLS, player, seq);
+    uint8_t *p = out + NET_HDR;
+    p[0] = NKO_PART, net_w32(p + 1, nonce), net_w16(p + 5, tag), p[7] = (uint8_t)i, p[8] = (uint8_t)n, p[9] = (uint8_t)k;
+    for (int j = 0; j < k; j++) net_w32(p + 10 + NET_KILLS_ENT * j, hid[j]), net_w16(p + 14 + NET_KILLS_ENT * j, age ? age[j] : NET_KILLS_AGE_OLD);
+    return len;
+}
+// -> true = a valid NET_KILLS packet (nonce 0, or a part's tag 0 = not valid); a part's hid 0 entries are dropped (m->k = the rest)
+static inline bool net_unpack_kills(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, NetKillsMsg *m) {
+    int t = 0;
+    if (!in || !m || len < NET_HDR + 1 || in[3] != NET_KILLS || !net_unpack_ex(in, len, &t, player, seq, NULL, NULL, NULL, NULL)) return false;
+    const uint8_t *p = in + NET_HDR;
+    memset(m, 0, offsetof(NetKillsMsg, hid));
+    m->op = p[0], m->nonce = net_r32(p + 1), m->tag = net_r16(p + 5);
+    if (!m->nonce) return false;
+    if (m->op == NKO_ASK) {
+        m->have = (uint64_t)net_r32(p + 7) | (uint64_t)net_r32(p + 11) << 32;
+        m->moon = net_r16(p + 15);
+        return true;
+    }
+    if (!m->tag) return false;
+    m->i = p[7], m->n = p[8];
+    int k = 0;
+    for (int j = 0; j < p[9]; j++) {
+        uint32_t h = net_r32(p + 10 + NET_KILLS_ENT * j);
+        if (h) m->hid[k] = h, m->age[k++] = net_r16(p + 14 + NET_KILLS_ENT * j);
+    }
+    m->k = (uint8_t)k;
+    return true;
+}
+
+// (s197 review S3 / S5) a log line limiter for receive paths a peer can drive: at most NET_LOGRATE_BURST lines per NET_LOGRATE_MS
+// window; the rest is only counted (quiet, shown in `net diag`). ok -> true = write the line now; *first_quiet (optional) = this is
+// the first line refused in this window (the caller may say "more lines are not written" once).
+#define NET_LOGRATE_MS 2000   // GUESS
+#define NET_LOGRATE_BURST 8   // GUESS
+typedef struct { uint64_t t0; uint32_t n, quiet; } NetLogRate;
+static inline bool net_lograte_ok(NetLogRate *r, uint64_t now, bool *first_quiet) {
+    if (first_quiet) *first_quiet = false;
+    if (!r->t0 || now < r->t0 || now - r->t0 >= NET_LOGRATE_MS) r->t0 = now ? now : 1, r->n = 0;
+    if (r->n < NET_LOGRATE_BURST) { r->n++; return true; }
+    if (r->n == NET_LOGRATE_BURST && first_quiet) *first_quiet = true;
+    r->n = NET_LOGRATE_BURST + 1, r->quiet++;
+    return false;
 }

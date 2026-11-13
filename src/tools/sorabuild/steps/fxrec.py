@@ -117,9 +117,43 @@ def record(ctx):
     open(marker, "w").write(mode_tag(ctx, "record") + "\n")
 
 
+def _party_tag(ctx):
+    return mode_tag(ctx, "party") + ("" if ctx.fx_mode == "phh" else " list=" + _sha([_fx(ctx, "files_party.txt")]))
+
+
+def record_party(ctx):
+    """(s223 rikufx) The party stand-ins' weapon effect sets (fxrec/files_party.txt: W_EH000 / W_HE000 / W_MU000 / W_AL000 /
+    W_CA000_HUMAN .a.us) -> work/fxrec_party/out/kh2_fx.bin + .json, read only by fx/partyfx.py (step fx_party). Its own small recording
+    (5 light files, under a minute) so the 82-file recording and its keep list stay as they are. "phh" mode: nothing recorded (the PHH
+    cache has no such files): fx_party then appends nothing and the stand-ins keep the base sparks, no ribbon."""
+    marker = ctx.workp("fxrec_party_mode.txt")
+    if ctx.fx_mode == "phh":
+        ctx.log("fx: phh; the stand-ins' own effects need our recorder (config fx = fxrec): nothing recorded")
+        open(marker, "w").write(_party_tag(ctx) + "\n")
+        return
+    args = ["--list", _fx(ctx, "files_party.txt"), "--kh2", ctx.kh2, "--exe", ctx.cfg.get("kh2exe", ""),
+            "--out", ctx.workp("fxrec_party/x")[:-2], "--jobs", str(ctx.cfg.get("fxrec_jobs", 2)),
+            "--build", ctx.workp("fxrec/build/fxrec_boot.exe")]
+    if ctx.cfg.get("bash"):
+        args += ["--sh", ctx.cfg["bash"]]
+    ctx.py(_fx(ctx, "recordall.py"), *args)
+    open(marker, "w").write(_party_tag(ctx) + "\n")
+
+
 STEPS = [
     Step("fxrec_build", build, work_outputs=["fxrec_build_mode.txt"]),
     Step("fxrec_record", record, deps=["fxrec_build"], work_outputs=["fxrec_record_mode.txt"]),
+    Step("fxrec_party", record_party, deps=["fxrec_build"], work_outputs=["fxrec_party_mode.txt"]),  # (s223 rikufx)
 ]
 STEPS[0].stale = _stale("build", "fxrec_build_mode.txt")
 STEPS[1].stale = _stale("record", "fxrec_record_mode.txt")
+
+
+def _party_stale(ctx):
+    try:
+        return open(ctx.workp("fxrec_party_mode.txt")).read().strip() != _party_tag(ctx)
+    except OSError:
+        return True
+
+
+STEPS[2].stale = _party_stale

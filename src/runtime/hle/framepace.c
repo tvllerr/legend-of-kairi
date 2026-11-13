@@ -1,4 +1,4 @@
-// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90 or 120 frames per second, and the game's
+// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90, 120, 144, 165, 240 or 360 frames per second, and the game's
 // clock the same at every one of them. Shared by the macOS, Linux and Windows builds.
 //
 // How BOTW 1.8.2 keeps time (main module, runtime addresses):
@@ -15,7 +15,7 @@
 //     screen (0.2 s at 30 fps, 0.1 s at 120). The paused game (pause menu, map: the state at 0x7001cb48a4 is 2, 0
 //     while playing) updates VFR twice a frame.
 // So the game already runs at any frame rate as long as VFR is told how long a frame really took. Savage Wind:
-//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 300 fps at
+//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 360 fps at
 //     most, FPS_CEILING; with VSync On or Adaptive a little under the display's refresh rate), and skips the frame
 //     loop's vsync wait (rt_frame_wait, tools/patches.py);
 //   - tells VFR how long the frame really took (rt_vfr_update, inside updateInterval after the game set its ratio):
@@ -50,6 +50,7 @@
 #include "../rt.h"
 #include "../settings.h"
 #include "../framepace.h"
+#include "../gamelib.h"
 #include "../window_size.h"
 
 extern volatile int g_movie_playing;  // runtime/hle/movie.c: video decoders running
@@ -103,10 +104,28 @@ static const char *event_name(void) {
     return n && n < 32 && !p[n] ? p : "";
 }
 
-// Events held at the console's 30 fps whatever the chosen rate: a wait in them counts frames and can miss its end.
-//   Demo014_0: Master Kohga's entrance in the Yiga Clan hideout (Assassin_Leader) froze after "The strong, the burly..."
-//              at 120 fps, and played through at 30 (#196). It depends on the exact rate: one run at about 80 fps passed.
-static const char *const events_at_30[] = {"Demo014_0"};
+// Events held at the console's 30 fps whatever the chosen rate: a wait in them can miss its moment at another rate.
+//   Master Kohga's entrance in the Yiga Clan hideout froze after "The strong! The burly!!" (#196, #455, #533): the picture
+//   went on, the cutscene never finished. The hideout's EventTag starts Electric_Relic<WaitStable>, which calls the demo
+//   Demo347_0<Appear>; the log names the event Electric_Relic for all of it. Between Kohga's lines the demo waits for
+//   a trigger in his animation (Demo_WaitForASTriggerEvent), and that trigger exists only in the update in which the
+//   animation crosses its frame: a wait that starts a moment later never ends. Whether it does depends on the exact rate:
+//   it froze at 120 fps and with 55-70 fps, one run at about 80 fps passed, and every run at 30 played through.
+//   Electric_Relic is also the Thunder Helm quest's talks in Gerudo Town, so it is held only within `r` metres of
+//   Kohga's room (its x, z); r = 0: anywhere. (Demo014_0, held before, is a Yiga guard spotting Link, not Kohga.)
+static const struct { const char *name; float x, z, r; } events_at_30[] = {
+    {"Electric_Relic", -3481.0f, 1315.0f, 150.0f},
+    {"Demo347_0", 0, 0, 0},
+};
+
+// Link is within r metres of x, z (or r is 0)
+static bool link_near(float x, float z, float r) {
+    if (r <= 0) return true;
+    uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
+    if (!pinfo) return false;
+    float dx = *(float *)(uintptr_t)(pinfo + 0x88) - x, dz = *(float *)(uintptr_t)(pinfo + 0x90) - z;
+    return dx * dx + dz * dz <= r * r;
+}
 
 // The event running now is one of those (and its name, logged once per event)
 static bool event_at_30(void) {
@@ -116,7 +135,8 @@ static bool event_at_30(void) {
     const char *name = event_name();
     bool hold = false;
     for (size_t i = 0; i < sizeof events_at_30 / sizeof *events_at_30; i++)
-        if (!strcmp(name, events_at_30[i])) hold = true;
+        if (!strcmp(name, events_at_30[i].name) && link_near(events_at_30[i].x, events_at_30[i].z, events_at_30[i].r))
+            hold = true;
     if (ev != last && *name) {
         last = ev;
         LOG("[event] %s%s\n", name, hold ? ": at 30 fps (its waits count frames)" : "");
@@ -137,12 +157,67 @@ bool framepace_title_ui(void) {
     if (*(uint32_t *)(uintptr_t)PAUSE_STATE) return false;
     return screen_up(1) || screen_up(0x38);
 }
+bool framepace_dlc_ui(void) { return screen_up(0x3f); }  // (screen 0x3f)
 
 // (screen 0x55: the loading screen with its tip, up from a load's start until its fade into the game is over)
 bool framepace_loading_ui(void) { return screen_up(0x55); }
 
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
+bool framepace_map_ui(void) {
+    if (!framepace_menu_ui()) return false;
+    uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
+    if (!mgr || VF(uint32_t, mgr, 0x28) <= 0x2f) return false;
+    uint64_t arr = VF(uint64_t, mgr, 0x30);
+    if (!arr || VF(uint64_t, arr, 8 * 0x2f)) return false;  // inventory covers the map
+    uint64_t map = VF(uint64_t, arr, 8 * 0x2a);
+    return map && VF(uint8_t, map, 0xfe) == 2;  // same active map screen as pc_cursor.c
+}
+bool framepace_quick_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 4; }
+// A shop's panes, where they are (#599): ShopInfo_00 over a counter, ShopBtnList5_00 / ShopBtnList20_00 and ShopBG_00
+// at a merchant, ShopHorse_00 at a stable, and the list's selection box (BoxCursorTV) while one is up. The game makes
+// these screens when a shop's panel opens and drops them when it closes; each is in the screen manager [screen_mgr]
+// (+0x28 count, +0x30 screens) with its name at +0xd0 (the game's own string, in its module) and its layout at +0x30,
+// whose root pane is at +0x18. A pane (nn::ui2d::Pane): +0x20 its children's list head, linked 8 bytes into each child
+// (+0x28 the first link, +8 in a link the next), +0x58 bit 0 visible, +0x70 its global matrix (3x4, rows of 4 floats:
+// x, y in layout units at +0x7c, +0x8c), +0xb8 its name. Writes up to max (x, y) pairs and returns how many.
+static int shop_walk(uint64_t pane, int depth, float *xy, int n, int max, int *budget) {
+    uint64_t top = HEAP_BASE + kernel_heap_size();
+    if (pane < HEAP_BASE || pane + 0xd0 > top || depth > 12 || --*budget < 0 || n >= max) return n;
+    if (!(VF(uint8_t, pane, 0x58) & 1)) return n;  // (hidden, with all under it)
+    xy[2 * n] = VF(float, pane, 0x7c), xy[2 * n + 1] = VF(float, pane, 0x8c);
+    n++;
+    uint64_t head = pane + 0x20, link = VF(uint64_t, pane, 0x28);
+    for (int k = 0; k < 256 && link != head && link >= HEAP_BASE && link + 16 <= top && *budget > 0; k++) {
+        n = shop_walk(link - 8, depth + 1, xy, n, max, budget);
+        link = VF(uint64_t, link, 8);
+    }
+    return n;
+}
+
+int framepace_shop_panes(float *xy, int max) {
+    uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr, top = HEAP_BASE + kernel_heap_size();
+    if (!mgr) return 0;
+    uint32_t count = VF(uint32_t, mgr, 0x28);
+    uint64_t arr = VF(uint64_t, mgr, 0x30);
+    if (!arr || arr < HEAP_BASE || arr + 8ull * count > top) return 0;
+    // (the list's selection box is BoxCursorTV, a screen of its own the menus share: taken while a shop is up)
+    int n = 0, budget = 2048;
+    uint64_t cursor = 0;
+    bool shop = false;
+    for (uint32_t i = 0; i < count && i < 256; i++) {
+        uint64_t sc = VF(uint64_t, arr, 8 * i);
+        if (sc < HEAP_BASE || sc + 0x100 > top) continue;
+        uint64_t name = VF(uint64_t, sc, 0xd0), layout = VF(uint64_t, sc, 0x30);
+        if (name < GUEST_LO || name >= GUEST_HI - 16 || layout < HEAP_BASE || layout + 0x20 > top) continue;
+        if (!strcmp((const char *)(uintptr_t)name, "BoxCursorTV")) cursor = layout;
+        if (memcmp((const char *)(uintptr_t)name, "Shop", 4)) continue;
+        shop = true;
+        n = shop_walk(VF(uint64_t, layout, 0x18), 0, xy, n, max, &budget);
+    }
+    if (shop && cursor) n = shop_walk(VF(uint64_t, cursor, 0x18), 0, xy, n, max, &budget);
+    return n;
+}
 bool framepace_paused(void) { return in_menu(); }
 
 int framepace_target(void) {
@@ -164,9 +239,11 @@ int framepace_target(void) {
     return fps;
 }
 
-// No limit still stops at 300 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
-// takes 1/30 of a minute times the step each frame: at 300 fps that is 1% of the value's rounding unit per frame).
-#define FPS_CEILING 300
+// No limit still stops at 360 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
+// takes 1/30 of a minute times the step each frame: at 360 fps that is 1.2% of the value's rounding unit per frame).
+// The game's clock and the menus' step stop here too (rt_vfr_update, framepace_presented): a frame rate above this
+// would run the game fast.
+#define FPS_CEILING 360
 
 // With VSync On or Adaptive (FIFO), a frame rate at or over the display's refresh rate waits for the display: up to a
 // refresh of delay, and with G-SYNC / FreeSync the display leaves its variable rate at the top of its range. So the
@@ -175,6 +252,11 @@ int framepace_target(void) {
 static double vsync_cap(void) {
     if (g_settings.vsync != VSYNC_ON && g_settings.vsync != VSYNC_ADAPTIVE) return 0;
     double hz = winsize_refresh_rate();
+    // SAVAGEWIND_VSYNC_MARGIN=0: the cap at the refresh rate itself. The margin is for VRR; on a fixed-rate display (the
+    // Steam Deck in Game Mode) it only costs frames: 87.6 shown at 89.9 Hz
+    static int margin = -1;
+    if (margin < 0) margin = !getenv("SAVAGEWIND_VSYNC_MARGIN") || atoi(getenv("SAVAGEWIND_VSYNC_MARGIN")) != 0;
+    if (!margin) return hz >= 30 ? hz : 0;
     return hz >= 30 ? hz - hz * hz / 3600 : 0;
 }
 
@@ -213,7 +295,28 @@ int rt_frame_wait(void) { return framepace_on(); }
 static float g_step = 1;         // the last frame's length between presents, in console frames
 static int g_grid_streak;        // presents in a row that kept the pace
 
+// A loading screen up for minutes (#438: stuck after a Divine Beast's cutscene, the screen running, no error): what each
+// of the game's threads waits for goes to the log, at 90 s and again at 210 s of the same loading screen, so a player's
+// log shows where it stopped. SAVAGEWIND_LOAD_WATCH=<seconds> for the first dump, 0 off.
+static void load_watch(uint64_t t) {
+    extern void kernel_dump_threads(void);  // runtime/kernel.c
+    static int first = -1;
+    static uint64_t since;
+    static int dumps;
+    if (first < 0) first = env_int("SAVAGEWIND_LOAD_WATCH", 90);
+    if (!first || !framepace_loading_ui()) { since = 0; dumps = 0; return; }
+    if (!since) since = t;
+    uint64_t at = (uint64_t)(first + 120 * dumps) * 1000000000ull;
+    if (dumps < 2 && t - since >= at) {
+        LOG("[load-watch] the loading screen has been up for %d s (event %s): the game's threads\n",
+            (int)((t - since) / 1000000000ull), event_name());
+        kernel_dump_threads();
+        dumps++;
+    }
+}
+
 void framepace_presented(uint64_t t, bool on_grid) {
+    load_watch(t);
     if (!framepace_on()) return;
     static uint64_t prev;
     static double smooth;
@@ -222,7 +325,8 @@ void framepace_presented(uint64_t t, bool on_grid) {
     if (s > 0.25) s = 0.25;
     smooth = smooth > 0 ? smooth + (s - smooth) * 0.25 : s;
     float step = (float)((on_grid ? s : smooth) * 30);
-    g_step = step < 0.1f ? 0.1f : step > 1.5f ? 1.5f : step;
+    float least = 30.0f / FPS_CEILING;
+    g_step = step < least ? least : step > 1.5f ? 1.5f : step;
     g_grid_streak = on_grid ? g_grid_streak + 1 : 0;
     static int fixed = -1;
     if (fixed < 0) fixed = env_int("SAVAGEWIND_NO_CONTROLLER_STEP", 0);
@@ -267,15 +371,20 @@ float rt_arrow_gravity(uint64_t arrow, float g) {
     return g * g_frame_ratio;
 }
 
-// The physics step's solver microsteps (tools/patches.py _solver_steps, #161): the game asks for delta frame x 6 (6 at
-// 30 fps, 2 at 120), the same microstep length at any frame rate; the runtime gives 6 / sqrt(delta frame) on shorter
-// steps (8.5 at 60 fps, 12 at 120). With the game's count the solver gave way to what touches Link more and more as the
-// steps got shorter: a held cucco over his head cut his jump to 0.25 m at ~90 fps (0.63 at 30); 6 a step still left
-// 0.56, 6 / sqrt the 0.64 of 30 fps (SAVAGEWIND_SOLVER_STEPS=0: the game's count).
+// The physics step's solver microsteps (tools/patches.py _solver_steps, #161, #425): the game asks for delta frame x 6,
+// rounded (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at ~90, 1 or 2 at 120 (its delta frame wobbles around 0.25),
+// 1 from ~150. Holding a cucco over his head, Link's jump (0.61-0.63 m at 30 fps) depends on that count: 2 gave 0.13-0.20,
+// 3 0.25, 4 0.42, 6 0.51-0.56, 1 0.56-0.61, 10-12 0.62-0.64. And many microsteps a second keep a Magnesis door on its
+// hinges: Oman Au's doors opened in 1 of 5 tries with 12 a step at 120 fps (1440 a second), and every time with 1, 6
+// (720) or the game's count, also at ~190 fps. So up to ~75 fps the runtime gives 6 / sqrt(delta frame) (6 at 30, 8.5
+// at 60: the door opens, the cucco 0.64), above that 1 (90 fps: cucco 0.61, 120-140: 0.59, the doors open). (The
+// border is past 60 so that 60 fps, whose delta frame wobbles around 0.5, keeps one count.) SAVAGEWIND_SOLVER_STEPS=0:
+// the game's count.
 float rt_solver_steps(float delta_frame, float per_frame) {
     static int keep = -1;
     if (keep < 0) keep = env_int("SAVAGEWIND_SOLVER_STEPS", 1) != 0;
-    return keep && delta_frame > 0 && delta_frame < 1 ? per_frame / sqrtf(delta_frame) : delta_frame * per_frame;
+    if (!keep || delta_frame <= 0 || delta_frame >= 1) return delta_frame * per_frame;
+    return delta_frame >= 0.4f ? per_frame / sqrtf(delta_frame) : 1.0f;
 }
 
 // Keyframed bodies' turn (tools/patches.py _kf_angle, #209): the angle of a keyframed body's turn toward its target,
@@ -288,6 +397,100 @@ float rt_kf_angle(uint64_t q) {
     float w = fabsf(v[3]);
     if (!g_kf_angle) return w >= 1.0f ? 0.0f : 2.0f * acosf(w);
     return 2.0f * atan2f(sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), w);
+}
+
+// Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick; #398). Havok judges
+// whether a body has come to rest once per physics step, and the game takes one step a frame:
+//   - a body's island goes to sleep after 6 checks in a row (every 4 steps; every 16 for the far one) within 2 cm (8 cm)
+//     of where it was: 24 steps, 0.8 s at 30 fps and 0.07 s at 360 (hkpMotion +0xd counts them, the world's +0x3ef
+//     paces the checks' flags);
+//   - in its last step the solver slows a body under its deactivation class's speed by a multiplier (0.97 to 0.94) and
+//     stops it under the class's sleep speed (hkpWorld + 0x314, 0x20 a class: +8 the multiplier, +0xc the sleep speed
+//     as a fraction of the class's speed, 1.9.0 0x7000148834). From rest a body gains gravity x the step in a step: at
+//     360 fps a twelfth of a console frame's, under the sleep speed, so it was stopped again every step.
+// In Ree Dahee Shrine the ball lands rolling up the long ramp and stops for a moment before rolling back: above ~120 fps
+// it fell asleep there, and never moved again (at 60 fps, as on the console, it rolls back down to its switch).
+// The runtime counts console frames for each physics world (the frame's length, slow motion left out, as the arrows do)
+// and lets only the steps that complete one count a check: every step at 30 fps (the console's and the game's code), one
+// step in 2 at 60, one in 12 at 360. The solver's slowing and stopping go on in every step, scaled to its length r in
+// console frames (at most 1): the multiplier to the power r and the sleep speed x r, since what a step adds to a body's
+// speed is in proportion to its length; a body is slowed as much a second as on the console and stopped when it would be
+// there, and the steps between two console frames still damp what's held between pushes (a floor switch Link stands on).
+// SAVAGEWIND_PHYS_TICK=0: every step and the game's values (as before).
+#define PHYS_WORLDS 8
+#define PHYS_SOLVER_INFO 0x2b0  // hkpWorld: its hkpSolverInfo (what the bodies' check is handed)
+#define PHYS_CLASSES 0x314      // hkpWorld: the solver's 6 deactivation classes, 0x20 bytes each
+typedef struct {
+    uint64_t world;    // (0: free)
+    float frames;      // console frames since the last step that completed one
+    int tick;          // this step completes one
+    float game[6][2];  // the game's multiplier and sleep speed for each class
+    float put[6][2];   // what was put there for the last step
+    float put_r;       // the step length they were scaled for
+} PhysWorld;
+static PhysWorld g_phys[PHYS_WORLDS];
+static int g_phys_tick = -1;
+
+RT_ON_RESET(phys_tick_reset) { memset(g_phys, 0, sizeof g_phys); }
+
+static PhysWorld *phys_world(uint64_t world, bool add) {
+    for (int i = 0; i < PHYS_WORLDS; i++) {
+        uint64_t w = __atomic_load_n(&g_phys[i].world, __ATOMIC_ACQUIRE);
+        if (w == world) return &g_phys[i];
+        uint64_t none = 0;
+        if (!w && add && __atomic_compare_exchange_n(&g_phys[i].world, &none, world, false, __ATOMIC_ACQ_REL,
+                                                     __ATOMIC_ACQUIRE)) {
+            LOG("[phys] world %#llx: deactivation at the console's pace\n", (unsigned long long)world);
+            return &g_phys[i];
+        }
+        if (!w && !add) return NULL;
+        if (!w && none == world) return &g_phys[i];  // (another thread added it)
+    }
+    return NULL;
+}
+
+// A world's step (its deactivation counter's update): whether it completes a console frame (the counter and the
+// checks go on), with the solver's slowing and stopping scaled to the step
+int rt_phys_tick(uint64_t world) {
+    if (g_phys_tick < 0) g_phys_tick = env_int("SAVAGEWIND_PHYS_TICK", 1) != 0;
+    if (!g_phys_tick) return 1;
+    PhysWorld *p = phys_world(world, true);
+    if (!p) return 1;
+    float r = g_frame_ratio;
+    if (!(r > 0) || r > 1) r = 1;  // (a frame of 1/30 s or longer: the game's values, as on the console)
+    p->frames += r;
+    int tick = p->frames >= 0.999f;
+    if (tick) p->frames = fmaxf(p->frames - 1, 0);
+    p->tick = tick;
+    for (int i = 0; i < 6; i++) {
+        float *m = (float *)(uintptr_t)(world + PHYS_CLASSES + 0x20 * i + 8);
+        if (m[0] != p->put[i][0] || m[1] != p->put[i][1]) p->game[i][0] = m[0], p->game[i][1] = m[1], p->put_r = 0;
+        if (r == p->put_r) continue;  // (already scaled for this length)
+        m[0] = p->put[i][0] = r == 1 ? p->game[i][0] : powf(p->game[i][0], r);
+        m[1] = p->put[i][1] = p->game[i][1] * r;
+    }
+    p->put_r = r;
+    return tick;
+}
+
+// A body's deactivation check (handed the world's solver info): whether its world's step completes a console frame
+int rt_phys_ticked(uint64_t solver_info) {
+    PhysWorld *p = g_phys_tick > 0 ? phys_world(solver_info - PHYS_SOLVER_INFO, false) : NULL;
+    return !p || p->tick;
+}
+
+// A player demo move's arrival (tools/patches.py _demo_move_arrive, #364): the move that walks Link in a cutscene ends
+// when the distance left is under the body's speed, given in metres per console frame: one console frame of walking.
+// Leaving the Shrine of Resurrection, the rail move's point runs about 0.15 m ahead of Link; above ~100 fps a frame's step
+// is short enough for Link to come within 0.185 m of an intermediate point (0.169 at 120 fps, measured), and the walk
+// ended halfway, Link standing still for the rest of the scene. The game's other end test (2 x speed x delta frame)
+// already follows the step; this one now does too: one frame of walking at the frame's length, at most a console frame's,
+// so 30 fps (and slower) keeps the game's test. SAVAGEWIND_DEMO_ARRIVE=0: the game's own.
+float rt_demo_move_arrive(float speed, float delta_frame) {
+    static int on = -1;
+    if (on < 0) on = env_int("SAVAGEWIND_DEMO_ARRIVE", 1) != 0;
+    if (!on || !(delta_frame > 0) || delta_frame >= 1) return speed;
+    return speed * delta_frame;
 }
 
 // The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
@@ -356,6 +559,14 @@ int rt_surf_jump_request(uint64_t controller) {
     return 1;
 }
 
+// A stale actor in the game's target manager was ignored (tools/patches.py _stale_actor_helper / _stale_actor_target,
+// #391, #393): the game would have crashed on it. Logged the first five times, then each power of two.
+void rt_stale_actor(void) {
+    static uint32_t n;
+    uint32_t k = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    if (k <= 5 || (k & (k - 1)) == 0) LOG("[game] a stale actor in the target manager was ignored (%u so far)\n", k);
+}
+
 // The game's frames that were presented: one step per presented frame, where game frames step twice while paused
 // (output_scale.c's jitter sequence: each presented frame gets the next phase)
 static uint64_t shown_frames;
@@ -369,6 +580,7 @@ float framepace_game_ratio(void) { return g_game_ratio; }
 
 void rt_vfr_update(uint64_t vfr) {
     __atomic_fetch_add(&game_frames, 1, __ATOMIC_RELAXED);
+    gamelib_sync();
     {
         extern uint64_t renderer_present_count(void);
         static uint64_t presented = ~0ull;
@@ -379,6 +591,8 @@ void rt_vfr_update(uint64_t vfr) {
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
     g_fs_vfr = plat_now_ns();
+    extern void freecam_frame(void);  // (hle/freecam.c)
+    freecam_frame();
     clock_probe(vfr);
     log_screens();
     { extern void linkpos_frame(void); linkpos_frame(); }  // recon: Link's position per frame (runtime/linkpos.c)
@@ -431,6 +645,8 @@ void rt_vfr_update(uint64_t vfr) {
     }
     bool held = VF(uint8_t, vfr, VFR_OVERRIDE) && ratio > 1;  // (stage loading: the game asks for single steps)
     if (held) ratio = 1;
+    extern bool freecam_active(void);
+    if (freecam_active()) ratio = 0.001f;  // (the free camera: the world nearly stops)
     if (!paused) {
         given += ratio / 30.0;
         if (held || fabs(real - given) > 0.25) real = given;  // (nothing owed for a deliberate slow down)

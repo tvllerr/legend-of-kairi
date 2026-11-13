@@ -12,14 +12,25 @@
 // blade only (the hit sparks work with the old exe: they are plain fx.bin elements).
 // Live: "set kbfx 0" = the old single set (Kingdom Key sparks + white ribbon, no left-blade ribbon); "set kbfxid <id>"
 // = force that Keyblade's set on both blades (e.g. 0x2b Oblivion; 0 = the equipped ones); "set kbfxflip 1" = the
-// ribbon texture's v 0 at the grip (GUESS default: at the tip).
-// Needs (sora.c before the include): KB (sora_levels.h), sora_fx.h, LOG, windows.h.
+// ribbon texture's v 0 at the grip (GUESS default: at the tip). (s216) "set kbown 0" = our two Keyblades draw their s214
+// placeholder sets again, "set kbse 0" = their hits play the normal KH2 hit (both default 1).
+// (s216 kbfx) The mod's own Keyblades (Sealing Blade 0x7e01, Guardian Core 0x7e02) have OWN sets "s1" / "g1" (tools/sorabuild/fx/
+// kbownfx.py: shaped from Fenrir's / Photon Debugger's sparks, our colours + shapes; our ribbon textures; Sealing Blade's beam
+// "kbs1_beam" / "kbs1_beam_hit") and OWN hit sounds ("kbs1_hit" / "kbg1_hit" in sfx.bin, synthesised by ours/kb/kbsynth.py).
+// A row's `alt` = the placeholder set used when fx.bin has not got the own set (an older pack) or with live "set kbown 0"; `se` =
+// the sfx.bin name of its own hit sound (missing = the normal KH2 hit, sora_sfx_hit; live "set kbse 0" = the normal one too).
+// KH2 fact (s216, the KH2 extract): every Keyblade's W_EX010_<xx>.a.us names its OWN sound bank (se500 = Kingdom Key ... se527) and
+// those banks hold different streams at the hit indexes 0..8, so vanilla KH2 gives each Keyblade its own hit sounds; the mod plays
+// se500's (the Kingdom Key's) for every KH2 Keyblade (sora_sfx_hit), only these two get their own (recon/s216/S216_HELPER_FX.md).
+// Needs (sora.c before the include): KB (sora_levels.h), sora_fx.h, sora_sfx.h, LOG, windows.h, IN_ANTI, IN_MICKEY.
 #pragma once
 
 typedef struct {
     uint16_t id;       // KH2 item id (03system.bin)
     char set[3];       // W_EX010_<set>.a.us; "" = W_EX010 (the Kingdom Key)
     const char *name;  // log name (sora_kb.h KB_TAB may not have the row yet)
+    char alt[3];       // (s216) the placeholder set when fx.bin lacks `set` or with "set kbown 0" ("" = none: KH2's rows)
+    const char *se;    // (s216) sfx.bin name of the Keyblade's own hit sound (NULL = the normal KH2 hit)
 } KbfxRow;
 static const KbfxRow KBFX_TAB[] = {
     {0x029, "", "Kingdom Key"},     {0x051, "", "Kingdom Key (item 81)"}, {0x02a, "10", "Oathkeeper"},
@@ -32,6 +43,9 @@ static const KbfxRow KBFX_TAB[] = {
     {0x1f3, "m0", "Fenrir"},        {0x1f4, "n0", "Ultima Weapon"},     {0x21f, "p0", "Two Become One"},
     {0x220, "r0", "Winner's Proof"}, {0x180, "w0", "Struggle Sword"},   {0x1f5, "v0", "Struggle Wand"},
     {0x1f6, "u0", "Struggle Hammer"}, {0x02c, "y0", "Detection Saber"}, {0x02d, "z0", "Frontier of Ultima"},
+    // (s216 kbfx) our own Keyblades: their own sets (kbownfx.py) + own hit sounds; without them in the packs = the s214
+    // placeholders: Sealing Blade = Fenrir's set "m0", Guardian Core = Photon Debugger's "90" (recon/S89_HELPER_KBFX.md)
+    {0x7e01, "s1", "Sealing Blade", "m0", "kbs1_hit"}, {0x7e02, "g1", "Guardian Core", "90", "kbg1_hit"},
 };
 #define KBFX_N ((int)(sizeof KBFX_TAB / sizeof KBFX_TAB[0]))
 
@@ -39,6 +53,8 @@ static int g_kbfx = 1;     // live "set kbfx": 0 = the old single set
 static int g_kbfx_id;      // live "set kbfxid": force this item id's set on both blades (0 = the equipped Keyblades)
 static int g_kbfx_vflip;   // live "set kbfxflip": the ribbon texture's v 0 at the grip
 static int g_kbfx_blade;   // the blade whose hit is being drawn (blade_hits: 0 main, 1 Valor's left)
+static int g_kbown = 1;    // (s216) live "set kbown": 0 = our Keyblades draw their placeholder sets (`alt`)
+static int g_kbse = 1;     // (s216) live "set kbse": 0 = our Keyblades' hits play the normal KH2 hit sound
 
 static int kbfx_row(int id) {
     for (int i = 0; i < KBFX_N; i++)
@@ -49,9 +65,9 @@ static int kbfx_item(int blade) { return g_kbfx_id ? g_kbfx_id : blade ? kb_sub_
 
 // the fx.bin element ids of one row (resolved once; -1 = not in fx.bin -> the Kingdom Key's)
 typedef struct { int tried, hit, fin, guard, trail; } KbfxIds;
-static KbfxIds g_kbfx_ids[KBFX_N];
+static KbfxIds g_kbfx_ids[KBFX_N], g_kbfx_ids_alt[KBFX_N];  // (s216) the row's set / its placeholder set
 static int g_kbfx_pack = -1;  // fx.bin has the per-Keyblade sets (its "kb00_trail"): 1 yes, 0 no, -1 not asked
-static const KbfxIds *kbfx_ids(int row) {
+static const KbfxIds *kbfx_ids_set(int row, bool alt) {
     if (row < 0) row = 0;
     if (g_kbfx_pack < 0) {
         if (!sora_fx_ready()) return NULL;  // (fx.bin not loaded yet: ask again later)
@@ -59,11 +75,11 @@ static const KbfxIds *kbfx_ids(int row) {
         if (!g_kbfx_pack) LOG("[sora] kbfx: fx.bin has no per-Keyblade sets (bake tools_s89/kbfx/fxbake.py -> fx_s89_kbfx.bin, "
                               "or the combined rebake): every Keyblade draws the Kingdom Key's sparks + the white ribbon\n");
     }
-    KbfxIds *d = &g_kbfx_ids[row];
+    KbfxIds *d = alt ? &g_kbfx_ids_alt[row] : &g_kbfx_ids[row];
     if (!d->tried) {
         d->tried = 1, d->hit = d->fin = d->guard = d->trail = -1;
         if (g_kbfx_pack) {
-            const char *s = KBFX_TAB[row].set;
+            const char *s = alt ? KBFX_TAB[row].alt : KBFX_TAB[row].set;
             char b[32];
             if (s[0]) {
                 snprintf(b, sizeof b, "kb%s_hit", s), d->hit = sora_fx_id(b);
@@ -75,6 +91,16 @@ static const KbfxIds *kbfx_ids(int row) {
     }
     return d;
 }
+// (s216) the set a row draws: its own, or its placeholder (`alt`) when fx.bin lacks the own set or with "set kbown 0".
+// *set (may be NULL) = that set's name ("" = the Kingdom Key's W_EX010).
+static const KbfxIds *kbfx_use(int row, const char **set) {
+    if (row < 0) row = 0;
+    const KbfxIds *d = kbfx_ids_set(row, false);
+    const char *s = KBFX_TAB[row].set;
+    if (KBFX_TAB[row].alt[0] && (!g_kbown || !d || d->hit < 0)) d = kbfx_ids_set(row, true), s = KBFX_TAB[row].alt;
+    if (set) *set = s;
+    return d;
+}
 
 // The element name of a hit spark for the blade being drawn (g_kbfx_blade): kind = "hit" / "hit_finish" / "hit_guard"
 // -> "kb<xx>_<kind>" when fx.bin has it, else kind itself (the Kingdom Key's).
@@ -83,13 +109,14 @@ static const char *kbfx_name(const char *kind) {
     if (!g_kbfx || IN_ANTI) return kind;  // (s89 trial: Anti has no Keyblade - its claws keep the plain sparks)
     int row = kbfx_row(kbfx_item(g_kbfx_blade));
     if (row <= 0 || !KBFX_TAB[row].set[0]) return kind;
-    const KbfxIds *d = kbfx_ids(row);
+    const char *s = "";
+    const KbfxIds *d = kbfx_use(row, &s);
     int id = !d ? -1 : !strcmp(kind, "hit") ? d->hit : !strcmp(kind, "hit_finish") ? d->fin : !strcmp(kind, "hit_guard") ? d->guard : -1;
     if (id < 0) return kind;
     static char b[4][32];
     static int k;
     k = (k + 1) & 3;
-    snprintf(b[k], sizeof b[k], "kb%s_%s", KBFX_TAB[row].set, kind);
+    snprintf(b[k], sizeof b[k], "kb%s_%s", s, kind);
     return b[k];
 }
 
@@ -106,24 +133,29 @@ static void kbfx_trail(int blade, const float grip[3], const float tip[3], bool 
         if (!blade) sora_fx_trail(grip, tip, on);
         return;
     }
-    const KbfxIds *d = kbfx_ids(kbfx_row(kbfx_item(blade)));
+    const KbfxIds *d = kbfx_use(kbfx_row(kbfx_item(blade)), NULL);
     ex(blade, grip, tip, on, d ? d->trail : -1, g_kbfx_vflip ? 1 : 0);
 }
 
 static void kbfx_log_id(const char *who, int id) {
     int row = kbfx_row(id);
-    const KbfxIds *d = kbfx_ids(row);
-    const char *s = row < 0 ? "" : KBFX_TAB[row].set;
+    const char *s = "";
+    const KbfxIds *d = kbfx_use(row, &s);
+    if (row < 0) s = "";
     bool own = row > 0 && s[0] && d && d->hit >= 0;
-    LOG("[sora] kbfx: %s = %s (0x%x)%s -> W_EX010%s%s set: sparks %s, ribbon %s\n", who,
-        row < 0 ? kb_name(id) : KBFX_TAB[row].name, id, row < 0 ? " (no kbfx row: the Kingdom Key's)" : "", s[0] ? "_" : "", s,
-        own ? "its own" : "the Kingdom Key's", d && d->trail >= 0 ? "its own (element 10)" : "the white gradient");
+    bool ours = s[0] && s[1] != '0';  // (s216) our sets ("s1", "g1"); KH2's all end in '0'
+    bool placeholder = row > 0 && KBFX_TAB[row].alt[0] && strcmp(s, KBFX_TAB[row].set);
+    LOG("[sora] kbfx: %s = %s (0x%x)%s -> %s%s%s set%s: sparks %s, ribbon %s\n", who,
+        row < 0 ? kb_name(id) : KBFX_TAB[row].name, id, row < 0 ? " (no kbfx row: the Kingdom Key's)" : "", ours ? "our own " : "W_EX010",
+        ours || !s[0] ? "" : "_", s, placeholder ? (g_kbown ? " (PLACEHOLDER: fx.bin has no own set)" : " (PLACEHOLDER: set kbown 0)") : "",
+        own ? "its own" : "the Kingdom Key's", d && d->trail >= 0 ? "its own" : "the white gradient");
 }
 
 // once per frame (sora_mod_frame_body, after kb_send): logs the active sets when the equipped Keyblades / live keys change
 static void kbfx_tick(void) {
-    static int last[7] = {-1, -1, -1, -1, -1, -1, -1};
-    int now[7] = {KB.kb[KB_MAIN], KB.kb[KB_VALOR], g_kbfx, g_kbfx_id, g_kbfx_vflip, KB.kb[KB_MASTER] * 4 + g_mfkb, KB.kb[KB_FINAL]};  // (s91 mfkb: + Master / Final)
+    static int last[9] = {-1, -1, -1, -1, -1, -1, -1, -1, -1};
+    int now[9] = {KB.kb[KB_MAIN], KB.kb[KB_VALOR], g_kbfx, g_kbfx_id, g_kbfx_vflip, KB.kb[KB_MASTER] * 4 + g_mfkb, KB.kb[KB_FINAL],
+                  g_kbown, g_kbse};  // (s91 mfkb: + Master / Final; s216: + kbown / kbse)
     if (!memcmp(now, last, sizeof now)) return;
     if (g_kbfx_pack < 0 && !sora_fx_ready()) return;
     memcpy(last, now, sizeof now);
@@ -137,6 +169,29 @@ static void kbfx_tick(void) {
     kbfx_log_id("master 2nd", g_kbfx_id ? g_kbfx_id : kb_sub_id(KB.kb, 3));  // (s91 mfkb)
     kbfx_log_id("final 2nd", g_kbfx_id ? g_kbfx_id : kb_sub_id(KB.kb, 4));
     if (g_kbfx_vflip) LOG("[sora] kbfx: ribbon texture flipped (v 0 at the grip)\n");
+    if (!g_kbse) LOG("[sora] kbfx: own hit sounds off (set kbse 0): every Keyblade plays the normal KH2 hit\n");
+}
+
+// (s216) The hit sound of the blade being drawn (g_kbfx_blade, like kbfx_name): a Keyblade with its own sound in sfx.bin
+// (KBFX_TAB.se) plays that at pos; anything else (KH2's Keyblades, Mickey, Anti, kbfx / kbse off, an sfx.bin without it)
+// = sora_sfx_hit(atkp), the KH2 hit of that attack row as before.
+static int g_kbse_sfx[KBFX_N];  // 0 = not asked yet, -1 = not in sfx.bin, else sound id + 1
+static int kbse_id(void) {
+    if (!g_kbse || !g_kbfx || IN_ANTI || IN_MICKEY) return -1;
+    int row = kbfx_row(kbfx_item(g_kbfx_blade));
+    if (row < 0 || !KBFX_TAB[row].se) return -1;
+    if (!g_kbse_sfx[row]) {
+        if (!sora_sfx_ready()) return -1;  // (not loaded yet: sora_sfx_hit loads it; ask again next hit)
+        int id = sora_sfx_id(KBFX_TAB[row].se);
+        g_kbse_sfx[row] = id >= 0 ? id + 1 : -1;
+        if (id < 0) LOG("[sora] kbfx: sfx.bin has no \"%s\" (an older pack): %s hits play the normal KH2 hit\n", KBFX_TAB[row].se, KBFX_TAB[row].name);
+        else LOG("[sora] kbfx: %s hits play its own sound \"%s\" (sfx #%d)\n", KBFX_TAB[row].name, KBFX_TAB[row].se, id);
+    }
+    return g_kbse_sfx[row] > 0 ? g_kbse_sfx[row] - 1 : -1;
+}
+static int kbse_hit(int atkp_row, float gain, const float pos[3]) {
+    int id = kbse_id();
+    return id >= 0 ? sora_sfx_play_at(id, gain, pos) : sora_sfx_hit(atkp_row, gain, pos);
 }
 
 // live "set kbfxid <item id>" (0 = back to the equipped Keyblades)

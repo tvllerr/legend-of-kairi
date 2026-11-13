@@ -29,8 +29,13 @@
 #ifndef PARTY_LOG
 #define PARTY_LOG LOG
 #endif
+#include "sora_pchar.h"  // (s217 riku: who stands in each slot, what needs whom)
+#include "sora_pfx.h"    // (s223 rikufx: the stand-ins' own KH2 hit sparks + swing ribbon; the glue below draws them)
 
 #define PARTY_N 2
+_Static_assert(PARTY_N == PCH_SLOTS, "sora_pchar.h slots = the party's");
+static int g_pchar[PARTY_N] = {PCH_DONALD, PCH_GOOFY};  // (s217 riku) the character in each slot (Debug Menu "Party"; session only)
+static int g_pfx = 1;  // (s223 rikufx) live "set pfx": 1 = the stand-ins' own KH2 sparks + ribbon (sora_pfx.h), 0 = as before s223
 static bool g_party_absorbed[PARTY_N];  // (s68 drive: a Drive Form took him in - not ticked, drawn or shown on the HUD)
 static bool g_plim_hold[PARTY_N];       // (s133 limits: a party Limit (sora_plimit.h) owns him - out of the follow / combat AI, drawn there; the HUD plate stays)
 #define PTRAIL_N 200            // Sora's last grounded points (PHH Trail n 200)
@@ -97,10 +102,11 @@ typedef struct {
     // friend_param header (party_ai.kh.json, re:0x71D850 Donald / re:0x71DD50 Goofy; VERIFIED): cm, KH frames
     float search, keep, leash, pause_min, pause_max, move_min, move_max, hop_chance, mp_gate_scale;
     int nhop;                 // B rows (hops after an attack, re:0x1CC810)
-    struct { float angle, up, speed, brake, frames; } hop[2];
+    struct { float angle, up, speed, brake, frames; } hop[3];  // (s220: 3, Mulan / Aladdin have three B rows)
     uint8_t wstr, wmag;       // the weapon (03system.bin stat rows, VERIFIED): Mage's Staff Str 1 Mag 1 @0x13F34,
                               // Knight's Shield Str 1 @0x13FE4
     float mp_max, mp_charge;  // plrp MP 100 (00battle.bin@0x31150 / 0x311D0) and prty MpChargeTime 1200 (VERIFIED)
+    bool no_blow;             // (s223 cloud) KH2 gives him no blow / landing motion (his mset has none): never knocked down
 } PartyDef;
 static PartyDef PARTY[PARTY_N] = {
     {"donald", 1, {2, 7, 11}, {144, 48, 36}, 2, 8, 0.261799f, 0.30f, {{66, 18, 0}, {70, 106, 0}, {74, 18, 0}, {78, 94, 0}}, 40,
@@ -109,6 +115,47 @@ static PartyDef PARTY[PARTY_N] = {
      {0, 4, 8}, {292, 72, 40}, 800, 1200, 1200, 6, 60, 600, 900, 0.5f, 1, 2, {{180, 100, 18, 0.98f, 18}, {0, 100, 10, 0.98f, 18}},
      1, 0, 100, 1200},
 };
+// (s217 riku) Riku (P_EH000 + Way to the Dawn W_EH000 hung on bone 53 = his LEFT hand root, the bake data/party/riku_*.bin): KH2's
+// own numbers, VERIFIED from the files (recon/s217/S217_HELPER_RIKU.md): prty row 35 (= his objentry moveset; 03system.bin pref:
+// walk 2, run 8 cm/frame, turn 0.2618 rad/frame, MpChargeTime 1200), plrp row 12 (character 13: MP 100), his friend_param block
+// re:0x720730 (FUN_1401b06e0 case 13 -> personality 11: search 800, keep 1200, leash 1200, pause 6..60, move 60..120 frames, hop
+// chance 0.2 (s220: was 0.3, KH2's block re:0x720730 +0x64 says 0.2), MP gate 1.0, one B row {180 deg, up 80, speed 12, brake
+// 0.98, 18 frames}), Way to the Dawn = stat row 03system.bin@0x14144 (Str 3, Mag 0). Slots (his mset, same numbering as Donald's):
+// field idle / walk / run 2 / 7 / 11, battle 0 / 4 / 8, blow front 66 + landing 70, back 74 + 78 (frames = the bake as read
+// 2026-11-12; the motion bake overrides them).
+// GUESS: shadow_r 0.35 (Donald 0.30, Goofy 0.40); lie_at 4 (his landings never lie down: f4 = the crouch; only "set plie" uses it).
+// (s220) `side` of a stand-in = the slot's (PARTY_SLOT_SIDE, set by party_char_begin / _put): +1 in Donald's place, -1 in Goofy's.
+static const PartyDef PARTY_RIKU = {"riku", 1, {2, 7, 11}, {140, 64, 44}, 2, 8, 0.261799f, 0.35f, {{66, 52, 0}, {70, 50, 0}, {74, 52, 0}, {78, 50, 0}}, 4,
+     {0, 4, 8}, {240, 76, 36}, 800, 1200, 1200, 6, 60, 60, 120, 0.2f, 1, 1, {{180, 80, 12, 0.98f, 18}}, 3, 0, 100, 1200};
+// (s220 members) Auron, Mulan, Aladdin, Jack Sparrow: KH2's own numbers, VERIFIED from the files (recon/s220/S220_HELPER_MEMBERS.md):
+// objentry rows 70 / 68 / 67 / 736 (P_HE000 moveset 24, P_MU000 25, P_AL000 23, P_CA000_HUMAN 36) -> prty rows 24 / 25 / 23 / 36:
+// walk 2, run 8 cm/frame, turn 0.2618 (Sparrow 0.19635) rad/frame, MpChargeTime 1200; plrp characters 5 / 6 / 7 / 8: MP 100;
+// friend blocks (personality 2 / 4 / 5 / 6 of the table re:0x71D800): Auron re:0x71E1F0, Mulan re:0x71E910, Aladdin re:0x71ED50,
+// Sparrow re:0x71F190 (search 800, keep 1200, leash 1200, pause 6..60, move / hop chance / B rows each his own, MP gate 1.0);
+// weapons (03system.bin stat rows, all Str 3 Mag 0): Battlefields of War @0x140B4, Sword of the Ancestor @0x140C4, Scimitar
+// @0x140A4, Skill and Crossbones @0x14134. Slots as Riku's (their msets have the same numbering; frames = the bakes, overridden
+// by the motion bake at load). GUESS: shadow_r (Auron 0.40, Mulan 0.30, Aladdin 0.30, Sparrow 0.35), lie_at 4 (as Riku's).
+// The jump rows' extra A-row field (+0x20: Mulan -50, Aladdin +50 / -50; 1 for the others) is NOT decoded (air rows are off).
+static const PartyDef PARTY_AURON = {"auron", 1, {2, 7, 11}, {180, 72, 40}, 2, 8, 0.261799f, 0.40f, {{66, 20, 0}, {70, 96, 0}, {74, 20, 0}, {78, 100, 0}}, 4,
+     {0, 4, 8}, {244, 80, 36}, 800, 1200, 1200, 6, 60, 30, 180, 0.2f, 1, 2, {{180, 150, 15, 0.98f, 24}, {0, 150, 15, 0.98f, 24}}, 3, 0, 100, 1200};
+static const PartyDef PARTY_MULAN = {"mulan", 1, {2, 7, 11}, {160, 60, 48}, 2, 8, 0.261799f, 0.30f, {{66, 36, 0}, {70, 48, 0}, {74, 36, 0}, {78, 48, 0}}, 4,
+     {0, 4, 8}, {220, 72, 32}, 800, 1200, 1200, 6, 60, 300, 600, 0.4f, 1, 3,
+     {{45, 25, 22, 0.98f, 10.8f}, {-45, 25, 22, 0.98f, 10.8f}, {180, 40, 20, 0.98f, 12}}, 3, 0, 100, 1200};
+static const PartyDef PARTY_ALADDIN = {"aladdin", 1, {2, 7, 11}, {138, 72, 36}, 2, 8, 0.261799f, 0.30f, {{66, 34, 0}, {70, 44, 0}, {74, 34, 0}, {78, 44, 0}}, 4,
+     {0, 4, 8}, {228, 60, 36}, 800, 1200, 1200, 6, 60, 120, 300, 0.6f, 1, 3,
+     {{60, 40, 20, 0.98f, 10.8f}, {-60, 40, 20, 0.98f, 10.8f}, {180, 40, 20, 0.98f, 10.8f}}, 3, 0, 100, 1200};
+static const PartyDef PARTY_SPARROW = {"sparrow", 1, {2, 7, 11}, {128, 72, 40}, 2, 8, 0.19634955f, 0.35f, {{66, 70, 0}, {70, 80, 0}, {74, 70, 0}, {78, 80, 0}}, 4,
+     {0, 4, 8}, {336, 72, 40}, 800, 1200, 1200, 6, 60, 300, 600, 0.6f, 1, 1, {{180, 60, 28, 0.82f, 15}}, 3, 0, 100, 1200};
+// (s223 cloud, recon/s223/S223_HELPER_CLOUD.md) Cloud = N_HB550_BTL (objentry row 1095, the 1000 Heartless helper: hb16 spawn groups
+// b_43 / b_48). NOT a KH2 party member: no prty / plrp / lvup / friend block / weapon stat row, no blow, land or jump motion. His bake
+// (sorabuild party_cloud) puts his motions at the player-layout slots: battle idle 0 = his 00A, field idle 2 = his town idle R00A
+// (N_HB550_RTN, the same model), walk 4 / 7 = his town walk R10A, run 8 / 11 = R10A too (KH2 has no run of his: GUESS, the feet slide
+// at the run speed), attack1 604 = 50A, attack2 608 = 51A. His town motions scale the sword bone to 0.01 (KH2's own: no sword on the
+// field). From KH2's data: walk 2.3333 cm/frame = R10A's own root (168 cm per 72 frames, the feet stay planted). GUESS (no KH2 row
+// of his): run 8 and turn 0.2618 (the party's prty), shadow 0.40, the friend numbers = Auron's block (search / keep / leash / pause as
+// every member, move 30..180), no hop (no jump motion: nhop 0), weapon Str 3 Mag 0, MP 100. no_blow: a blast never knocks him down.
+static const PartyDef PARTY_CLOUD = {"cloud", 1, {2, 7, 11}, {180, 72, 72}, 2.3333333f, 8, 0.261799f, 0.40f, {{66, 0, 0}, {70, 0, 0}, {74, 0, 0}, {78, 0, 0}}, 4,
+     {0, 4, 8}, {120, 72, 72}, 800, 1200, 1200, 6, 60, 30, 180, 0, 1, 0, {{0}}, 3, 0, 100, 1200, true};
 static const float PARTY_BANDS[3][2] = {{0, 200}, {160, 240}, {200, 1000}};  // cm (min, max), re:0x1B41A0
 static const char *const PARTY_BAND_NAME[3] = {"stand", "walk", "run"};
 static const char *const PARTY_SRC_NAME[4] = {"ray", "trail", "last", "warp"};
@@ -458,7 +505,7 @@ static void party_move(int i, const PIn *in) { party_steer(i, in, P.m[i].goal, P
 // reload loads it again: never freed).
 // (s55) every slot is also kept in PMOT (frames, loop start, root curve, frame triggers {u16 frame, u8 id, u8 n, i16 p1,
 // i16 p2}): the attack / cast motions.
-typedef struct { uint16_t slot, frames, loop, flags, nft; const float *root; const uint8_t *ft; } PMotX;
+typedef struct { uint16_t slot, frames, loop, flags, nft; const float *root; const uint8_t *ft; const uint32_t *bits; } PMotX;  // (s218: + bits)
 #define PMOT_MAX 64
 static PMotX PMOT[PARTY_N][PMOT_MAX];
 static int PMOT_N[PARTY_N];
@@ -506,6 +553,9 @@ static int party_mot_load(int i, const char *path) {
             x->root = root && root + (frames + 1) * 16u <= (uint32_t)n ? (const float *)(b + root) : NULL;
             x->ft = ft && ft + x->nft * 8u <= (uint32_t)n ? b + ft : NULL;
             if (!x->ft) x->nft = 0;
+            uint32_t ob;  // (s218) the range-trigger bits per frame (bit 22 = KH2 range trigger 22, turn to target)
+            memcpy(&ob, d + 12, 4);
+            x->bits = ob && ob + frames * 4u <= (uint32_t)n ? (const uint32_t *)(b + ob) : NULL;
         }
         for (int j = 0; j < 3; j++)
             if (slot == PARTY[i].bslot[j]) PARTY[i].bframes[j] = frames;
@@ -540,6 +590,10 @@ static void pmot_root(const PMot *mo, float t, float r[3]) {  // (sora.c mot_roo
 static void party_knockdown_core(int i, const float from[3], float power, float to_u) {
     PMember *m = &P.m[i];
     if (!m->placed) return;
+    if (PARTY[i].no_blow) {  // (s223 cloud: KH2 has no blow motion of his)
+        if (P.clog) PARTY_LOG("[party] %s not blown (no blow motion in KH2)\n", PARTY[i].name);
+        return;
+    }
     if (m->act && P.hk && P.hk->weapon) P.hk->weapon(i, true);  // (s55: an attack / cast cut short)
     pc_bash_end(i, "blown");
     m->act = 0, m->cur = -1;
@@ -709,9 +763,79 @@ static const PEntry PENT_GOOFY[] = {  // re:0x7253B0 (+ his run re:0x1CE8F0, Bas
     {"bash", EF_ATTACK, PH_SPELL, PS_BASH, 93, 192, 10, 250, 750, -500, 1000, 0, false},     // ("blade") re:0x71E0B0
     {"turbo", EF_ATTACK, PH_SPELL, PS_TURBO, 94, 194, 10, 0, 500, -100, 150, 0, false},      // re:0x71E130
 };
-static const PEntry *const PENT[PARTY_N] = {PENT_DONALD, PENT_GOOFY};
-static const int PENT_N[PARTY_N] = {(int)(sizeof PENT_DONALD / sizeof PENT_DONALD[0]),
-                                    (int)(sizeof PENT_GOOFY / sizeof PENT_GOOFY[0])};
+// (s217 riku) Riku's KH2 table: kn::Riku (ctor re:0x1CF150) -> 9 entries at re:0x727A90, filled by the static init
+// re:0xD2C0 (VERIFIED, Ghidra headless): 0 / 1 = the shared party ITEM entries (re:0x1CC970 / 0x1CCE90, flags 0x18 / 0x28: left out,
+// as for Donald / Goofy), 2 pause + 3 move (Donald's handlers re:0x1CCBA0 / 0x1CCDF0, flags 0x201), 4..7 the A rows 44..47 (re:0x1CD0A0,
+// flags 2), 8 = A row 89 (cost 99, HP 0.4, Donald's Cure handler re:0x1CC1A0: his HP emergency act, NOT decoded: left out). The A rows
+// (block re:0x720730 + 0xE0): 44 A300 / 45 A301 dist 0..160 h -160..160; 46 / 47 A330 / A331 jump rows dist 0..160 h 160..360. A rows
+// 111 / 113 (cost 10) are in his block but in no table entry (his own act scripts: NOT decoded, left out). No spell of Donald's.
+static const PEntry PENT_RIKU[] = {
+    {"pause", EF_MOVE | EF_SUSTAINED, PH_PAUSE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"move", EF_MOVE | EF_SUSTAINED, PH_MOVE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"attack1", EF_ATTACK, PH_ATTACK, PS_NONE, 44, 151, 0, 0, 160, -160, 160, 0, false},    // re:0x720810 A300
+    {"attack2", EF_ATTACK, PH_ATTACK, PS_NONE, 45, 152, 0, 0, 160, -160, 160, 0, false},    // re:0x720890 A301
+    {"air1", EF_ATTACK, PH_ATTACK, PS_NONE, 46, 181, 0, 0, 160, 160, 360, 0, true},         // re:0x720910 A330
+    {"air2", EF_ATTACK, PH_ATTACK, PS_NONE, 47, 182, 0, 0, 160, 160, 360, 0, true},         // re:0x720990 A331
+};
+// (s220 members) their KH2 tables (ctors re:0x1CE9B0 kn::Auron / 0x1CEB20 kn::Mulan / 0x1CEBF0 kn::Aladdin / 0x1CECC0 kn::Sparrow,
+// filled by the static inits re:0xAC90 / 0xB410 / 0xB840 / 0xBC70, VERIFIED Ghidra headless, sb/s220/members/ghidra): entries 0 / 1 =
+// pause + move (re:0x1CCBA0 / 0x1CCDF0), 2 / 3 = the shared ITEM entries (left out, as for everybody), 4..7 = the four A rows
+// (re:0x1CD0A0, flags 2), then each one's own named acts, LEFT OUT (own act handlers + effects, not decoded): Auron A row 95
+// "yukizakura" + A row 66 (HP act, cost 99, 0.4: as Riku's 89), Mulan 96 "mushufire" + 97 "flametongue", Aladdin 99 "slashrush" +
+// 100 "quickplay", Sparrow 114 "slash" + 115 "shadowsnipe" + 116 "bonecrusher". No spell of Donald's. A rows from their friend
+// blocks (+0xE0, 0x80 each): A300 / A301 ground rows, A330 / A331 jump rows.
+static const PEntry PENT_AURON[] = {
+    {"pause", EF_MOVE | EF_SUSTAINED, PH_PAUSE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"move", EF_MOVE | EF_SUSTAINED, PH_MOVE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"attack1", EF_ATTACK, PH_ATTACK, PS_NONE, 8, 151, 0, 0, 300, -100, 200, 0, false},     // re:0x71E2D0 A300
+    {"attack2", EF_ATTACK, PH_ATTACK, PS_NONE, 9, 152, 0, 0, 500, -100, 200, 0, false},     // re:0x71E350 A301
+    {"air1", EF_ATTACK, PH_ATTACK, PS_NONE, 10, 181, 0, 0, 280, 150, 585, 0, true},         // re:0x71E3D0 A330
+    {"air2", EF_ATTACK, PH_ATTACK, PS_NONE, 11, 182, 0, 0, 280, 150, 585, 0, true},         // re:0x71E450 A331
+};
+static const PEntry PENT_MULAN[] = {
+    {"pause", EF_MOVE | EF_SUSTAINED, PH_PAUSE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"move", EF_MOVE | EF_SUSTAINED, PH_MOVE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"attack1", EF_ATTACK, PH_ATTACK, PS_NONE, 16, 151, 0, 0, 300, -100, 200, 0, false},    // re:0x71E9F0 A300
+    {"attack2", EF_ATTACK, PH_ATTACK, PS_NONE, 17, 152, 0, 0, 450, -100, 150, 0, false},    // re:0x71EA70 A301
+    {"air1", EF_ATTACK, PH_ATTACK, PS_NONE, 18, 181, 0, 0, 150, 100, 585, 0, true},         // re:0x71EAF0 A330
+    {"air2", EF_ATTACK, PH_ATTACK, PS_NONE, 19, 182, 0, 0, 150, 100, 585, 0, true},         // re:0x71EB70 A331
+};
+static const PEntry PENT_ALADDIN[] = {
+    {"pause", EF_MOVE | EF_SUSTAINED, PH_PAUSE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"move", EF_MOVE | EF_SUSTAINED, PH_MOVE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"attack1", EF_ATTACK, PH_ATTACK, PS_NONE, 20, 151, 0, 0, 250, -100, 150, 0, false},    // re:0x71EE30 A300
+    {"attack2", EF_ATTACK, PH_ATTACK, PS_NONE, 21, 152, 0, 0, 300, -100, 100, 0, false},    // re:0x71EEB0 A301
+    {"air1", EF_ATTACK, PH_ATTACK, PS_NONE, 22, 181, 0, 0, 100, 100, 385, 0, true},         // re:0x71EF30 A330
+    {"air2", EF_ATTACK, PH_ATTACK, PS_NONE, 23, 182, 0, 0, 150, 100, 385, 0, true},         // re:0x71EFB0 A331
+};
+static const PEntry PENT_SPARROW[] = {
+    {"pause", EF_MOVE | EF_SUSTAINED, PH_PAUSE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"move", EF_MOVE | EF_SUSTAINED, PH_MOVE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"attack1", EF_ATTACK, PH_ATTACK, PS_NONE, 24, 151, 0, 0, 450, -100, 180, 0, false},    // re:0x71F270 A300
+    {"attack2", EF_ATTACK, PH_ATTACK, PS_NONE, 25, 152, 0, 0, 150, -100, 180, 0, false},    // re:0x71F2F0 A301
+    {"air1", EF_ATTACK, PH_ATTACK, PS_NONE, 26, 181, 0, 0, 250, 180, 385, 0, true},         // re:0x71F370 A330
+    {"air2", EF_ATTACK, PH_ATTACK, PS_NONE, 27, 182, 0, 0, 400, 250, 485, 0, true},         // re:0x71F3F0 A331
+};
+// (s223 cloud) Cloud has no kn:: class / action table / A rows in KH2 (an N_ object: his AI is the Bdx script inside his mdlx, not
+// decoded: its acts are idle, footwork, move_slide, jump, btl_attack, atk_bushin_slash_1 / _2, atk_kyougiri, atk_sonic_rave_single /
+// _sora, revenge). attack1 / attack2 = his two plain sword motions (50A: 3 hits, ally atkp 1651-1653 power 100; 51A: a 6.6 m dash slash,
+// atkp 1654 power 75), played through the A300 / A301 slots of his bake. GUESS: every distance / height (attack1 0..250 cm = the
+// 197 cm blade + arm, attack2 200..600 cm = where 51A's slash lands; h -100..200 as Auron's). No air rows (no jump motion), no named
+// acts (52A..52F, 40A, the side slides: left out, as the members' named acts).
+static const PEntry PENT_CLOUD[] = {
+    {"pause", EF_MOVE | EF_SUSTAINED, PH_PAUSE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"move", EF_MOVE | EF_SUSTAINED, PH_MOVE, PS_NONE, -1, 0, 0, 0, 0, 0, 0, 0, false},
+    {"attack1", EF_ATTACK, PH_ATTACK, PS_NONE, -1, 151, 0, 0, 250, -100, 200, 0, false},    // 50A (slot 604)
+    {"attack2", EF_ATTACK, PH_ATTACK, PS_NONE, -1, 152, 0, 200, 600, -100, 200, 0, false},  // 51A (slot 608)
+};
+#define PENT_COUNT_(t) ((int)(sizeof t / sizeof t[0]))
+static const PEntry *const PCHAR_PENT[PCH_N] = {PENT_DONALD, PENT_GOOFY, PENT_RIKU, PENT_AURON, PENT_MULAN, PENT_ALADDIN, PENT_SPARROW,
+                                                PENT_CLOUD};
+static const int PCHAR_PENT_N[PCH_N] = {PENT_COUNT_(PENT_DONALD), PENT_COUNT_(PENT_GOOFY), PENT_COUNT_(PENT_RIKU), PENT_COUNT_(PENT_AURON),
+                                        PENT_COUNT_(PENT_MULAN), PENT_COUNT_(PENT_ALADDIN), PENT_COUNT_(PENT_SPARROW),
+                                        PENT_COUNT_(PENT_CLOUD)};
+static const PEntry *PENT[PARTY_N] = {PENT_DONALD, PENT_GOOFY};  // (s217 riku: the slot's character's table)
+static int PENT_N[PARTY_N] = {(int)(sizeof PENT_DONALD / sizeof PENT_DONALD[0]), (int)(sizeof PENT_GOOFY / sizeof PENT_GOOFY[0])};
 static const float PC_APPROACH[3][2] = {{0, 0}, {160, 240}, {200, 1000}};  // battle_approach (re:0x71D850 +0x40)
 static const float PC_RUNBANDS[3][2] = {{-1, -1}, {-1, -1}, {0, 1e9f}};     // (Goofy's run: always the run band)
 static int pc_find_entry(int i, const char *name) {
@@ -1150,6 +1274,10 @@ static void pc_sweep(int i, const PIn *in, float c0, float c1) {
 // ---- party spells (Donald's Fire / Blizzard / Thunder / Cure, Goofy's thrown shield): KH2 Lv1 numbers as sora.c's
 // spell objects (magi rows: Fire r 200 h 80, 44 frames, ticks 0 / 18 / 36, last Power 150; Blizzard 40 cm/frame, 30
 // frames, r 80, Power 250; Thunder after 6 frames r 170 Power 250; Cure). Caster = the member.
+#ifdef SORA_PARTY_CORE_ONLY
+// (s217 riku) host tests have no BotW fire (sora.c's fire_world): the core compiles on its own again
+static void fire_world(const float c[3], bool last, float r, float h, const char *who) { (void)c, (void)last, (void)r, (void)h, (void)who; }
+#endif
 typedef struct {
     bool on;
     int kind, member, nhit, fx, leg;
@@ -1348,6 +1476,22 @@ static bool pc_bash_shield(int i, float pos[3], float *yaw, float *t) {
     return false;
 }
 
+// (s218) KH2 range trigger `bit` live at motion frame f (the bake's per-frame bits; bit 22 = range trigger 22 "turn to target")
+static bool pc_rt_bit(const PMotX *mo, float f, int bit) {
+    if (!mo || !mo->bits || !mo->frames) return false;
+    int k = (int)f;
+    if (k < 0) k = 0;
+    if (k >= mo->frames) k = mo->frames - 1;
+    return mo->bits[k] >> bit & 1;
+}
+// the turn rule of member i's action motion: the range trigger 22 frames when his character uses them (Riku) and the motion has
+// any; else the s55 rule (Donald / Goofy: their attack motions carry none)
+static bool pc_rt_turn(int i, const PMotX *mo) {
+    if (!pchar_valid(g_pchar[i]) || !PCH_TAB[g_pchar[i]].rt_turn || !mo || !mo->bits) return false;
+    for (int k = 0; k < mo->frames; k++)
+        if (mo->bits[k] >> 22 & 1) return true;
+    return false;
+}
 // the playing action, one present: clock, root motion, the turn, hits, the release, the ability moves; free at its end
 static void pc_act_end(int i, const char *why) {
     PMember *m = &P.m[i];
@@ -1405,6 +1549,7 @@ static void pc_act_tick(int i, const PIn *in) {
     const PHSlot *hs = phit_find(i, m->act_slot);
     bool in_win = hs && hs->nwin && c1 >= hs->win[0].start && c0 <= hs->win[hs->nwin - 1].end;
     bool turning = c0 < PC_TURN_FRAMES || ((m->act_spell == PS_TURBO || m->act_spell == PS_TORNADO) && in_win);
+    if (pc_rt_turn(i, mo)) turning = pc_rt_bit(mo, c0, 22);  // (s218: a stand-in turns on his motion's own turn frames)
     if (tv && turning && d > 50 * in->to_u) {  // (KH2's turn: nothing within 50 cm, re:0x3B9F70)
         float step = pd->turn * in->kh, df = pt_wrap(atan2f(dx, dz) - m->face);
         m->face = pt_wrap(m->face + pt_clampf(df, -step, step));
@@ -1524,6 +1669,90 @@ static void party_combat_init(void) {  // (first tick / hot reload: the members'
     }
 }
 
+// ---- (s217 riku) the party swap's core: a character's state (his PartyDef with the frame counts his motion bake gave, his motion
+// + hit tables) is kept per CHARACTER once loaded (PCS), so a slot can take another character and give the first one back
+// unchanged. Donald / Goofy are loaded into their own slots at start (party_load, as always) and saved here the first time their
+// slot changes hands; a stand-in (Riku) starts from his PCHAR_DEF row, the glue loads his bakes into the slot, then he is saved.
+typedef struct { bool ok; PartyDef def; PMotX mot[PMOT_MAX]; int nmot; PHSlot hit[PHIT_MAX]; int nhit; } PCharState;
+static PCharState PCS[PCH_N];
+static const PartyDef *const PCHAR_DEF[PCH_N] = {&PARTY[0], &PARTY[1], &PARTY_RIKU, &PARTY_AURON, &PARTY_MULAN, &PARTY_ALADDIN,
+                                                 &PARTY_SPARROW, &PARTY_CLOUD};  // (Donald / Goofy: their slot at start)
+// (s220) the formation side of a slot (+1 Donald's place = Sora's left, -1 Goofy's): a stand-in takes the side of the slot he stands in
+static const float PARTY_SLOT_SIDE[PARTY_N] = {1, -1};
+static void party_char_save(int slot) {  // the slot's character as he is now -> PCS
+    PCharState *s = &PCS[g_pchar[slot]];
+    s->ok = true, s->def = PARTY[slot], s->nmot = PMOT_N[slot], s->nhit = PHIT_N[slot];
+    memcpy(s->mot, PMOT[slot], sizeof s->mot), memcpy(s->hit, PHIT[slot], sizeof s->hit);
+}
+// a new member in the slot: nothing of the one before carries over (his action, knockdown, target, blend, spells in flight); he
+// is placed beside Sora by the next tick (party_core_tick "first frame") with full HP / MP
+static void party_member_fresh(int slot) {
+    PMember *m = &P.m[slot];
+    pc_bash_end(slot, "party swap");
+    for (int s = 0; s < PSP_N; s++)
+        if (PSP[s].on && PSP[s].member == slot) {
+            if (PSP[s].fx >= 0 && P.hk && P.hk->fx_end) P.hk->fx_end(PSP[s].fx, 0);
+            PSP[s].on = false;
+        }
+    float keep[3];
+    memcpy(keep, m->pos, sizeof keep);
+    memset(m, 0, sizeof *m);
+    memcpy(m->pos, keep, sizeof keep);
+    m->blend = -1, m->tgt = -1, m->cur = -1, m->forced = -1, m->act_entry = -1, m->act_win = -1, m->act_spell = PS_NONE;
+    m->hist[0] = m->hist[1] = m->hist[2] = -1;
+    m->mp = PARTY[slot].mp_max, m->hp = m->hp_max = 100;  // (party_combat_init's start values)
+    m->stance = P.battle;
+}
+// slot takes character c, whose state is in PCS (c != the slot's character: that one is saved first)
+static bool party_char_put(int slot, int c) {
+    if (slot < 0 || slot >= PARTY_N || !pchar_valid(c) || !PCS[c].ok) return false;
+    if (!pchar_can(c, slot) || pchar_elsewhere(g_pchar, slot, c)) return false;  // (s220: never one character in both slots)
+    if (g_pchar[slot] != c) party_char_save(slot);
+    const PCharState *s = &PCS[c];
+    PARTY[slot] = s->def, PMOT_N[slot] = s->nmot, PHIT_N[slot] = s->nhit;
+    PARTY[slot].side = PARTY_SLOT_SIDE[slot];  // (s220: a stand-in may have been loaded in the other slot)
+    memcpy(PMOT[slot], s->mot, sizeof PMOT[slot]), memcpy(PHIT[slot], s->hit, sizeof PHIT[slot]);
+    PENT[slot] = PCHAR_PENT[c], PENT_N[slot] = PCHAR_PENT_N[c], g_pchar[slot] = c;
+    party_member_fresh(slot);
+    return true;
+}
+// a stand-in's first load: the slot's character is saved, the slot gets c's PCHAR_DEF row and empty tables for the glue to fill
+// (party_mot_load / party_hits_load), then party_char_take saves him and makes it final, or party_char_put(slot, old) undoes it
+static void party_char_begin(int slot, int c) {
+    party_char_save(slot);
+    PARTY[slot] = *PCHAR_DEF[c], PMOT_N[slot] = PHIT_N[slot] = 0;
+    PARTY[slot].side = PARTY_SLOT_SIDE[slot];  // (s220)
+}
+static void party_char_take(int slot, int c) {
+    PCharState *s = &PCS[c];
+    s->ok = true, s->def = PARTY[slot], s->nmot = PMOT_N[slot], s->nhit = PHIT_N[slot];
+    memcpy(s->mot, PMOT[slot], sizeof s->mot), memcpy(s->hit, PHIT[slot], sizeof s->hit);
+    PENT[slot] = PCHAR_PENT[c], PENT_N[slot] = PCHAR_PENT_N[c], g_pchar[slot] = c;
+    party_member_fresh(slot);
+}
+// (s218) member i's weapon is hidden on this drawn slot: his character's field weapon is off (Riku) and the slot is one of his
+// FIELD idle / walk / run slots, or a blend out of one is still running (the weapon bones would sweep from the field pose)
+static bool party_weapon_field_hidden(int i, int slot, bool blending, int from_slot) {
+    int c = g_pchar[i];
+    if (!pchar_valid(c) || PCH_TAB[c].wfield) return false;
+    for (int k = 0; k < 3; k++)
+        if (slot == PARTY[i].slot[k] || (blending && from_slot == PARTY[i].slot[k])) return true;
+    return false;
+}
+// the def / motion table of slot `who`'s OWN member (Donald for 0, Goofy for 1) whoever stands there now: the remote party of
+// a friend (sora_net_party.h) is always Donald + Goofy (step 1 sends no character)
+static const PartyDef *party_home_def(int who) {
+    int c = PCH_HOME[who];
+    return g_pchar[who] == c || !PCS[c].ok ? &PARTY[who] : &PCS[c].def;
+}
+static const PMotX *party_home_mot(int who, int slot) {
+    int c = PCH_HOME[who];
+    if (g_pchar[who] == c || !PCS[c].ok) return pmot_find(who, slot);
+    for (int k = 0; k < PCS[c].nmot; k++)
+        if (PCS[c].mot[k].slot == slot) return &PCS[c].mot[k];
+    return NULL;
+}
+
 // The whole party for one present (Sora driving). Returns false when nothing is to be drawn.
 static int g_pwarpair;  // (s118) live "set pwarpair 1" = the far warp fires mid-air too (the old rule)
 static bool party_core_tick(const PIn *in) {
@@ -1617,6 +1846,95 @@ static const PLv PARTY_LV[2][99] = {
     },
 };
 // ---- END GENERATED ----
+// ---- BEGIN GENERATED (sb/s217/riku/gen/gen_riku_levels.py, the s55 reader; KH2 00battle.bin lvup, VERIFIED) ----
+// (s217 riku) PARTY_LV_RIKU[L-1] = {EXP total that reaches level L, Str, Mag}: Riku = lvup character 13, 00battle.bin@0x2a394
+static const PLv PARTY_LV_RIKU[99] = {
+    {0, 4, 7}, {40, 4, 8}, {82, 5, 8}, {130, 5, 9}, {197, 6, 9}, {312, 6, 10}, {460, 7, 10}, {644, 7, 11},
+    {869, 8, 11}, {1163, 8, 12}, {1534, 9, 12}, {1990, 10, 13}, {2539, 11, 13}, {3189, 11, 14}, {3982, 12, 14}, {4931, 12, 15},
+    {6047, 13, 15}, {7383, 13, 16}, {8955, 14, 17}, {10779, 14, 18}, {12871, 15, 18}, {15296, 15, 19}, {18073, 16, 19}, {21214, 16, 20},
+    {24731, 17, 20}, {28636, 17, 21}, {32996, 18, 21}, {37824, 18, 22}, {43135, 19, 22}, {49000, 19, 23}, {55435, 20, 23}, {62515, 21, 24},
+    {70259, 22, 24}, {78746, 22, 25}, {87996, 23, 25}, {98092, 23, 26}, {109057, 24, 26}, {120978, 24, 27}, {133879, 25, 28}, {147851, 25, 29},
+    {162921, 26, 29}, {179184, 26, 30}, {196668, 27, 30}, {215472, 27, 31}, {235627, 28, 31}, {257236, 28, 32}, {280331, 29, 32}, {305019, 29, 33},
+    {331335, 30, 33}, {359390, 30, 34}, {389298, 31, 34}, {421098, 32, 35}, {453698, 33, 35}, {487098, 33, 36}, {521298, 34, 36}, {556298, 34, 37},
+    {592098, 35, 37}, {628698, 35, 38}, {666098, 36, 39}, {704298, 36, 40}, {743298, 37, 40}, {783098, 37, 41}, {823698, 38, 41}, {865098, 38, 42},
+    {907298, 39, 42}, {950298, 39, 43}, {994098, 40, 43}, {1038698, 40, 44}, {1084098, 41, 44}, {1130298, 41, 45}, {1177298, 42, 45}, {1225098, 43, 46},
+    {1273698, 44, 46}, {1323098, 44, 47}, {1373298, 45, 47}, {1424298, 45, 48}, {1476098, 46, 48}, {1528698, 46, 49}, {1582098, 47, 50}, {1636298, 47, 51},
+    {1691298, 48, 51}, {1747098, 48, 52}, {1803698, 49, 52}, {1861098, 49, 53}, {1919298, 50, 53}, {1978298, 50, 54}, {2038098, 51, 54}, {2098698, 51, 55},
+    {2160098, 52, 55}, {2222298, 52, 56}, {2285298, 53, 56}, {2349098, 54, 57}, {2413698, 55, 57}, {2479098, 55, 58}, {2545298, 56, 58}, {2612298, 56, 59},
+    {2680098, 57, 59}, {2748698, 57, 60}, {2818098, 58, 61},
+};
+// ---- END GENERATED ----
+// (s217 riku) the level table of the character in slot i (Donald / Goofy: PARTY_LV rows as before)
+// ---- BEGIN GENERATED (sb/s220/members/gen/gen_member_levels.py 5:Auron 6:Mulan 7:Aladdin 8:Sparrow, the s55 reader; KH2 00battle.bin lvup, VERIFIED) ----
+// (s220 members) PARTY_LV_MEMBERS[k][L-1] = {EXP total that reaches level L, Str, Mag}: lvup characters 5 Auron, 6 Mulan, 7 Aladdin, 8 Sparrow
+// (the same reader regenerates the Donald / Goofy / Riku rows above byte-identical: gen/check.txt)
+static const PLv PARTY_LV_MEMBERS[4][99] = {
+    {  // Auron, 00battle.bin@0x271f4 (lvup character 5)
+     {0, 4, 0}, {40, 4, 0}, {82, 5, 0}, {130, 5, 0}, {197, 6, 0}, {312, 6, 0}, {460, 7, 0}, {644, 7, 0},
+     {869, 8, 0}, {1163, 8, 0}, {1534, 9, 0}, {1990, 10, 0}, {2539, 11, 0}, {3189, 11, 0}, {3982, 12, 0}, {4931, 12, 0},
+     {6047, 13, 0}, {7383, 13, 0}, {8955, 14, 0}, {10779, 14, 0}, {12871, 15, 0}, {15296, 15, 0}, {18073, 16, 0}, {21214, 16, 0},
+     {24731, 17, 0}, {28636, 17, 0}, {32996, 18, 0}, {37824, 18, 0}, {43135, 19, 0}, {49000, 19, 0}, {55435, 20, 0}, {62515, 21, 0},
+     {70259, 22, 0}, {78746, 22, 0}, {87996, 23, 0}, {98092, 23, 0}, {109057, 24, 0}, {120978, 24, 0}, {133879, 25, 0}, {147851, 25, 0},
+     {162921, 26, 0}, {179184, 26, 0}, {196668, 27, 0}, {215472, 27, 0}, {235627, 28, 0}, {257236, 28, 0}, {280331, 29, 0}, {305019, 29, 0},
+     {331335, 30, 0}, {359390, 30, 0}, {389298, 31, 0}, {421098, 32, 0}, {453698, 33, 0}, {487098, 33, 0}, {521298, 34, 0}, {556298, 34, 0},
+     {592098, 35, 0}, {628698, 35, 0}, {666098, 36, 0}, {704298, 36, 0}, {743298, 37, 0}, {783098, 37, 0}, {823698, 38, 0}, {865098, 38, 0},
+     {907298, 39, 0}, {950298, 39, 0}, {994098, 40, 0}, {1038698, 40, 0}, {1084098, 41, 0}, {1130298, 41, 0}, {1177298, 42, 0}, {1225098, 43, 0},
+     {1273698, 44, 0}, {1323098, 44, 0}, {1373298, 45, 0}, {1424298, 45, 0}, {1476098, 46, 0}, {1528698, 46, 0}, {1582098, 47, 0}, {1636298, 47, 0},
+     {1691298, 48, 0}, {1747098, 48, 0}, {1803698, 49, 0}, {1861098, 49, 0}, {1919298, 50, 0}, {1978298, 50, 0}, {2038098, 51, 0}, {2098698, 51, 0},
+     {2160098, 52, 0}, {2222298, 52, 0}, {2285298, 53, 0}, {2349098, 54, 0}, {2413698, 55, 0}, {2479098, 55, 0}, {2545298, 56, 0}, {2612298, 56, 0},
+     {2680098, 57, 0}, {2748698, 57, 0}, {2818098, 58, 0},
+    },
+    {  // Mulan, 00battle.bin@0x27828 (lvup character 6)
+     {0, 4, 7}, {40, 4, 8}, {82, 5, 8}, {130, 5, 9}, {197, 6, 9}, {312, 6, 10}, {460, 7, 10}, {644, 7, 11},
+     {869, 8, 11}, {1163, 8, 12}, {1534, 9, 12}, {1990, 10, 13}, {2539, 11, 13}, {3189, 11, 14}, {3982, 12, 14}, {4931, 12, 15},
+     {6047, 13, 15}, {7383, 13, 16}, {8955, 14, 17}, {10779, 14, 18}, {12871, 15, 18}, {15296, 15, 19}, {18073, 16, 19}, {21214, 16, 20},
+     {24731, 17, 20}, {28636, 17, 21}, {32996, 18, 21}, {37824, 18, 22}, {43135, 19, 22}, {49000, 19, 23}, {55435, 20, 23}, {62515, 21, 24},
+     {70259, 22, 24}, {78746, 22, 25}, {87996, 23, 25}, {98092, 23, 26}, {109057, 24, 26}, {120978, 24, 27}, {133879, 25, 28}, {147851, 25, 29},
+     {162921, 26, 29}, {179184, 26, 30}, {196668, 27, 30}, {215472, 27, 31}, {235627, 28, 31}, {257236, 28, 32}, {280331, 29, 32}, {305019, 29, 33},
+     {331335, 30, 33}, {359390, 30, 34}, {389298, 31, 34}, {421098, 32, 35}, {453698, 33, 35}, {487098, 33, 36}, {521298, 34, 36}, {556298, 34, 37},
+     {592098, 35, 37}, {628698, 35, 38}, {666098, 36, 39}, {704298, 36, 40}, {743298, 37, 40}, {783098, 37, 41}, {823698, 38, 41}, {865098, 38, 42},
+     {907298, 39, 42}, {950298, 39, 43}, {994098, 40, 43}, {1038698, 40, 44}, {1084098, 41, 44}, {1130298, 41, 45}, {1177298, 42, 45}, {1225098, 43, 46},
+     {1273698, 44, 46}, {1323098, 44, 47}, {1373298, 45, 47}, {1424298, 45, 48}, {1476098, 46, 48}, {1528698, 46, 49}, {1582098, 47, 50}, {1636298, 47, 51},
+     {1691298, 48, 51}, {1747098, 48, 52}, {1803698, 49, 52}, {1861098, 49, 53}, {1919298, 50, 53}, {1978298, 50, 54}, {2038098, 51, 54}, {2098698, 51, 55},
+     {2160098, 52, 55}, {2222298, 52, 56}, {2285298, 53, 56}, {2349098, 54, 57}, {2413698, 55, 57}, {2479098, 55, 58}, {2545298, 56, 58}, {2612298, 56, 59},
+     {2680098, 57, 59}, {2748698, 57, 60}, {2818098, 58, 61},
+    },
+    {  // Aladdin, 00battle.bin@0x27e5c (lvup character 7)
+     {0, 4, 0}, {40, 4, 0}, {82, 5, 0}, {130, 5, 0}, {197, 6, 0}, {312, 6, 0}, {460, 7, 0}, {644, 7, 0},
+     {869, 8, 0}, {1163, 8, 0}, {1534, 9, 0}, {1990, 10, 0}, {2539, 11, 0}, {3189, 11, 0}, {3982, 12, 0}, {4931, 12, 0},
+     {6047, 13, 0}, {7383, 13, 0}, {8955, 14, 0}, {10779, 14, 0}, {12871, 15, 0}, {15296, 15, 0}, {18073, 16, 0}, {21214, 16, 0},
+     {24731, 17, 0}, {28636, 17, 0}, {32996, 18, 0}, {37824, 18, 0}, {43135, 19, 0}, {49000, 19, 0}, {55435, 20, 0}, {62515, 21, 0},
+     {70259, 22, 0}, {78746, 22, 0}, {87996, 23, 0}, {98092, 23, 0}, {109057, 24, 0}, {120978, 24, 0}, {133879, 25, 0}, {147851, 25, 0},
+     {162921, 26, 0}, {179184, 26, 0}, {196668, 27, 0}, {215472, 27, 0}, {235627, 28, 0}, {257236, 28, 0}, {280331, 29, 0}, {305019, 29, 0},
+     {331335, 30, 0}, {359390, 30, 0}, {389298, 31, 0}, {421098, 32, 0}, {453698, 33, 0}, {487098, 33, 0}, {521298, 34, 0}, {556298, 34, 0},
+     {592098, 35, 0}, {628698, 35, 0}, {666098, 36, 0}, {704298, 36, 0}, {743298, 37, 0}, {783098, 37, 0}, {823698, 38, 0}, {865098, 38, 0},
+     {907298, 39, 0}, {950298, 39, 0}, {994098, 40, 0}, {1038698, 40, 0}, {1084098, 41, 0}, {1130298, 41, 0}, {1177298, 42, 0}, {1225098, 43, 0},
+     {1273698, 44, 0}, {1323098, 44, 0}, {1373298, 45, 0}, {1424298, 45, 0}, {1476098, 46, 0}, {1528698, 46, 0}, {1582098, 47, 0}, {1636298, 47, 0},
+     {1691298, 48, 0}, {1747098, 48, 0}, {1803698, 49, 0}, {1861098, 49, 0}, {1919298, 50, 0}, {1978298, 50, 0}, {2038098, 51, 0}, {2098698, 51, 0},
+     {2160098, 52, 0}, {2222298, 52, 0}, {2285298, 53, 0}, {2349098, 54, 0}, {2413698, 55, 0}, {2479098, 55, 0}, {2545298, 56, 0}, {2612298, 56, 0},
+     {2680098, 57, 0}, {2748698, 57, 0}, {2818098, 58, 0},
+    },
+    {  // Sparrow, 00battle.bin@0x28490 (lvup character 8)
+     {0, 4, 0}, {40, 4, 0}, {82, 5, 0}, {130, 5, 0}, {197, 6, 0}, {312, 6, 0}, {460, 7, 0}, {644, 7, 0},
+     {869, 8, 0}, {1163, 8, 0}, {1534, 9, 0}, {1990, 10, 0}, {2539, 11, 0}, {3189, 11, 0}, {3982, 12, 0}, {4931, 12, 0},
+     {6047, 13, 0}, {7383, 13, 0}, {8955, 14, 0}, {10779, 14, 0}, {12871, 15, 0}, {15296, 15, 0}, {18073, 16, 0}, {21214, 16, 0},
+     {24731, 17, 0}, {28636, 17, 0}, {32996, 18, 0}, {37824, 18, 0}, {43135, 19, 0}, {49000, 19, 0}, {55435, 20, 0}, {62515, 21, 0},
+     {70259, 22, 0}, {78746, 22, 0}, {87996, 23, 0}, {98092, 23, 0}, {109057, 24, 0}, {120978, 24, 0}, {133879, 25, 0}, {147851, 25, 0},
+     {162921, 26, 0}, {179184, 26, 0}, {196668, 27, 0}, {215472, 27, 0}, {235627, 28, 0}, {257236, 28, 0}, {280331, 29, 0}, {305019, 29, 0},
+     {331335, 30, 0}, {359390, 30, 0}, {389298, 31, 0}, {421098, 32, 0}, {453698, 33, 0}, {487098, 33, 0}, {521298, 34, 0}, {556298, 34, 0},
+     {592098, 35, 0}, {628698, 35, 0}, {666098, 36, 0}, {704298, 36, 0}, {743298, 37, 0}, {783098, 37, 0}, {823698, 38, 0}, {865098, 38, 0},
+     {907298, 39, 0}, {950298, 39, 0}, {994098, 40, 0}, {1038698, 40, 0}, {1084098, 41, 0}, {1130298, 41, 0}, {1177298, 42, 0}, {1225098, 43, 0},
+     {1273698, 44, 0}, {1323098, 44, 0}, {1373298, 45, 0}, {1424298, 45, 0}, {1476098, 46, 0}, {1528698, 46, 0}, {1582098, 47, 0}, {1636298, 47, 0},
+     {1691298, 48, 0}, {1747098, 48, 0}, {1803698, 49, 0}, {1861098, 49, 0}, {1919298, 50, 0}, {1978298, 50, 0}, {2038098, 51, 0}, {2098698, 51, 0},
+     {2160098, 52, 0}, {2222298, 52, 0}, {2285298, 53, 0}, {2349098, 54, 0}, {2413698, 55, 0}, {2479098, 55, 0}, {2545298, 56, 0}, {2612298, 56, 0},
+     {2680098, 57, 0}, {2748698, 57, 0}, {2818098, 58, 0},
+    },
+};
+// ---- END GENERATED ----
+static const PLv *const PCHAR_LV[PCH_N] = {PARTY_LV[0], PARTY_LV[1], PARTY_LV_RIKU, PARTY_LV_MEMBERS[0], PARTY_LV_MEMBERS[1],
+                                         PARTY_LV_MEMBERS[2], PARTY_LV_MEMBERS[3],
+                                         PARTY_LV_MEMBERS[0]};  // (s223) Cloud: no lvup row in KH2 -> GUESS: Auron's curve (lvup character 5)
+static const PLv *party_lv_tab(int i) { return PCHAR_LV[i >= 0 && i < PARTY_N && pchar_valid(g_pchar[i]) ? g_pchar[i] : PCH_DONALD]; }
 
 #ifndef SORA_PARTY_CORE_ONLY
 // ===================================================================== GLUE (sora.c)
@@ -1645,6 +1963,8 @@ static struct {  // (runtime/sora_draw.h sora_draw_actor_*)
 #define PWF_SLOT 804
 static struct { int nb, frames; const float *m; } g_pwf[PARTY_N];
 static bool g_pw_on[PARTY_N];  // (the exe has a detached weapon from us for this member)
+static bool g_pw_hid[PARTY_N];  // (s218) we hid this member's weapon (field slot rule)
+static bool g_pwfield;          // (s218) live "set pwfield 1": a stand-in's weapon stays shown on field slots too
 static void pwf_load(int i, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { LOG("[party] %s: no weapon flight bake %s\n", PARTY[i].name, path); return; }
@@ -1712,6 +2032,7 @@ static float g_party_blow_now;  // > 0: a test blast at Sora's feet with this po
 // which it stops). Played at the member's feet (sora_sfx_play_at), never through Sora's bark channel.
 // An sfx.bin without the party sounds (the pre-s56 pack): the first probe logs one "unknown sound" line, then off.
 // Live: set psfx 0 (off) / 1 (all, default) / 2 (no footsteps), set psfxlog 0/1. Env SAVAGEWIND_PARTY_SFX=0/1/2.
+// (s220 riku2) member = the CHARACTER (sora_pchar.h PCH_*: 0 Donald, 1 Goofy as before, PCH_RIKU ...), not the slot
 typedef struct { uint8_t member, vtbl, pri; const char *base; uint8_t n, name_w; } PSfxSet;
 static const PSfxSet PSFX_SETS[] = {  // 00battle.bin vtbl rows (kh2_sounds.kh.json actors 1 / 2 vtbl): VERIFIED
     {0, 4, 1, "attack", 2, 0},   {0, 6, 1, "spell", 2, 0},    {0, 21, 1, "cure_self", 2, 0}, {0, 3, 1, "item", 2, 100},
@@ -1721,6 +2042,28 @@ static const PSfxSet PSFX_SETS[] = {  // 00battle.bin vtbl rows (kh2_sounds.kh.j
     {1, 6, 1, "spell", 1, 0},
     {1, 4, 1, "attack", 2, 0},   {1, 3, 1, "item", 1, 100},   {1, 29, 2, "hurt", 1, 0},     {1, 30, 2, "hurt_low", 1, 0},
     {1, 1, 2, "blown", 1, 0},    {1, 2, 4, "ko", 1, 0},       {1, 10, 1, "stun_end", 1, 0},
+    // (s220 riku2) Riku: 00battle vtbl character 13 rows his P_EH000.mset vsb_voice2 triggers name (A300 / A301 f8 vtbl 4, the hurt
+    // slots 29 / 30, blow 1, stun end 10, item 3), voice file eh0_riku; the packed names = fx/sfxparty2.py's (riku_<set>.<k>): VERIFIED
+    {PCH_RIKU, 4, 1, "attack", 2, 0},  {PCH_RIKU, 6, 1, "attack2", 2, 0}, {PCH_RIKU, 3, 1, "item", 1, 100},
+    {PCH_RIKU, 29, 2, "hurt", 1, 0},   {PCH_RIKU, 30, 2, "hurt_low", 1, 0}, {PCH_RIKU, 1, 2, "blown", 2, 0},
+    {PCH_RIKU, 2, 4, "ko", 1, 0},      {PCH_RIKU, 10, 1, "stun_end", 1, 0},
+    // (s223 voices) Auron / Mulan / Aladdin / Jack Sparrow: 00battle vtbl characters 5 / 6 / 7 / 8, voice files he0_auron /
+    // mu0_mulan / al0_aladdin / ca0_sparrow; the same 8 rows as Riku's (their msets' vsb_voice2 triggers: 4 on A300 / A301 / A330 /
+    // A331 frame 8, 29 / 30 damage, 1 blow, 10 stun end, 3 A110, 6 their own act entries 764 / 768; 2 KO has no trigger); n = the
+    // row's choices with a sound, name_w = its -3 (partner name) weight. Auron's row 3 is the -3 pick alone: n 0 (frame triggers name
+    // no partner, so no line). Names = fx/sfxparty2.py's (<key>_<set>.<k>): VERIFIED (sb/s223/voices py/gen_rows.py from the mined json)
+    {PCH_AURON, 4, 1, "attack", 2, 0}, {PCH_AURON, 6, 1, "attack2", 2, 0}, {PCH_AURON, 3, 1, "item", 0, 100},
+    {PCH_AURON, 29, 2, "hurt", 1, 0}, {PCH_AURON, 30, 2, "hurt_low", 1, 0}, {PCH_AURON, 1, 2, "blown", 2, 0},
+    {PCH_AURON, 2, 4, "ko", 1, 0}, {PCH_AURON, 10, 1, "stun_end", 1, 0},
+    {PCH_MULAN, 4, 1, "attack", 2, 0}, {PCH_MULAN, 6, 1, "attack2", 1, 0}, {PCH_MULAN, 3, 1, "item", 2, 100},
+    {PCH_MULAN, 29, 2, "hurt", 1, 0}, {PCH_MULAN, 30, 2, "hurt_low", 1, 0}, {PCH_MULAN, 1, 2, "blown", 2, 0},
+    {PCH_MULAN, 2, 4, "ko", 1, 0}, {PCH_MULAN, 10, 1, "stun_end", 1, 0},
+    {PCH_ALADDIN, 4, 1, "attack", 2, 0}, {PCH_ALADDIN, 6, 1, "attack2", 2, 0}, {PCH_ALADDIN, 3, 1, "item", 1, 100},
+    {PCH_ALADDIN, 29, 2, "hurt", 1, 0}, {PCH_ALADDIN, 30, 2, "hurt_low", 1, 0}, {PCH_ALADDIN, 1, 2, "blown", 2, 0},
+    {PCH_ALADDIN, 2, 4, "ko", 1, 0}, {PCH_ALADDIN, 10, 1, "stun_end", 1, 0},
+    {PCH_SPARROW, 4, 1, "attack", 2, 0}, {PCH_SPARROW, 6, 1, "attack2", 2, 0}, {PCH_SPARROW, 3, 1, "item", 1, 100},
+    {PCH_SPARROW, 29, 2, "hurt", 1, 0}, {PCH_SPARROW, 30, 2, "hurt_low", 1, 0}, {PCH_SPARROW, 1, 2, "blown", 2, 0},
+    {PCH_SPARROW, 2, 4, "ko", 1, 0}, {PCH_SPARROW, 10, 1, "stun_end", 1, 0},
 };
 typedef struct { uint8_t member; uint16_t slot, frame; const char *name; } PSfxW;
 static const PSfxW PSFX_WEAPON[] = {  // W_EX020 / W_EX030.mset play_sound rows (the json's W_EX0x0 src): VERIFIED
@@ -1728,11 +2071,39 @@ static const PSfxW PSFX_WEAPON[] = {  // W_EX020 / W_EX030.mset play_sound rows 
     {0, 724, 4, "donald_air_swing"}, {0, 728, 14, "donald_air_swing"},
     {1, 604, 24, "goofy_swing1"}, {1, 608, 30, "goofy_swing2"}, {1, 612, 24, "goofy_swing1"}, {1, 692, 30, "goofy_swing2"},
     {1, 724, 6, "goofy_swing2"}, {1, 728, 10, "goofy_swing1"}, {1, 764, 55, "goofy_tornado"},
+    // (s220 riku2) W_EH000.mset play_sound rows (Way to the Dawn, Seb bank 593): VERIFIED (kh2bin over the mset); A330 / A331 too
+    {PCH_RIKU, 604, 8, "riku_se593034"},  {PCH_RIKU, 604, 22, "riku_se593035"}, {PCH_RIKU, 604, 46, "riku_se593034"},
+    {PCH_RIKU, 608, 2, "riku_se593036"},  {PCH_RIKU, 608, 26, "riku_se593035"},
+    {PCH_RIKU, 724, 18, "riku_se593034"}, {PCH_RIKU, 724, 40, "riku_se593035"}, {PCH_RIKU, 724, 58, "riku_se593034"},
+    {PCH_RIKU, 724, 74, "riku_se593037"}, {PCH_RIKU, 724, 108, "riku_se593038"}, {PCH_RIKU, 724, 174, "riku_se593039"},
+    {PCH_RIKU, 724, 218, "riku_se593036"}, {PCH_RIKU, 728, 20, "riku_se593035"}, {PCH_RIKU, 728, 44, "riku_se593036"},
+    {PCH_RIKU, 728, 68, "riku_se593037"}, {PCH_RIKU, 728, 110, "riku_se593034"},
+    // his P_EH000.mset's own play_sound rows (body bake trigger 8, which psfx_fire does not read): A100 / A101 / A110 (VERIFIED, same json)
+    {PCH_RIKU, 30, 6, "riku_se312"},      {PCH_RIKU, 34, 4, "riku_se593032"}, {PCH_RIKU, 38, 16, "riku_se593034"},
+    // (s223 voices) every play_sound row of their body + weapon msets (P_ / W_HE000, MU000, AL000, CA000; Seb banks 585 / 588 / 586 /
+    // 589), slot = mset entry, frame = the weapon motion's frame (its length = the body bake's on every slot here): VERIFIED (kh2bin
+    // over the msets, sb/s223/voices py/gen_rows.py + wframes.py). 30 / 34 / 36 / 38 / 70 = body rows (A100 / A101 / A110 ...).
+    {PCH_AURON, 30, 4, "auron_se312"}, {PCH_AURON, 34, 8, "auron_se585032"}, {PCH_AURON, 36, 40, "auron_se585033"}, {PCH_AURON, 38, 40, "auron_se585033"},
+    {PCH_AURON, 604, 1, "auron_se585034"}, {PCH_AURON, 608, 4, "auron_se585035"}, {PCH_AURON, 612, 1, "auron_se585034"}, {PCH_AURON, 692, 4, "auron_se585035"},
+    {PCH_AURON, 724, 10, "auron_se585036"}, {PCH_AURON, 728, 22, "auron_se585037"}, {PCH_AURON, 764, 1, "auron_se585038"},
+    {PCH_MULAN, 30, 6, "mulan_se312"}, {PCH_MULAN, 34, 14, "mulan_se588032"}, {PCH_MULAN, 38, 20, "mulan_se588033"}, {PCH_MULAN, 604, 16, "mulan_se588034"},
+    {PCH_MULAN, 604, 44, "mulan_se588035"}, {PCH_MULAN, 608, 12, "mulan_se588036"}, {PCH_MULAN, 608, 24, "mulan_se588037"}, {PCH_MULAN, 608, 50, "mulan_se588038"},
+    {PCH_MULAN, 612, 16, "mulan_se588034"}, {PCH_MULAN, 612, 44, "mulan_se588035"}, {PCH_MULAN, 692, 12, "mulan_se588036"}, {PCH_MULAN, 692, 24, "mulan_se588037"},
+    {PCH_MULAN, 692, 50, "mulan_se588038"}, {PCH_MULAN, 724, 8, "mulan_se588039"}, {PCH_MULAN, 728, 16, "mulan_se588040"},
+    {PCH_ALADDIN, 30, 4, "aladdin_se312"}, {PCH_ALADDIN, 34, 1, "aladdin_se586032"}, {PCH_ALADDIN, 38, 20, "aladdin_se586033"}, {PCH_ALADDIN, 604, 2, "aladdin_se586034"},
+    {PCH_ALADDIN, 608, 12, "aladdin_se586035"}, {PCH_ALADDIN, 612, 2, "aladdin_se586034"}, {PCH_ALADDIN, 692, 12, "aladdin_se586035"}, {PCH_ALADDIN, 724, 18, "aladdin_se586036"},
+    {PCH_ALADDIN, 728, 4, "aladdin_se586037"}, {PCH_ALADDIN, 764, 1, "aladdin_se586038"}, {PCH_ALADDIN, 768, 1, "aladdin_se586038"}, {PCH_ALADDIN, 772, 1, "aladdin_se586039"},
+    {PCH_SPARROW, 30, 6, "sparrow_se312"}, {PCH_SPARROW, 34, 4, "sparrow_se589032"}, {PCH_SPARROW, 38, 16, "sparrow_se589033"}, {PCH_SPARROW, 70, 1, "sparrow_se589034"},
+    {PCH_SPARROW, 604, 6, "sparrow_se589035"}, {PCH_SPARROW, 604, 18, "sparrow_se589036"}, {PCH_SPARROW, 604, 44, "sparrow_se589037"}, {PCH_SPARROW, 604, 72, "sparrow_se589038"},
+    {PCH_SPARROW, 608, 38, "sparrow_se589039"}, {PCH_SPARROW, 612, 6, "sparrow_se589035"}, {PCH_SPARROW, 612, 18, "sparrow_se589036"}, {PCH_SPARROW, 612, 44, "sparrow_se589037"},
+    {PCH_SPARROW, 612, 72, "sparrow_se589038"}, {PCH_SPARROW, 692, 38, "sparrow_se589039"}, {PCH_SPARROW, 724, 10, "sparrow_se589035"}, {PCH_SPARROW, 728, 6, "sparrow_se589040"},
+    {PCH_SPARROW, 768, 8, "sparrow_se589041"},
 };
 static const int PSFX_FX_D[] = {0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12};  // his effect elements that carry an SE
 static const int PSFX_FX_G[] = {0, 2, 3};
 static struct {
     int ready;        // -1 not probed, 0 off (no party sounds in this sfx.bin / sfx off), 1 on
+    int8_t has[PCH_N];  // (s220) a stand-in's rows are in this sfx.bin (<key>_sfx_v1): 0 not probed, 1 yes, -1 no (he stays silent)
     int mode;         // 0 off, 1 all, 2 no footsteps (live psfx)
     bool log;
     uint32_t rnd;
@@ -1756,14 +2127,16 @@ static int psfx_play(int i, const char *name, const float at[3]) {
     return h;
 }
 // a voice line by vtbl id; target = the KH2 character the line may name (1 Sora, 2 Donald, 3 Goofy; 0 none)
+static int psfx_char(int i);
 static void psfx_voice(int i, int vtbl, int target, const float at[3]) {
     const PSfxSet *s = NULL;
+    int pc = psfx_char(i);  // (s220 riku2: the rows of the character standing in slot i)
     for (size_t k = 0; k < sizeof PSFX_SETS / sizeof PSFX_SETS[0] && !s; k++)
-        if (PSFX_SETS[k].member == i && PSFX_SETS[k].vtbl == vtbl) s = &PSFX_SETS[k];
+        if (PSFX_SETS[k].member == pc && PSFX_SETS[k].vtbl == vtbl) s = &PSFX_SETS[k];
     if (!s) return;  // (a row the party never plays here: no sound)
     char nm[48];
     static const char *const CHAR[4] = {"", "sora", "donald", "goofy"};
-    if (s->name_w && target >= 1 && target <= 3 && target != i + 2 && psfx_rand(100) < s->name_w)
+    if (s->name_w && target >= 1 && target <= 3 && target != PCH_TAB[pc].lvup && psfx_rand(100) < s->name_w)
         snprintf(nm, sizeof nm, "%s_name_%s", PARTY[i].name, CHAR[target]);
     else if (s->n)
         snprintf(nm, sizeof nm, "%s_%s.%d", PARTY[i].name, s->base, psfx_rand(s->n));
@@ -1776,8 +2149,9 @@ static void psfx_voice(int i, int vtbl, int target, const float at[3]) {
     PS.m[i].voice = psfx_play(i, nm, at), PS.m[i].vpri = s->pri;
 }
 static void psfx_fx(int i, int element, const float at[3]) {  // the SE of an element of his own effect set
-    const int *e = i ? PSFX_FX_G : PSFX_FX_D;
-    int n = i ? (int)(sizeof PSFX_FX_G / sizeof PSFX_FX_G[0]) : (int)(sizeof PSFX_FX_D / sizeof PSFX_FX_D[0]);
+    int pc = psfx_char(i);  // (s220 riku2: Donald's / Goofy's effect sets by character; a stand-in's effects are not drawn: none)
+    const int *e = pc == PCH_GOOFY ? PSFX_FX_G : PSFX_FX_D;
+    int n = pc == PCH_GOOFY ? (int)(sizeof PSFX_FX_G / sizeof PSFX_FX_G[0]) : pc == PCH_DONALD ? (int)(sizeof PSFX_FX_D / sizeof PSFX_FX_D[0]) : 0;
     for (int k = 0; k < n; k++)
         if (e[k] == element) {
             char nm[32];
@@ -1806,12 +2180,28 @@ static void psfx_fire(int i, int slot, const PMotX *mo, float a, float b) {
     }
     for (size_t k = 0; k < sizeof PSFX_WEAPON / sizeof PSFX_WEAPON[0]; k++) {
         const PSfxW *w = &PSFX_WEAPON[k];
-        if (w->member == i && w->slot == slot && a < (float)w->frame && (float)w->frame <= b) psfx_play(i, w->name, NULL);
+        if (w->member == psfx_char(i) && w->slot == slot && a < (float)w->frame && (float)w->frame <= b) psfx_play(i, w->name, NULL);
     }
 }
 // once per drawn member per present: the triggers its motion passed since the last present
+// (s217 riku) the slot's character's own sound rows; -1 = none (no Donald sound ever comes out of a stand-in: the tables above are
+// keyed by the character). (s220 riku2) a stand-in with sound rows (PCH_TAB sfx) plays them when this sfx.bin has his marker
+// <key>_sfx_v1 (fx/sfxparty2.py); a pack from before s220 lacks it: one log line, he stays silent (his hits keep the base hit).
+static int psfx_char(int i) {
+    int c = i >= 0 && i < PARTY_N ? g_pchar[i] : -1;
+    if (!pchar_valid(c) || !PCH_TAB[c].sfx) return -1;
+    if (PCH_TAB[c].home >= 0) return c;  // (Donald / Goofy: the s56 pack, probed by psfx_on)
+    if (!PS.has[c] && PS.ready > 0) {
+        char nm[40];
+        snprintf(nm, sizeof nm, "%s_sfx_v1", PCH_TAB[c].key);
+        PS.has[c] = sora_sfx_id(nm) >= 0 ? 1 : -1;
+        LOG("[party] sfx: %s %s\n", PCH_TAB[c].name, PS.has[c] > 0 ? "has his KH2 sounds in this sfx.bin (voice, steps, swings, hits)" :
+            "has no sounds in this sfx.bin (an older pack: Riku s220, Auron / Mulan / Aladdin / Sparrow s223): silent, his hits keep the base Keyblade hit");
+    }
+    return PS.has[c] > 0 ? c : -1;
+}
 static void psfx_tick(int i, uint64_t present) {
-    if (!psfx_on()) return;
+    if (!psfx_on() || psfx_char(i) < 0) return;
     float c;
     int s = party_draw_slot(i, &c);
     struct PSfxM *q = &PS.m[i];
@@ -1830,7 +2220,7 @@ static void psfx_tick(int i, uint64_t present) {
 // PHooks.sound: Donald's script moments (VERIFIED by his P_EX020 BDX; Goofy's acts request no voice / start no element
 // from the script: his are the frame triggers above)
 static void party_sound_cb(int i, int ev, int arg, const float at[3]) {
-    if (!psfx_on() || i != 0) return;
+    if (!psfx_on() || psfx_char(i) != PCH_DONALD) return;  // (s217 riku: Donald's own script moments only)
     switch (ev) {
     case PSND_ACT:  // trap_obj_voice(self, 6) in the fire / blizzard / thunder acts
         if (arg == PS_FIRE || arg == PS_BLIZZARD || arg == PS_THUNDER) psfx_voice(i, 6, 0, at);
@@ -1850,6 +2240,7 @@ static void party_sound_cb(int i, int ev, int arg, const float at[3]) {
     }
 }
 
+static void party_pick_restore(void);  // (s217 riku)
 static void party_load(void) {
     const char *e = getenv("SAVAGEWIND_PARTY");
     if (e && *e && !atoi(e)) { LOG("[party] off (SAVAGEWIND_PARTY=0)\n"); return; }
@@ -1886,7 +2277,7 @@ static void party_load(void) {
         if (id > 0) PD.shape(id, PARTY[i].shadow_r, 0, 0, 0);
         if (id > 0 && PD.weapon) PD.weapon(id, true);  // (s55: a reload mid-Bash must not leave the shield hidden)
         if (id > 0 && PD.weapon_at) PD.weapon_at(id, NULL, 0, NULL, 0, 0);  // (s58: ... nor flying from the old DLL)
-        g_pw_on[i] = false;
+        g_pw_on[i] = false, g_pw_hid[i] = false;
         if (id > 0 && PD.bones && PD.bones(id) > PARTY_MAX_BONES) LOG("[party] %s: too many bones for the blend\n", PARTY[i].name);
         LOG("[party] %s: draw actor %d%s (s54 party3: follow + knockdown)\n", PARTY[i].name, id, id > 0 ? "" : " (not drawn)");
         if (!party_mot_load(i, mo)) LOG("[party] %s: no motion bake %s (built-in frame counts, no root motion)\n", PARTY[i].name, mo);
@@ -1902,6 +2293,139 @@ static void party_load(void) {
     }
     P.rnd = (uint32_t)GetTickCount();
     P.combat = env_f("SAVAGEWIND_PARTY_COMBAT", 1) != 0;
+    party_pick_restore();  // (s217 riku: a hot reload keeps this session's pick)
+}
+
+// ---- (s217 riku) the party swap. STEP 1: Donald's place (slot 0) = Donald or Riku. (s220 members, slice 3) both places: the Debug
+// Menu rows "Party 1" (slot 0) / "Party 2" (slot 1), or live "set pchar1 <id>" / "set pchar2 <id>" (ids: sora_pchar.h PCH_*: 0 Donald,
+// 1 Goofy, 2 Riku, 3 Auron, 4 Mulan, 5 Aladdin, 6 Sparrow, 7 Cloud; the old "set ppick 0|1" = Donald / Riku in slot 0). This SESSION only:
+// nothing is saved; the picks ride a DLL hot reload in the process env (PPICK_ENV "0:<id> 1:<id>"; an older DLL's "0:<id>" reads too).
+// A stand-in's data = <party dir>/<key>_{model,pose,motion}.bin (+ <key>_hits.bin: without it his attacks don't hit), baked by
+// partybake from the player's KH2 (sorabuild steps party_riku / _auron / _mulan / _aladdin / _sparrow). A member whose files are
+// missing is not offered on the rows (party_have_mask) and refused by party_swap (one [party] line); the slot keeps who stands there.
+// No character stands in both slots. The first pick of a member loads his draw actor (one ~30-40 MB read on the game thread: a short
+// hitch, as an outfit) and his motion / hit bakes; they stay loaded for the session (the exe never frees an actor; the next picks
+// only switch). [party] lines tell each step.
+#define PPICK_ENV "SORA_PARTY_PICK"
+static const char *party_dir(void) {
+    const char *dir = getenv("SAVAGEWIND_PARTY_DIR");
+    if (!dir || !*dir) dir = "D:/SoraBotW/data/party";
+    return sora_path(dir);
+}
+static void party_char_path(int c, const char *what, char *out, size_t n) { snprintf(out, n, "%s/%s_%s.bin", party_dir(), PCH_TAB[c].key, what); }
+static bool party_file_ok(const char *p) { DWORD a = GetFileAttributesA(p); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY); }
+// his bake is there (model + pose + motion); missing: the first missing file's name in `miss`
+static bool party_char_data(int c, char *miss, size_t n) {
+    if (!pchar_valid(c)) return false;
+    if (PCS[c].ok || PCH_TAB[c].home >= 0) return true;  // (loaded once / Donald, Goofy: party_load's own files)
+    static const char *const W[3] = {"model", "pose", "motion"};
+    for (int k = 0; k < 3; k++) {
+        char p[512];
+        party_char_path(c, W[k], p, sizeof p);
+        if (!party_file_ok(p)) {
+            if (miss) snprintf(miss, n, "%s", p);
+            return false;
+        }
+    }
+    return true;
+}
+// (s220) bit c = character c may be offered (his bake is installed or he is loaded; Donald / Goofy always): the Debug Menu rows
+static uint32_t party_have_mask(void) {
+    uint32_t m = 0;
+    for (int c = 0; c < PCH_N; c++)
+        if (party_char_data(c, NULL, 0)) m |= 1u << c;
+    return m;
+}
+static void party_pick_persist(void) {
+    char b[48];
+    snprintf(b, sizeof b, "0:%d 1:%d", g_pchar[0], g_pchar[1]);
+    SetEnvironmentVariableA(PPICK_ENV, pchar_home(g_pchar, 0) && pchar_home(g_pchar, 1) ? NULL : b);
+}
+static int party_level(int i);
+// slot takes character c now; returns the character in the slot afterwards (the old one when refused: every refusal = one log line)
+static int party_swap(int slot, int c, const char *why) {
+    if (slot < 0 || slot >= PARTY_N) return PCH_DONALD;
+    int old = g_pchar[slot];
+    if (!pchar_valid(c) || c == old) return old;
+    const char *who = PCH_TAB[c].name;
+    if (!pchar_can(c, slot)) { LOG("[party] swap: %s can't stand in slot %d (%s): %s stays\n", who, slot, why, PCH_TAB[old].name); return old; }
+    if (pchar_elsewhere(g_pchar, slot, c)) {  // (s220: no character twice; the rows never offer him, a live key can ask)
+        LOG("[party] swap: %s already stands in the other slot (%s): %s stays in slot %d\n", who, why, PCH_TAB[old].name, slot);
+        return old;
+    }
+    if (!PD.load || !PD.off) { LOG("[party] swap: %s refused, the party is not loaded (party off / old exe) (%s)\n", who, why); return old; }
+    if (g_party_absorbed[slot] || g_plim_hold[slot] || P.m[slot].kd != KD_NONE) {
+        LOG("[party] swap: %s refused, %s is %s right now (%s): try again in a moment\n", who, PCH_TAB[old].name,
+            g_party_absorbed[slot] ? "in a Drive Form / Summon" : g_plim_hold[slot] ? "in a party Limit" : "knocked down", why);
+        return old;
+    }
+    char mp[512], pp[512], mo[512], ht[512], miss[512] = "";
+    party_char_path(c, "model", mp, sizeof mp), party_char_path(c, "pose", pp, sizeof pp);
+    party_char_path(c, "motion", mo, sizeof mo), party_char_path(c, "hits", ht, sizeof ht);
+    if (!party_char_data(c, miss, sizeof miss)) {
+        LOG("[party] swap: %s's data is missing (%s): %s stays in slot %d (%s)\n", who, miss, PCH_TAB[old].name, slot, why);
+        return old;
+    }
+    ULONGLONG t0 = GetTickCount64();
+    int id = PD.load(mp, pp);  // (the exe dedupes by path: Donald's / a loaded Riku's actor comes back at once)
+    if (id <= 0 && PCH_TAB[c].home < 0) { LOG("[party] swap: %s's draw actor did not load (%s, %s; [sora-draw] says why): %s stays (%s)\n", who, mp, pp, PCH_TAB[old].name, why); return old; }
+    if (id <= 0) id = -1, LOG("[party] swap: %s's draw actor is not loaded (as at the start: not drawn); he takes his slot back anyway\n", who);  // (Donald back always works)
+    bool first = !PCS[c].ok;
+    if (first) {  // a stand-in's first load: his def + motion + hit bakes into the slot, then kept per character
+        party_char_begin(slot, c);
+        int got = party_mot_load(slot, mo);
+        if (!PMOT_N[slot]) {
+            LOG("[party] swap: %s's motion bake did not load (%s): %s stays (%s)\n", who, mo, PCH_TAB[old].name, why);
+            g_pchar[slot] = c, party_char_put(slot, old);  // (the slot's state back to the one begin saved)
+            PCS[c].ok = false;
+            return old;
+        }
+        if (!party_hits_load(slot, ht)) LOG("[party] %s: FALLBACK no hit bake %s: his attacks play but don't hit\n", who, ht);
+        LOG("[party] %s: motion %d slots (%d of 7 idle / walk / run / blow slots found), %d hit slots\n", who, PMOT_N[slot], got, PHIT_N[slot]);
+        party_char_take(slot, c);
+    } else
+        party_char_put(slot, c);
+    int prev = g_party_id[slot];
+    if (prev > 0 && prev != id) PD.off(prev);
+    g_party_id[slot] = id;
+    if (id > 0) PD.shape(id, PARTY[slot].shadow_r, 0, 0, 0);
+    if (id > 0 && PD.weapon) PD.weapon(id, true);
+    if (id > 0 && PD.weapon_at) PD.weapon_at(id, NULL, 0, NULL, 0, 0);
+    g_pw_on[slot] = false, g_pw_hid[slot] = false, g_pb_cur_ok[slot] = false;  // (no blend across two skeletons; weapon shown above)
+    PS.m[slot].seen = false, PS.m[slot].voice = -1;
+    int nb = PD.bones && id > 0 ? PD.bones(id) : 0;
+    const PMotX *idle = pmot_find(slot, PARTY[slot].slot[0]), *a300 = pmot_find(slot, 604);
+    const PHSlot *h300 = phit_find(slot, 604), *h301 = phit_find(slot, 608);
+    LOG("[party] swap: slot %d = %s (was %s) (%s): draw actor %d (%d bones%s), %s, %llu ms\n", slot, who, PCH_TAB[old].name, why, id, nb,
+        nb > PARTY_MAX_BONES ? ": too many for the blend, plain poses" : "", first ? "first load" : "loaded before", (unsigned long long)(GetTickCount64() - t0));
+    LOG("[party] %s: idle / walk / run slots %d / %d / %d (%.0f / %.0f / %.0f frames), battle %d / %d / %d, blow %d / %d, idle %s, A300 %s "
+        "(%u frames, %d hit windows), A301 %d hit windows; %d actions (%s), sounds %s, LV %d Str %d + weapon %d, MP %.0f\n",
+        who, PARTY[slot].slot[0], PARTY[slot].slot[1], PARTY[slot].slot[2], PARTY[slot].frames[0], PARTY[slot].frames[1], PARTY[slot].frames[2],
+        PARTY[slot].bslot[0], PARTY[slot].bslot[1], PARTY[slot].bslot[2], PARTY[slot].kd[0].slot, PARTY[slot].kd[2].slot,
+        idle ? "baked" : "MISSING (built-in frame count)", a300 ? "baked" : "MISSING (attack1 skipped)", a300 ? (unsigned)a300->frames : 0u,
+        h300 ? h300->nwin : 0, h301 ? h301->nwin : 0, PENT_N[slot], PCH_TAB[c].home < 0 ? "pause move attack1 attack2 air1 air2: no spells" : "his own",
+        !PCH_TAB[c].sfx ? "NONE (no sound rows of his: silent)" : PCH_TAB[c].home >= 0 ? "his KH2 ones" :
+        "his KH2 ones when sfx.bin has them (an older pack: silent, one log line)", party_level(slot),
+        party_lv_tab(slot)[party_level(slot) - 1].str, PARTY[slot].wstr, PARTY[slot].mp_max);
+    if (PCH_TAB[c].home < 0)  // (s220: any stand-in; his weapon's hand bone = the sorabuild PARTY row, PARTYBAKE_WJOINT)
+        LOG("[party] %s stands in %s's place: weapon %s on the field; %s hidden, Summons greyed, no Anti roll while %s out of the party\n",
+            who, slot ? "Goofy" : "Donald", PCH_TAB[c].wfield ? "shown" : "hidden", slot ? "Whirli-Goof + Knocksmash" : "Comet + Duck Flare",
+            pchar_missing_text(g_pchar));
+    party_pick_persist();
+    return c;
+}
+static void party_pick_restore(void) {
+    char b[48];
+    DWORD n = GetEnvironmentVariableA(PPICK_ENV, b, sizeof b);
+    int s[2], c[2];
+    if (!n || n >= sizeof b) return;
+    int k = sscanf(b, "%d:%d %d:%d", &s[0], &c[0], &s[1], &c[1]) / 2;  // (s220: both slots; an older DLL wrote "0:<id>" only)
+    for (int j = 0; j < k; j++) {
+        if (s[j] < 0 || s[j] >= PARTY_N || c[j] == g_pchar[s[j]]) continue;
+        LOG("[party] hot reload: this session's pick %s comes back in slot %d\n", pchar_valid(c[j]) ? PCH_TAB[c[j]].name : "?", s[j]);
+        party_swap(s[j], c[j], "hot reload: the session's pick");
+    }
+    party_pick_persist();  // (what really stands now: a refused pick is gone from the env)
 }
 
 static void party_all_off(void) {
@@ -1935,6 +2459,25 @@ static int g_party_wet = 1;  // (s87c party water) live "set pwet 0" = off: thei
 // hidden in the world for a climb / swim: KH2 keeps the plates up). HP: their KH HP (full until enemies hit them, slice
 // 2). MP Charge: mp < 0 = the charge's progress (MpChargeTime). Live "set hudparty 0/1".
 static bool g_party_hud = true;
+// (s220 riku2) who stands in each slot -> the exe's plate face (sora_hud_party_face(slot, KH2 character), keyed by the pchar row's
+// lvup id = KH2's character id; Donald / Goofy send 2 / 3 = their own faces). Looked up by name: an exe before s220 logs once and keeps
+// Donald's / Goofy's faces. Resent on change (a DLL reload resets last, so it resends).
+static void party_face_sync(void) {
+    static void (*fn)(int, int);
+    static int tried, last[PARTY_N] = {-1, -1};
+    if (!tried) {
+        tried = 1, fn = (void (*)(int, int))(void *)GetProcAddress(GetModuleHandleA(NULL), "sora_hud_party_face");
+        LOG("[party] HUD face: sora_hud_party_face %s\n", fn ? "found" : "not in this exe (plates keep Donald's / Goofy's faces until the next exe link)");
+    }
+    if (!fn) return;
+    for (int i = 0; i < PARTY_N; i++) {
+        int c = g_pchar[i], ch = pchar_valid(c) ? PCH_TAB[c].lvup : 0;
+        if (ch == last[i]) continue;
+        last[i] = ch;
+        fn(i, ch);
+        LOG("[party] HUD face: slot %d = %s (KH2 character %d)\n", i, pchar_valid(c) ? PCH_TAB[c].name : "?", ch);
+    }
+}
 static void party_hud(void) {
     static void (*fn)(int, float, float, float, float, bool);
     static int tried;
@@ -1943,6 +2486,7 @@ static void party_hud(void) {
         LOG("[party] HUD: sora_hud_party %s\n", fn ? "found" : "not in this exe (no party gauges until the next exe link)");
     }
     if (!fn) return;
+    party_face_sync();  // (s220 riku2)
     for (int i = 0; i < PARTY_N; i++) {
         const PMember *m = &P.m[i];
         bool shown = g_party_hud && P.on && P.ticks > 0 && g_party_id[i] > 0 && m->hp_max > 0 && !g_party_absorbed[i];
@@ -1974,7 +2518,12 @@ static bool party_set(const char *key, int v) {  // (live keys; sora.c's "set" c
     else if (!strcmp(key, "pdmg")) g_party_dmg_pct = v < 0 ? 0 : v;  // (s57: % of the party's damage)
     else if (!strcmp(key, "pmpdmg")) g_party_mp_pct = v < 0 ? 0 : v;  // (s174: % of the party's damage while a friend is connected)
     else if (!strcmp(key, "psfxlog")) PS.log = v != 0;
+    else if (!strcmp(key, "pfx")) g_pfx = v != 0, LOG("[party] pfx %d (the stand-ins' own KH2 sparks + ribbon: %s)\n", g_pfx, g_pfx ? "on" : "off, as before s223");  // (s223 rikufx)
     else if (!strcmp(key, "hudparty")) g_party_hud = v != 0;  // (s57: KH2's party gauges on / off)
+    else if (!strcmp(key, "pwfield")) g_pwfield = v != 0, LOG("[party] pwfield %d (a stand-in's weapon on field slots: %s)\n", g_pwfield, g_pwfield ? "shown" : "hidden");  // (s218)
+    else if (!strcmp(key, "ppick")) party_swap(0, pchar_of_pick(v), "live set ppick");  // (s217 riku: 0 Donald, 1 Riku in Donald's place)
+    else if (!strcmp(key, "pchar1")) party_swap(0, v, "live set pchar1");  // (s220: character id, sora_pchar.h PCH_*, in Donald's place)
+    else if (!strcmp(key, "pchar2")) party_swap(1, v, "live set pchar2");  // (s220: ... in Goofy's place)
     else if (!strcmp(key, "pmp")) {
         for (int i = 0; i < PARTY_N; i++) P.m[i].mp = (float)(v < 0 ? 0 : v > 100 ? 100 : v), P.m[i].charge = 0;
     } else return false;
@@ -2017,7 +2566,7 @@ static bool party_ray_cb(const float a[3], const float b[3], float h[3], float n
 static int party_level(int i) {
     sl_init();
     int lv = 1;
-    while (lv < 99 && SL.exp >= PARTY_LV[i][lv].exp) lv++;
+    while (lv < 99 && SL.exp >= party_lv_tab(i)[lv].exp) lv++;
     return lv;
 }
 static int party_dmg_cb(int i, uint64_t actor, int32_t life, int power, int magic) {
@@ -2030,7 +2579,7 @@ static int party_dmg_cb(int i, uint64_t actor, int32_t life, int power, int magi
     if (!c) return party_mp_scale(d);
     if (life > c->max_life) c->max_life = life;
     int lv = party_level(i);
-    const PLv *r = &PARTY_LV[i][lv - 1];
+    const PLv *r = &party_lv_tab(i)[lv - 1];  // (s217 riku: the slot's character's row)
     int st = magic ? r->mag + PARTY[i].wmag : r->str + PARTY[i].wstr, hp_pct = c->hp_pct;
     if (sl_khformula) {  // (s109) KH2's own damage function, same as Sora's; KH2 has no party multiplier (pdmg unused)
         char why[200];
@@ -2057,11 +2606,83 @@ static int party_dmg_cb(int i, uint64_t actor, int32_t life, int power, int magi
     c->hit_at = SL.clock, c->queued += d;  // (the kill rule: Sora's EXP)
     return d;
 }
+// ---- (s223 rikufx) the stand-ins' own KH2 weapon effects (sora_pfx.h): the spark by the window's EffectOnHit + the swing ribbon.
+// Live: "set pfx 0" = every stand-in as before s223 (the Kingdom Key's sparks, no ribbon); "set pfx 1" (default) = their own
+// (g_pfx: declared before party_set).
+typedef struct { int tried, hit[PFX_NEOH], trail; } PfxIds;
+static PfxIds g_pfx_ids[PCH_N];
+// the fx.bin ids of character c's rows (resolved once, when fx.bin is loaded); NULL = no row / off / fx.bin not loaded yet
+static const PfxIds *pfx_ids(int c) {
+    if (!g_pfx || !pchar_valid(c) || pfx_row(c) < 0) return NULL;
+    PfxIds *d = &g_pfx_ids[c];
+    if (!d->tried) {
+        if (!sora_fx_ready()) return NULL;  // (ask again next time)
+        char b[48];
+        int nown = 0;
+        d->tried = 1;
+        for (int k = 0; k < PFX_NEOH; k++) {
+            d->hit[k] = pfx_hit_name(c, k + 1, b, sizeof b) ? sora_fx_id(b) : -1;
+            nown += d->hit[k] >= 0;
+        }
+        d->trail = pfx_trail_name(c, b, sizeof b) ? sora_fx_id(b) : -1;
+        if (d->trail < 0 && !nown)
+            LOG("[party] pfx: fx.bin has no pfx_%s_* rows (an older pack): %s draws the Kingdom Key's sparks, no ribbon\n",
+                PFX_TAB[pfx_row(c)].key, PCH_TAB[c].name);
+        else
+            LOG("[party] pfx: %s draws his own KH2 sparks (EffectOnHit 1 / 2 / 3: %s / %s / %s) and %s\n", PCH_TAB[c].name,
+                d->hit[0] >= 0 ? "own" : "base", d->hit[1] >= 0 ? "own" : "base", d->hit[2] >= 0 ? "own" : "base",
+                d->trail >= 0 ? "his own swing ribbon" : "no ribbon");
+    }
+    return d;
+}
+// The spark of member i's melee hit (atkp row): his own element for the window's EffectOnHit, -1 = the old rule (`fx` as passed).
+static int pfx_hit_id(int i, int atkp) {
+    if (i < 0 || i >= PARTY_N) return -1;
+    const PfxIds *d = pfx_ids(g_pchar[i]);
+    const PMember *m = &P.m[i];
+    const PHSlot *h = d && m->act ? phit_find(i, m->act_slot) : NULL;
+    if (!h) return -1;
+    int eoh = -1;
+    if (m->act_win >= 0 && m->act_win < h->nwin && h->win[m->act_win].atkp == atkp) eoh = h->win[m->act_win].effect;  // (pc_sweep's window)
+    for (int w = 0; eoh < 0 && w < h->nwin; w++)
+        if (h->win[w].atkp == atkp) eoh = h->win[w].effect;
+    return eoh >= 1 && eoh <= PFX_NEOH ? d->hit[eoh - 1] : -1;
+}
+static bool av_ribbon_busy(int r);  // (sora_net_avatar.h, later in sora.c: a remote player draws on exe ribbon r)
+// once per present per drawn member (party_tick): his weapon's ribbon while his playing motion is inside a KH2 weapon_trail window
+static void pfx_ribbon(int i, float to_u) {
+    typedef void (*TrailEx)(int, const float *, const float *, bool, int, int);
+    static TrailEx ex;
+    static int nslots = -1;
+    static bool was_on[PARTY_N];
+    if (nslots < 0) {
+        int (*slots)(void) = (int (*)(void))(void *)GetProcAddress(GetModuleHandleA(NULL), "sora_fx_trail_slots");
+        ex = (TrailEx)(void *)GetProcAddress(GetModuleHandleA(NULL), "sora_fx_trail_ex");
+        nslots = slots && ex ? slots() : 0;
+        LOG("[party] pfx: exe has %d ribbon slots: stand-in ribbons on %d / %d\n", nslots, pfx_ribbon_slot(0, nslots), pfx_ribbon_slot(1, nslots));
+    }
+    int r = pfx_ribbon_slot(i, nslots);
+    if (r < 0 || !ex || av_ribbon_busy(r)) { was_on[i] = false; return; }
+    const PMember *m = &P.m[i];
+    int c = g_pchar[i];
+    const PfxIds *d = pfx_ids(c);
+    bool on = false;
+    float s[6] = {0};
+    if (d && d->trail >= 0 && m->act && sora_fx_trail_window(pfx_trail_key(c, m->act_slot), m->act_clock)) {
+        const PHSlot *h = phit_find(i, m->act_slot);
+        if (h && h->nseg) phit_seg(h, m->act_clock, m->pos, m->face, to_u, s), on = true;
+    }
+    if (on || was_on[i]) ex(r, s, s + 3, on, d ? d->trail : -1, g_kbfx_vflip ? 1 : 0);  // (on false: the ribbon fades over its length)
+    was_on[i] = on;
+}
+
 static void party_hit_cb(int i, uint64_t actor, int dmg, int f54, int f40, const float at[3], const char *fx, int atkp) {
     if (f40 == 3 && ah_enabled() && !ah_small(actor)) f54 = 0x11;  // (s58: no BlownOff on a big enemy / boss)
     if (f40 == 3 && ah_enabled() && g_ah_launch_f40 >= 0) f40 = g_ah_launch_f40;  // (s57: Donald's Thunder, no shock)
     linkpos_damage_enemy_ex(actor, dmg, f54, f40);
-    if (fx) sora_fx_event(fx, at, P.m[i].face, 0.01f * g_k);
+    int own = fx && (!strcmp(fx, "hit") || !strcmp(fx, "hit_finish")) ? pfx_hit_id(i, atkp) : -1;  // (s223 rikufx: a stand-in's own)
+    if (own >= 0) sora_fx_spawn(own, at, P.m[i].face, 0.01f * g_k);
+    else if (fx) sora_fx_event(fx, at, P.m[i].face, 0.01f * g_k);
     // (s56 pack: the party's atkp rows -> their own hit SEs; set psfx 0 = Sora's base Keyblade hit, as before s56)
     if (atkp > 0 && (PS.mode ? sora_sfx_hit(atkp, 1.0f, at) : -1) < 0) {
         static int hit_se = -2;
@@ -2114,6 +2735,13 @@ static void party_draw_member(int i, float to_u) {
         } else if (g_pw_on[i])
             PD.weapon_at(id, NULL, 0, NULL, 0, 0), g_pw_on[i] = false;
     }
+    if (PD.weapon) {  // (s218) Riku: Way to the Dawn off on his field slots (live "set pwfield 1" = always shown, the s217 look)
+        bool hid = !g_pwfield && party_weapon_field_hidden(i, slot, m->blend >= 0, m->from_slot);
+        if (hid != g_pw_hid[i]) {
+            PD.weapon(id, !hid), g_pw_hid[i] = hid;
+            if (P.log) LOG("[party] %s: weapon %s (slot %d%s)\n", PARTY[i].name, hid ? "hidden: field slot" : "shown", slot, m->blend >= 0 ? ", blending" : "");
+        }
+    }
     // (s58) the catch's blend moves the body only: its weapon bones start where the flying shield ended (A402 f0)
     int wb0 = m->act == PACT_CAST && m->act_spell == PS_BASH && m->act_phase == 1 && g_pwf[i].nb > 0 ? nb - g_pwf[i].nb : nb;
     bool can = nb > 0 && nb <= PARTY_MAX_BONES;
@@ -2136,12 +2764,13 @@ static void party_draw_member(int i, float to_u) {
         }
         g_pb_cur_ok[i] = true;
         PD.world(id, g_pb_cur[i], m->pos, m->face, to_u);
-        pcap_commit(i, m->pos, m->face, slot, clock, floor_y, wet_now, true, m->from_slot, m->from_clock, w, has_sh ? sh : NULL);
+        if (pchar_home(g_pchar, i))  // (s217 riku: a stand-in is not sent: a friend's game would draw Donald with his poses)
+            pcap_commit(i, m->pos, m->face, slot, clock, floor_y, wet_now, true, m->from_slot, m->from_clock, w, has_sh ? sh : NULL);
         return;
     }
     g_pb_cur_ok[i] = false;
     PD.pose(id, slot, clock, m->pos, m->face, to_u);
-    pcap_commit(i, m->pos, m->face, slot, clock, floor_y, wet_now, false, 0, 0, 0, has_sh ? sh : NULL);
+    if (pchar_home(g_pchar, i)) pcap_commit(i, m->pos, m->face, slot, clock, floor_y, wet_now, false, 0, 0, 0, has_sh ? sh : NULL);
 }
 
 // Each driving frame after Sora's own draw (replaces slice 2's fixed idle placement); also from party_other while
@@ -2187,6 +2816,7 @@ static void party_tick(float kh, float to_u, int st) {
         if (g_party_absorbed[i]) { if (PD.off) PD.off(g_party_id[i]); continue; }  // (s68 drive)
         if (g_plim_hold[i]) continue;  // (s133 limits: sora_plimit.h draws him)
         party_draw_member(i, to_u);
+        pfx_ribbon(i, to_u);  // (s223 rikufx: a stand-in's own swing ribbon)
         psfx_tick(i, in.present);  // (s56: the KH2 sounds of the motion he plays)
         PMember *m = &P.m[i];
         float clock;
@@ -2200,7 +2830,7 @@ static void party_tick(float kh, float to_u, int st) {
             LOG("[party] %s d=%.0f band=%s y=%.3f (%s) motion %s slot %d clock %.1f%s at %.3f %.3f face %.2f | Sora "
                 "%.3f %.3f %.3f%s, trail %d, casts %llu hits %llu\n",
                 PARTY[i].name, m->d_cm, PARTY_BAND_NAME[m->band], m->pos[1], PARTY_SRC_NAME[m->src],
-                m->kd == KD_AIR ? "blown" : m->kd == KD_DOWN ? "down" : PARTY_BAND_NAME[m->motion], slot, clock,
+                m->kd == KD_AIR ? "blown" : m->kd == KD_DOWN ? "down" : m->act ? (m->act_entry >= 0 ? PENT[i][m->act_entry].name : "hop") : PARTY_BAND_NAME[m->motion], slot, clock,
                 m->blend >= 0 ? " (blend)" : "", m->pos[0], m->pos[2], m->face, in.feet[0], in.feet[1], in.feet[2],
                 in.grounded ? "" : " (air)", P.trail.n, (unsigned long long)P.casts, (unsigned long long)P.hits);
     }

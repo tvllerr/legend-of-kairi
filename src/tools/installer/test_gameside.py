@@ -18,7 +18,9 @@ import gameside  # noqa: E402
 C_SRC = r'''#include <stdio.h>
 #include <windows.h>
 int main(int c,char**v){char cwd[1024];GetCurrentDirectoryA(1024,cwd);
-FILE*f=fopen("fake_marker.txt","w");if(f){fprintf(f,"arg1=%s cwd=%s\n",c>1?v[1]:"",cwd);fclose(f);}return 0;}
+const char*e1=getenv("SAVAGEWIND_SORA_SOLO"),*e2=getenv("SAVAGEWIND_NO_UPDATE_CHECK"),*e3=getenv("SAVAGEWIND_VK_VDYN");
+FILE*f=fopen("fake_marker.txt","w");if(f){fprintf(f,"arg1=%s arg2=%s solo=%s noupd=%s vdyn=%s cwd=%s\n",c>1?v[1]:"",c>2?v[2]:"",
+e1?e1:"-",e2?e2:"-",e3?e3:"-",cwd);fclose(f);}return 0;}
 '''
 NAMES = ["plain", "with space", "A&B (1)", "x ^ y", "p(a)r", "bang!", "pct 50% done %nosuchvar%", "all & ( ) ! ^ % ' , ; = x", "a&echo pwned&b"]
 
@@ -43,15 +45,28 @@ def make_data(root, skip=None):
             f.write(b"x")
 
 
-def run_one(base, name, multi, fake, missing=None, manifest_id=None, build_id=None, expect="start"):
-    """expect: "start" (the fake exe ran) | "incomplete" | "otherversion" (message shown, exe NOT started)"""
+def run_one(base, name, multi, fake, missing=None, manifest_id=None, build_id=None, expect="start", swv=gameside.SW_WANT,
+            gid=None, have_gid=None):
+    """expect: "start" (the fake exe ran) | "incomplete" | "otherversion" | "swversion" | "gameid" (message shown, exe NOT started).
+    (s223) swv: the version line of the Savage Wind folder's sw-manifest.txt (None = no file); gid: data/GAME_ID (None = no file);
+    have_gid: <sw>/extracted/swgame.dll.id (LF, as stock writes it; None = no file)"""
     root = os.path.join(base, "root " + name)
     sw = os.path.join(base, "sw " + name)
     os.makedirs(os.path.join(root, "bin"))
     os.makedirs(sw)
     open(os.path.join(sw, "savagewind.ini"), "w").close()
+    if swv is not None:
+        with open(os.path.join(sw, "sw-manifest.txt"), "wb") as f:
+            f.write(b"savagewind-update-manifest 1\nversion " + swv.encode() + b"\nf 00 1 savagewind.exe\n")
+    if have_gid is not None:
+        os.makedirs(os.path.join(sw, "extracted"))
+        with open(os.path.join(sw, "extracted", "swgame.dll.id"), "wb") as f:
+            f.write(have_gid.encode() + b"\n")
     shutil.copy2(fake, os.path.join(root, "bin", "fakegame.exe"))
     make_data(root, missing)
+    if gid is not None:
+        with open(os.path.join(root, "data", "GAME_ID"), "wb") as f:
+            f.write(gid.encode() + b"\r\n")
     if manifest_id is not None:     # "" = a manifest that has no build id at all
         bl = '  "build_id": "%s",\n' % manifest_id if manifest_id else ""
         with open(os.path.join(root, "manifest.json"), "w") as f:
@@ -72,9 +87,13 @@ def run_one(base, name, multi, fake, missing=None, manifest_id=None, build_id=No
     out = p.stdout.decode("mbcs", "replace") + p.stderr.decode("mbcs", "replace")
     if expect != "start":
         want = {"incomplete": ["files are incomplete", "(%s is missing)" % (missing or "").replace("/", "\\"), "Install Legend of Kairi.cmd again"],
-                "otherversion": ["files are from another version", "choose Update"]}[expect]
+                "otherversion": ["files are from another version", "choose Update"],
+                "swversion": ["has Savage Wind %s" % (swv or "an unknown version"), "made for Savage Wind %s" % gameside.SW_WANT],
+                "gameid": ["game code in your Savage Wind folder is not the one", "Install Legend of Kairi.cmd again"]}[expect]
         return (not os.path.isfile(marker)) and p.returncode == 1 and all(w in out for w in want), out
-    ok = os.path.isfile(marker) and "arg1=extracted" in open(marker).read() and os.path.normcase(sw) in os.path.normcase(open(marker).read())
+    m = open(marker).read() if os.path.isfile(marker) else ""
+    ok = "arg1=extracted arg2=--no-launch-flags " in m and os.path.normcase(sw) in os.path.normcase(m)
+    ok = ok and "noupd=1 vdyn=0" in m and (("solo=1" in m) if not multi else ("solo=-" in m))   # (s223)
     return ok and "incomplete" not in out and "another version" not in out, out
 
 
@@ -263,7 +282,14 @@ def main():
                ("data complete, BUILD_ID matches", dict(manifest_id="f9088e2d0399c69c", build_id="f9088e2d0399c69c"), "start"),
                ("BUILD_ID differs", dict(manifest_id="f9088e2d0399c69c", build_id="0123456789abcdef"), "otherversion"),
                ("BUILD_ID file missing", dict(manifest_id="f9088e2d0399c69c"), "otherversion"),
-               ("manifest without build_id (check skipped)", dict(manifest_id=""), "start")]
+               ("manifest without build_id (check skipped)", dict(manifest_id=""), "start"),
+               # (s223) Savage Wind's version + its game code id
+               ("Savage Wind moved on to 0.5.4", dict(swv="0.5.4-alpha.1"), "swversion"),
+               ("Savage Wind 0.4.1 (no sw-manifest.txt)", dict(swv=None), "swversion"),
+               ("game id matches", dict(gid="7689ce31c1953be6", have_gid="7689ce31c1953be6"), "start"),
+               ("game id differs", dict(gid="7689ce31c1953be6", have_gid="1111111111111111"), "gameid"),
+               ("game id file gone from Savage Wind", dict(gid="7689ce31c1953be6"), "gameid"),
+               ("no data/GAME_ID (check skipped)", dict(have_gid="1111111111111111"), "start")]
         pre += [("missing " + k, dict(missing=k), "incomplete") for k in gameside.KEY_FILES]
         for name in ("all & ( ) ! ^ % ' , ; = x", "with space"):
             for multi in (False, True):

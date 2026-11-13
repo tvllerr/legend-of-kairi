@@ -27,7 +27,19 @@ string Env(string k, string d) { var v = Environment.GetEnvironmentVariable(k); 
 // partybake: PARTYBAKE_MODEL = P_EX100 (Sora) | P_EX020 (Donald) | P_EX030 (Goofy); PARTYBAKE_WEAPON = W_EX010 | W_EX020 | W_EX030;
 // PARTYBAKE_WJOINT = the bone the weapon hangs on (objentry WeaponJoint: Sora 178, Donald 131, Goofy 101); PARTYBAKE_PRTY = prty NeoMoveset index (Sora 1, Donald 17, Goofy 20)
 string actorName = Env("PARTYBAKE_MODEL", "P_EX100"), weaponName = Env("PARTYBAKE_WEAPON", "W_EX010");
-string msetPath = Env("PARTYBAKE_MSET", $"{Kh2}/kh2_sixth/original/obj/{actorName}.mset"), mdlxPath = $"{Kh2}/kh2_sixth/original/obj/{actorName}.mdlx";
+// (s223 cloud) PARTYBAKE_OBJDIR = the folder of <model>.mdlx (and of the default mset): Cloud's N_HB550_BTL is in kh2_fifth only.
+string objDir = Env("PARTYBAKE_OBJDIR", $"{Kh2}/kh2_sixth/original/obj");
+string msetPath = Env("PARTYBAKE_MSET", $"{objDir}/{actorName}.mset"), mdlxPath = $"{objDir}/{actorName}.mdlx";
+// (s223 cloud) PARTYBAKE_WEAPON=- : the weapon is part of the BODY model (an N_ object like Cloud's N_HB550_BTL: no W_ object).
+//   PARTYBAKE_WROOT = the weapon's root bone (its subtree = the weapon's bones; a group whose every vertex is on them = a weapon
+//   group, our bit 8). The bake keeps only the bones that carry vertices, body bones first, the weapon's last (in index order):
+//   fewer bones (Cloud 270 -> 149, under the party blend's 256) and the weapon at the end like a W_ object's.
+//   PARTYBAKE_HITGROUPS = the collision groups (range trigger 10 / 33 Param2) whose windows the hit bake takes from the BODY mset
+//   (KH2 keeps an N_ object's hit windows in its own motions); grip = WROOT's origin, tip = the weapon vertex farthest from it.
+bool InModel = weaponName == "-";
+int WRoot = int.Parse(Env("PARTYBAKE_WROOT", "-1"));
+var HitGroups = Env("PARTYBAKE_HITGROUPS", "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(int.Parse).ToHashSet();
+if (InModel && WRoot < 0) { Console.Error.WriteLine("partybake: PARTYBAKE_WEAPON=- needs PARTYBAKE_WROOT"); Environment.Exit(2); }
 // The Keyblade (Kingdom Key): its own skeleton + mset (same slot layout as Sora's), hung on Sora's bone 178 (PHH's bake:
 // weapons [{bone 178, bones 12}]); baked into the same files as bones 228.. so the runtime draws it with Sora.
 string kbMdlxPath = File.Exists($"{Kh2}/kh2_first/original/obj/{weaponName}.mdlx") ? $"{Kh2}/kh2_first/original/obj/{weaponName}.mdlx" : $"{Kh2}/kh2_sixth/original/obj/{weaponName}.mdlx";
@@ -98,6 +110,23 @@ Slot Load(int slot) {
     if (te != null && te.Stream.Length > 0) { te.Stream.Position = 0; trig = new MotionTrigger(te.Stream); }
     return new Slot(slot, e.Name, m, trig);
 }
+
+// (s223 cloud) the in-model weapon's baked bone layout: keep[k] = the KH2 bone baked as bone k (the bones carrying vertices: body
+// bones first, then the weapon's (WRoot's subtree), each in index order); map = KH2 bone -> baked bone; wset = WRoot's subtree.
+// The pose bake stores model-space matrices, so a bone without vertices needs no row (its children's rows already include it).
+(List<int> keep, Dictionary<int, int> map, HashSet<int> wset) InModelLayout(OpenKh.Kh2.Models.ModelSkeletal md) {
+    var wset = new HashSet<int> { WRoot };
+    for (bool more = true; more;) {
+        more = false;
+        foreach (var b in md.Bones) if (!wset.Contains(b.Index) && wset.Contains(b.ParentIndex)) { wset.Add(b.Index); more = true; }
+    }
+    var used = md.Groups.SelectMany(g => g.Mesh.Vertices.SelectMany(v => v.BPositions.Select(x => x.BoneIndex))).ToHashSet();
+    if (!used.Overlaps(wset)) throw new Exception($"PARTYBAKE_WROOT {WRoot}: no vertex on its subtree");
+    var keep = used.Where(b => !wset.Contains(b)).OrderBy(b => b).Concat(used.Where(wset.Contains).OrderBy(b => b)).ToList();
+    return (keep, keep.Select((b, i) => (b, i)).ToDictionary(x => x.b, x => x.i), wset);
+}
+OpenKh.Kh2.Models.ModelSkeletal BodyModel() =>
+    OpenKh.Kh2.Models.ModelSkeletal.Read(Bar.Read(new MemoryStream(File.ReadAllBytes(mdlxPath))).First(e => e.Type == Bar.EntryType.Model).Stream);
 
 void Info(int slot) {
     var s = Load(slot);
@@ -202,31 +231,54 @@ void Model(string outPath) {
     var bar = Bar.Read(new MemoryStream(File.ReadAllBytes(mdlxPath)));
     var model = OpenKh.Kh2.Models.ModelSkeletal.Read(bar.First(e => e.Type == Bar.EntryType.Model).Stream);
     var tex = ModelTexture.Read(bar.First(e => e.Type == Bar.EntryType.ModelTexture).Stream);
-    var kbBar = Bar.Read(new MemoryStream(File.ReadAllBytes(kbMdlxPath)));
-    var kb = OpenKh.Kh2.Models.ModelSkeletal.Read(kbBar.First(e => e.Type == Bar.EntryType.Model).Stream);
-    var kbTex = ModelTexture.Read(kbBar.First(e => e.Type == Bar.EntryType.ModelTexture).Stream);
+    // (s223 cloud) PARTYBAKE_WEAPON=- : no W_ object (the weapon groups are the body's own, InModelLayout)
+    var kbBar = InModel ? null : Bar.Read(new MemoryStream(File.ReadAllBytes(kbMdlxPath)));
+    var kb = InModel ? null : OpenKh.Kh2.Models.ModelSkeletal.Read(kbBar.First(e => e.Type == Bar.EntryType.Model).Stream);
+    var kbTex = InModel ? null : ModelTexture.Read(kbBar.First(e => e.Type == Bar.EntryType.ModelTexture).Stream);
     var verts = new List<(int fi, int ni, float u, float v)>(); var infl = new List<(int b, System.Numerics.Vector4 p)>();
     var idx = new List<int>(); var groups = new List<(uint tex, int attr, int fi, int ni)>();
     // group attrib bit 8 (not a KH2 bit) = Keyblade group: the runtime can hide it on its own
-    void Add(OpenKh.Kh2.Models.ModelSkeletal md, int boneBase, int texBase, int attrOr) {
+    // (s223 cloud) bmap / wset: the in-model weapon's layout (null = as before: bone = boneBase + KH2 bone, attrOr for every group)
+    void Add(OpenKh.Kh2.Models.ModelSkeletal md, int boneBase, int texBase, int attrOr, Dictionary<int, int> bmap = null, HashSet<int> wset = null) {
         foreach (var g in md.Groups) {
             int fi = idx.Count, vb = verts.Count;
+            if (wset != null) {   // a group all on the weapon's bones = a weapon group; a mixed one would fly with the blade: refused
+                var gb = g.Mesh.Vertices.SelectMany(v => v.BPositions.Select(x => x.BoneIndex)).Distinct().ToList();
+                int nw = gb.Count(wset.Contains);
+                if (nw > 0 && nw < gb.Count) throw new Exception($"group {groups.Count}: {nw} of {gb.Count} bones are the weapon's ({WRoot}..): mixed group");
+                attrOr = nw > 0 ? 0x100 : 0;
+            }
             foreach (var v in g.Mesh.Vertices) {
                 verts.Add((infl.Count, v.BPositions.Count, v.U / 4096f, v.V / 4096f));
                 foreach (var b in v.BPositions) {
                     var p = b.Position;
                     if (p.W == 0) p = new System.Numerics.Vector4(p.X, p.Y, p.Z, 1);   // (one bone: stored without a weight)
-                    infl.Add((boneBase + b.BoneIndex, p));
+                    infl.Add((bmap == null ? boneBase + b.BoneIndex : bmap[b.BoneIndex], p));
                 }
             }
             foreach (var t in g.Mesh.Triangles) foreach (var i in t) idx.Add(vb + i);
-            groups.Add((g.Header.TextureIndex + (uint)texBase, g.Header.AttributesBitfield | attrOr, fi, idx.Count - fi));
+            // (s220) bit 8 is OURS (the weapon flag) and the runtime reads a weapon group's bits 24..31 but NoLight (bit 30) as its
+            // alt-blade id (sora_draw.c ATTR_ALT: any non-zero id hides the group unless that blade is picked). KH2 sets both on some
+            // models: Sparrow's P_CA000_HUMAN body group 1 = 0x1900 (bit 8: counted as weapon), his W_CA000_HUMAN blade group =
+            // 0x20000107 (bit 29: never drawn). Cleared here; Donald / Goofy / Riku have neither (their models stay byte-identical).
+            int attr = g.Header.AttributesBitfield;
+            attr = attrOr == 0 ? attr & ~0x100 : attr & ~unchecked((int)0xBF000000);
+            groups.Add((g.Header.TextureIndex + (uint)texBase, attr | attrOr, fi, idx.Count - fi));
         }
     }
-    Add(model, 0, 0, 0);
-    Add(kb, model.Bones.Count, tex.Images.Count, 0x100);
-    var images = tex.Images.Concat(kbTex.Images).ToList();
-    int nBones = model.Bones.Count + kb.Bones.Count;
+    List<ModelTexture.Texture> images; int nBones;
+    if (InModel) {
+        var (keep, map, wset) = InModelLayout(model);
+        Add(model, 0, 0, 0, map, wset);
+        images = tex.Images.ToList(); nBones = keep.Count;
+        Console.WriteLine($"in-model weapon: bone {WRoot}'s subtree ({wset.Count} bones), {keep.Count} of {model.Bones.Count} bones kept " +
+                          $"(weapon = baked {keep.FindIndex(wset.Contains)}..{keep.Count - 1}); baked bone -> KH2 bone: {string.Join(" ", keep)}");
+    } else {
+        Add(model, 0, 0, 0);
+        Add(kb, model.Bones.Count, tex.Images.Count, 0x100);
+        images = tex.Images.Concat(kbTex.Images).ToList();
+        nBones = model.Bones.Count + kb.Bones.Count;
+    }
     var texData = new List<byte[]>();
     foreach (var im in images) {
         var px = OpenKh.Imaging.ImageExtensions.ToBgra32(im);
@@ -252,7 +304,7 @@ void Model(string outPath) {
     foreach (var x in infl) { w.Write((uint)x.b); w.Write(x.p.X); w.Write(x.p.Y); w.Write(x.p.Z); w.Write(x.p.W); }
     foreach (var i in idx) w.Write((uint)i);
     foreach (var t in texData) w.Write(t);
-    Console.WriteLine($"{outPath}: {nBones} bones ({kb.Bones.Count} Keyblade), {groups.Count} groups ({string.Join(" ", groups.Select(g => $"t{g.tex}/a{g.attr:X}/{g.ni / 3}"))}), " +
+    Console.WriteLine($"{outPath}: {nBones} bones ({(kb == null ? "in-model weapon" : kb.Bones.Count + " Keyblade")}), {groups.Count} groups ({string.Join(" ", groups.Select(g => $"t{g.tex}/a{g.attr:X}/{g.ni / 3}"))}), " +
                       $"{verts.Count} verts, {infl.Count} influences, {idx.Count / 3} tris, {texData.Count} textures, {o} bytes");
 }
 
@@ -279,7 +331,8 @@ int KbStart(int slot) {
     me.Stream.Position = 0;
     if (!Motion.isInterpolated(me.Stream)) return 0;
     me.Stream.Position = 0;
-    return (int)Math.Round(new Motion.InterpolatedMotion(me.Stream).InterpolatedMotionHeader.FrameData.FrameStart * 2);
+    var kfd = new Motion.InterpolatedMotion(me.Stream).InterpolatedMotionHeader.FrameData;
+    return (int)Math.Round(kfd.FrameStart * Slot.GfrPerFrame(kfd.FramesPerSecond));  // (s220: the weapon motion's own fps, as the body's)
 }
 void Pose(string outPath, List<int> only) {
     var slots = new List<Slot>();
@@ -287,6 +340,7 @@ void Pose(string outPath, List<int> only) {
     var bar = Bar.Read(new MemoryStream(File.ReadAllBytes(mdlxPath)));
     int nbS = OpenKh.Kh2.Models.ModelSkeletal.Read(bar.First(e => e.Type == Bar.EntryType.Model).Stream).Bones.Count;
     var msetBytes = File.ReadAllBytes(msetPath); var mdlxBytes = File.ReadAllBytes(mdlxPath);
+    if (InModel) { PoseInModel(outPath, slots, msetBytes, mdlxBytes, nbS); return; }   // (s223 cloud)
     var kbMsetBytes = File.ReadAllBytes(kbMsetPath); var kbMdlxBytes = File.ReadAllBytes(kbMdlxPath);
     var kbEntries = Bar.Read(new MemoryStream(kbMsetBytes)).ToList();
     var kbAt = (int slot) => new OpenKh.Kh2Anim.Mset.MsetIndir(Bar.Read(new MemoryStream(kbMsetBytes)).ToList()).GetAnb(slot).GetAnimProvider(new MemoryStream(kbMdlxBytes));
@@ -328,6 +382,33 @@ void Pose(string outPath, List<int> only) {
     }
     Console.WriteLine($"{outPath}: {slots.Count} slots, {nb} bones, {head + data.Length} bytes, {sw.ElapsedMilliseconds} ms");
     Console.WriteLine($"slots without a Keyblade motion ({noKb.Count}, idle grip used): {string.Join(", ", noKb)}");
+}
+// (s223 cloud) the pose bake of a body with its weapon inside: the same 'SKRP' layout, bones = InModelLayout's keep list
+void PoseInModel(string outPath, List<Slot> slots, byte[] msetBytes, byte[] mdlxBytes, int nbS) {
+    var (keep, _, _) = InModelLayout(BodyModel());
+    var data = new MemoryStream(); var dw = new BinaryWriter(data); var dir = new List<(int slot, int n, long off)>();
+    int head = 16 + 8 * slots.Count;
+    foreach (var s in slots) {
+        var p = new OpenKh.Kh2Anim.Mset.MsetIndir(Bar.Read(new MemoryStream(msetBytes)).ToList()).GetAnb(s.Index).GetAnimProvider(new MemoryStream(mdlxBytes));
+        dir.Add((s.Index, s.Frames + 1, head + data.Position));
+        for (int f = 0; f <= s.Frames; f++) {
+            var M = p.ProvideMatrices(f == 0 ? (Seek ? s.Start : 0) : 1.0);
+            if (M.Length < nbS) throw new Exception($"slot {s.Index}: {M.Length} matrices for {nbS} bones");
+            System.Numerics.Matrix4x4.Invert(RootAt(s, f), out var rinv);
+            var strip = s.HasRoot ? rinv * RootAt(s, 0) : System.Numerics.Matrix4x4.Identity;
+            foreach (int b in keep) {
+                var m = M[b] * strip;
+                dw.Write(m.M11); dw.Write(m.M12); dw.Write(m.M13); dw.Write(m.M21); dw.Write(m.M22); dw.Write(m.M23);
+                dw.Write(m.M31); dw.Write(m.M32); dw.Write(m.M33); dw.Write(m.M41); dw.Write(m.M42); dw.Write(m.M43);
+            }
+        }
+    }
+    using (var w = new BinaryWriter(File.Create(outPath))) {
+        w.Write(0x50524B53u); w.Write(1u); w.Write((uint)slots.Count); w.Write((uint)keep.Count);
+        foreach (var d in dir) { w.Write((ushort)d.slot); w.Write((ushort)d.n); w.Write((uint)d.off); }
+        w.Write(data.ToArray());
+    }
+    Console.WriteLine($"{outPath}: {slots.Count} slots, {keep.Count} bones (in-model weapon), {head + data.Length} bytes");
 }
 
 // Keyblade recon: W_EX010 skeleton, its mset vs Sora's, P_EX100's objentry weapon joint, Sora's matrix count.
@@ -421,6 +502,7 @@ void HitsInfo(List<int> only) {
 //   seg[]   n_seg x {f32 base x, y, z, tip x, y, z}: grip (Keyblade bone 0) and blade tip (its vertex farthest from the
 //           grip) in Sora's entity frame (cm, +x left, +y up, +z forward) with the root move taken out, like the pose bake
 void HitBake(string outPath) {
+    if (InModel) { HitBakeInModel(outPath); return; }   // (s223 cloud)
     var kbMsetBytes = File.ReadAllBytes(kbMsetPath); var kbMdlxBytes = File.ReadAllBytes(kbMdlxPath);
     var msetBytes = File.ReadAllBytes(msetPath); var mdlxBytes = File.ReadAllBytes(mdlxPath);
     var kbm = Bar.Read(new MemoryStream(kbMsetBytes)).ToList();
@@ -485,6 +567,72 @@ void HitBake(string outPath) {
     foreach (var d in dir) { o.Write((ushort)d.slot); o.Write((ushort)d.nw); o.Write((ushort)d.ns); o.Write((ushort)0); o.Write((uint)d.ow); o.Write((uint)d.os); }
     o.Write(data.ToArray());
     Console.WriteLine($"{outPath}: {dir.Count} slots, {head + data.Length} bytes");
+}
+// (s223 cloud) the hit bake of a body with its weapon inside (same 'SKRH' layout): the windows are the BODY mset's own range triggers
+// 10 / 33 (params atkp id, collision group; both are attack windows, RangeBit) whose group is in PARTYBAKE_HITGROUPS; the segment =
+// grip (WROOT's origin) and tip (the weapon vertex farthest from it in slot 0's first pose), skinned like the draw, root move out.
+void HitBakeInModel(string outPath) {
+    var msetBytes = File.ReadAllBytes(msetPath); var mdlxBytes = File.ReadAllBytes(mdlxPath);
+    var md = BodyModel();
+    var (_, _, wset) = InModelLayout(md);
+    var wv = md.Groups.SelectMany(g => g.Mesh.Vertices).Where(v => v.BPositions.All(b => wset.Contains(b.BoneIndex))).ToList();
+    var bat = Bar.Read(new MemoryStream(File.ReadAllBytes(battlePath)));
+    var atkpE = bat.First(e => e.Name == "atkp").Stream; atkpE.Position = 0;
+    var atkp = OpenKh.Kh2.Battle.Atkp.Read(atkpE).GroupBy(a => (int)a.Id).ToDictionary(g => g.Key, g => g.First());
+    var AnimAt = (int slot) => new OpenKh.Kh2Anim.Mset.MsetIndir(Bar.Read(new MemoryStream(msetBytes)).ToList()).GetAnb(slot).GetAnimProvider(new MemoryStream(mdlxBytes));
+    System.Numerics.Vector3 VertAt(System.Numerics.Matrix4x4[] M, OpenKh.Kh2.Models.ModelCommon.UVBVertex v) {   // (the draw's skin)
+        var r = System.Numerics.Vector4.Zero;
+        foreach (var b in v.BPositions) {
+            var p = b.Position;
+            if (p.W == 0) p = new System.Numerics.Vector4(p.X, p.Y, p.Z, 1);
+            r += System.Numerics.Vector4.Transform(p, M[b.BoneIndex]);
+        }
+        return new System.Numerics.Vector3(r.X, r.Y, r.Z);
+    }
+    var rest = AnimAt(Enumerable.Range(0, mset.Count).First(i => mset[i].Stream.Length > 0)).ProvideMatrices(0);   // (Load reads a stream once)
+    int tip = Enumerable.Range(0, wv.Count).OrderByDescending(i => (VertAt(rest, wv[i]) - rest[WRoot].Translation).Length()).First();
+    Console.WriteLine($"in-model weapon: {wv.Count} vertices on bone {WRoot}'s subtree; tip vertex {tip}, {(VertAt(rest, wv[tip]) - rest[WRoot].Translation).Length():F1} cm from the grip");
+    var dir = new List<(int slot, int nw, int ns, long ow, long os)>();
+    var data = new MemoryStream(); var w = new BinaryWriter(data);
+    var todo = new List<(Slot s, List<MotionTrigger.RangeTrigger> wins)>();
+    for (int i = 0; i < mset.Count; i++) {
+        var s = Load(i);
+        if (s?.T == null) continue;
+        var wins = s.T.RangeTriggerList.Where(r => (r.Trigger == 10 || r.Trigger == 33) && r.ParamSize >= 2 && HitGroups.Contains(r.Param2)).ToList();
+        if (wins.Count > 0) todo.Add((s, wins));
+    }
+    int head = 16 + 16 * todo.Count;
+    foreach (var (s, wins) in todo) {
+        long ow = head + data.Position;
+        foreach (var r in wins) {
+            atkp.TryGetValue(r.Param1, out var a);
+            w.Write((ushort)r.StartFrame); w.Write((ushort)(r.EndFrame < 0 ? s.Frames : r.EndFrame));
+            w.Write((ushort)r.Param1); w.Write((ushort)r.Param2);
+            w.Write((ushort)(a?.Power ?? 0)); w.Write((ushort)(a == null ? 0 : (int)a.Kind));
+            w.Write((byte)(a?.EnemyReaction ?? 0)); w.Write((byte)(a?.EffectOnHit ?? 0)); w.Write((ushort)0);
+        }
+        long os = head + data.Position;
+        var p = AnimAt(s.Index);
+        var line = new StringBuilder();
+        for (int f = 0; f <= s.Frames; f++) {
+            var M = p.ProvideMatrices(f == 0 ? (Seek ? s.Start : 0) : 1.0);
+            System.Numerics.Matrix4x4.Invert(RootAt(s, f), out var rinv);
+            var strip = s.HasRoot ? rinv * RootAt(s, 0) : System.Numerics.Matrix4x4.Identity;
+            var b = System.Numerics.Vector3.Transform(M[WRoot].Translation, strip);
+            var t = System.Numerics.Vector3.Transform(VertAt(M, wv[tip]), strip);
+            w.Write(b.X); w.Write(b.Y); w.Write(b.Z); w.Write(t.X); w.Write(t.Y); w.Write(t.Z);
+            if (wins.Any(r => f == r.StartFrame || f == (r.EndFrame < 0 ? s.Frames : r.EndFrame)))
+                line.Append($" f{f} tip ({t.X:F0} {t.Y:F0} {t.Z:F0}) len {(t - b).Length():F0}");
+        }
+        dir.Add((s.Index, wins.Count, s.Frames + 1, ow, os));
+        Console.WriteLine($"slot {s.Index} {s.Name}: " + string.Join(" ", wins.Select(r => $"[{r.StartFrame}..{r.EndFrame} t{r.Trigger} atkp {r.Param1} " +
+            $"group {r.Param2} power {(atkp.TryGetValue(r.Param1, out var a) ? a.Power : -1)}]")) + line);
+    }
+    using var o = new BinaryWriter(File.Create(outPath));
+    o.Write(0x48524B53u); o.Write(1u); o.Write((uint)dir.Count); o.Write(0u);
+    foreach (var d in dir) { o.Write((ushort)d.slot); o.Write((ushort)d.nw); o.Write((ushort)d.ns); o.Write((ushort)0); o.Write((uint)d.ow); o.Write((uint)d.os); }
+    o.Write(data.ToArray());
+    Console.WriteLine($"{outPath}: {dir.Count} slots, {head + data.Length} bytes (in-model weapon, groups {string.Join(",", HitGroups)})");
 }
 
 // The runtime's skinning in C#, from the two files: an obj of slot / frame (model space, cm).
@@ -931,8 +1079,10 @@ string Params(List<Slot> slots) {
         ushort mot = r.ReadUInt16(), next = r.ReadUInt16();
         var fl = Enumerable.Range(0, 13).Select(_ => r.ReadSingle()).ToArray();
         ushort ab = r.ReadUInt16(), score = r.ReadUInt16();
-        string nm = mset.Count > mot * 4 ? mset[mot * 4 + 2].Name : "?";
-        foreach (var v in new[] { 0, 1, 2, 3 }) if (mset[mot * 4 + v].Stream.Length > 0) { nm = mset[mot * 4 + v].Name; break; }
+        // (s220 members) bounds: a member's mset can be shorter than Sora's ptya motion ids (Riku 783 entries: the old code threw
+        // here after motion.bin was written, params.h never came out, sorabuild's run_tool saw a failed exit)
+        string nm = mset.Count > mot * 4 + 2 ? mset[mot * 4 + 2].Name : "?";
+        foreach (var v in new[] { 0, 1, 2, 3 }) if (mot * 4 + v < mset.Count && mset[mot * 4 + v].Stream.Length > 0) { nm = mset[mot * 4 + v].Name; break; }
         sb.AppendLine($"    {{{id}, {type}, {sub}, {co}, {flag}, {mot}, {next}, {string.Join(", ", fl.Select(F))}, {ab}, {score}}},  // {nm}");
     }
     sb.AppendLine("};\n");
@@ -977,7 +1127,8 @@ void WPose(string outPath, List<int> slots) {
         me.Stream.Position = 0;
         var fd = new Motion.InterpolatedMotion(me.Stream).InterpolatedMotionHeader.FrameData;
         kbm[slot].Stream.Position = 0;
-        int start = (int)Math.Round(fd.FrameStart * 2), frames = (int)Math.Round((fd.FrameEnd - fd.FrameStart) * 2);
+        double wk = Slot.GfrPerFrame(fd.FramesPerSecond);  // (s220: 60 / fps, was a fixed x2)
+        int start = (int)Math.Round(fd.FrameStart * wk), frames = (int)Math.Round((fd.FrameEnd - fd.FrameStart) * wk);
         var kp = new OpenKh.Kh2Anim.Mset.MsetIndir(Bar.Read(new MemoryStream(kbMsetBytes)).ToList()).GetAnb(slot).GetAnimProvider(new MemoryStream(kbMdlxBytes));
         dir.Add((slot, frames + 1, head + data.Position));
         for (int f = 0; f <= frames; f++) {
@@ -988,7 +1139,7 @@ void WPose(string outPath, List<int> slots) {
                 dw.Write(m.M31); dw.Write(m.M32); dw.Write(m.M33); dw.Write(m.M41); dw.Write(m.M42); dw.Write(m.M43);
             }
         }
-        Console.WriteLine($"weapon slot {slot}: start {start} frames {frames} loop {(int)Math.Round((fd.FrameReturn - fd.FrameStart) * 2)}, {nbK} bones");
+        Console.WriteLine($"weapon slot {slot}: start {start} frames {frames} loop {(int)Math.Round((fd.FrameReturn - fd.FrameStart) * wk)}, {nbK} bones");
     }
     using var w = new BinaryWriter(File.Create(outPath));
     w.Write(0x50524B53u); w.Write(1u); w.Write((uint)slots.Count); w.Write((uint)nbK);
@@ -1007,8 +1158,12 @@ class Slot {
     public Slot(int index, string name, Motion.InterpolatedMotion m, MotionTrigger t) {
         Index = index; Name = name; M = m; T = t;
         var fd = m.InterpolatedMotionHeader.FrameData;
-        Start = (int)Math.Round(fd.FrameStart * 2); Frames = (int)Math.Round((fd.FrameEnd - fd.FrameStart) * 2);
-        Loop = (int)Math.Round((fd.FrameReturn - fd.FrameStart) * 2); Loops = fd.FrameReturn < fd.FrameEnd;
+        // (s220 members: sorabake's s91 fix) anim frames -> GFR (60 Hz game frames) = x 60 / FramesPerSecond. Until s220 this was a
+        // fixed x2 (right only for 30 fps motions): Riku's 60 fps A300 / A330 (slots 604 / 724) baked 2x too long, the second half
+        // the last pose held (recon/s218/S218_HELPER_RIKU_FIX.md 2b). PARTYBAKE_FPSFIX=0 = the old x2.
+        double k = GfrPerFrame(fd.FramesPerSecond);
+        Start = (int)Math.Round(fd.FrameStart * k); Frames = (int)Math.Round((fd.FrameEnd - fd.FrameStart) * k);
+        Loop = (int)Math.Round((fd.FrameReturn - fd.FrameStart) * k); Loops = fd.FrameReturn < fd.FrameEnd;
         int nf = m.FCurvesForward.Count;
         for (int c = 0; c < 9; c++) {
             int id = m.RootPosition.FCurveId[c];
@@ -1018,6 +1173,9 @@ class Slot {
         }
         HasRoot = curves[6] != null || curves[7] != null || curves[8] != null;
     }
+    // (s220) GFR per motion frame for a motion of this fps: 60 / fps (30 fps -> 2, the old fixed factor); PARTYBAKE_FPSFIX=0 = always 2
+    public static double GfrPerFrame(float fps) =>
+        Environment.GetEnvironmentVariable("PARTYBAKE_FPSFIX") == "0" || fps <= 0 ? 2 : 60.0 / fps;
     public List<Key> Keys(int c) => curves[c];
     List<Key> KeysOf(Motion.FCurve fc) => Enumerable.Range(fc.KeyStartId, fc.KeyCount).Select(k => M.FCurveKeys[k]).Select(k => new Key(
         M.KeyTimes[(k.Type_Time >> 2) & 0x3FFF], M.KeyValues[k.ValueId], k.Type_Time & 3,

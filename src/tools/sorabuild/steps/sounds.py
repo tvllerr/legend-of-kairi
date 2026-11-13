@@ -25,7 +25,7 @@ MINE_SRC = ["sounds/mine/" + n for n in ("mine_recipe.py", "mine_actors.py", "mi
                                          "kh2snd.py", "kh2bin.py")] + \
     ["sounds/build_sounds.py", "fxrec/files82.txt", "fx/sndsrc.py"] + \
     ["fx/" + n for n in ("sfxpack.py", "sfxadd_s98.py", "sfxadd_s107.py", "sfxroxas.py", "sfxmickey.py", "chickfx.py", "stitchfx.py",
-                         "sumsfx.py", "ksse.py", "dfse.py")]
+                         "sumsfx.py", "ksse.py", "dfse.py", "sfxparty2.py")]  # (s220: + the stand-ins' tool, traced too)
 
 
 def recipe_path(ctx):

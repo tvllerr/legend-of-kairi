@@ -809,7 +809,7 @@ static bool test_eqlook_off_switch(void) {
 }
 static bool test_eqlook_text_keys(void) {
     int len = 0;
-    for (int i = 0; i < KB_N; i++) { int k = cp_eq_ab_key(KB_TAB[i].ability); CHECK(k && cs_msg(&S, k, &len) && len > 0); }  // every Keyblade has an ability name
+    for (int i = 0; i < KB_N; i++) { if (!KB_TAB[i].ability) { CHECK(cp_eq_ab_key(0) == 0); continue; } int k = cp_eq_ab_key(KB_TAB[i].ability); CHECK(k && cs_msg(&S, k, &len) && len > 0); }  // every Keyblade with an ability has its name (s214: our own two have none yet = no line)
     CHECK(cs_msg(&S, CP_EQ_KEY_ARMOR, &len) && len > 0 && cs_msg(&S, CP_EQ_KEY_ABILITY, &len) && len > 0);
     return true;
 }
@@ -818,7 +818,7 @@ static bool test_eqlook_text_keys(void) {
 static bool test_equip_kb_text_keys(void) {
     int len = 0;
     for (int i = 0; i < KB_N; i++) { CHECK(cs_msg(&S, kb_text_key(i), &len) && len > 0 && cs_msg(&S, kb_text_key(i) + 1, &len) && len > 0); }
-    CHECK(kb_text_key(3) == 172 && kb_text_key(4) == 400 && kb_text_key(KB_N - 1) == 400 + 2 * (KB_N - 5));
+    CHECK(kb_text_key(3) == 172 && kb_text_key(4) == 400 && kb_text_key(23) == 438 && kb_text_key(KB_N - 1) == 450 + 2 * (KB_N - 25));  // (s214: 450.. after row 24)
     return true;
 }
 // owned: KK, Star Seeker (always), Fenrir (index 20) only: the picker lists 3, down from KK skips to SS then Fenrir
@@ -848,7 +848,10 @@ static bool dbg_open_(void) {
     CHECK(P.state == CP_OPEN && P.page == 5 && P.db_row == 0 && cp_built_(&P));
     return true;
 }
+static CpVals GD;  // (s220 members) the Debug page's vals: Goofy in Party 2 (dbm_state 11 = his id), the installed stand-ins
 static bool test_dbg_outfit_rows(void) {
+    GD = GV, GD.db_v[11] = PCH_GOOFY, GD.db_party_have = 1u << PCH_RIKU | 1u << PCH_AURON | 1u << PCH_SPARROW;  // (Mulan / Aladdin: no bake)
+    PV = &GD;
     CHECK(dbg_open_());
     pt_(2, CP_BTN_A);  // row 0 = Become Sora = backend row 7 (db_set = row + 1)
     CHECK(PO.db_set == 8 && PO.db_val == 1 && P.db_v[7] == 1);
@@ -861,9 +864,67 @@ static bool test_dbg_outfit_rows(void) {
     pt_(2, CP_BTN_A); CHECK(PO.db_set == 9 && PO.db_val == 0 && P.db_v[8] == 0);  // A wraps to Normal
     pt_(2, CP_BTN_DOWN);  // row 2 = Auto Outfits = backend row 9
     pt_(2, CP_BTN_A); CHECK(PO.db_set == 10 && PO.db_val == 1 && P.db_v[9] == 1);
-    pt_(2, CP_BTN_DOWN);  // row 3 = Sora Level = backend row 0
+    pt_(2, CP_BTN_DOWN);  // (s217 riku / s220) row 3 = Party 1 = backend row 10 (Donald's place), row 4 = Party 2 = backend 11 (Goofy's)
+    CHECK(P.db_row == 3 && CP_DB_ORD[3] == 10 && CP_DB_ORD[4] == 11 && P.db_v[10] == PCH_DONALD && P.db_v[11] == PCH_GOOFY);
+    char pb[32];
+    cp_db_value_(pb, sizeof pb, &P, 3); CHECK(!strcmp(pb, "Donald"));
+    cp_db_value_(pb, sizeof pb, &P, 4); CHECK(!strcmp(pb, "Goofy"));
+    // Right walks Donald -> the installed stand-ins in table order (Mulan / Aladdin have no bake: never offered), clamped at the end
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 11 && PO.db_val == PCH_RIKU && P.db_v[10] == PCH_RIKU);
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 11 && PO.db_val == PCH_AURON && P.db_v[10] == PCH_AURON);
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 11 && PO.db_val == PCH_SPARROW && P.db_v[10] == PCH_SPARROW);
+    cp_db_value_(pb, sizeof pb, &P, 3); CHECK(!strcmp(pb, "Sparrow"));
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0 && P.db_v[10] == PCH_SPARROW);
+    pt_(2, CP_BTN_A); CHECK(PO.db_set == 11 && PO.db_val == PCH_DONALD && P.db_v[10] == PCH_DONALD);  // A wraps
+    pt_(2, CP_BTN_LEFT); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0 && P.db_v[10] == PCH_DONALD);
+    pt_(2, CP_BTN_RIGHT); pt_(2, CP_BTN_RIGHT); CHECK(P.db_v[10] == PCH_AURON);  // Auron in Donald's place
+    pt_(2, CP_BTN_LEFT); CHECK(PO.db_set == 11 && PO.db_val == PCH_RIKU); pt_(2, CP_BTN_RIGHT); CHECK(P.db_v[10] == PCH_AURON);
+    pt_(2, CP_BTN_DOWN);  // row 4 = Party 2: Goofy, then Riku and Sparrow; Auron stands in Party 1 = never offered here (no character twice)
+    CHECK(P.db_row == 4);
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 12 && PO.db_val == PCH_RIKU && P.db_v[11] == PCH_RIKU);
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 12 && PO.db_val == PCH_SPARROW && P.db_v[11] == PCH_SPARROW);
+    cp_db_value_(pb, sizeof pb, &P, 4); CHECK(!strcmp(pb, "Sparrow"));
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0 && P.db_v[11] == PCH_SPARROW);
+    pt_(2, CP_BTN_A); CHECK(PO.db_set == 12 && PO.db_val == PCH_GOOFY && P.db_v[11] == PCH_GOOFY);
+    pt_(2, CP_BTN_A); CHECK(PO.db_set == 12 && PO.db_val == PCH_RIKU);  // A = the next one
+    pt_(2, CP_BTN_UP);  // back on Party 1: Riku stands in Party 2 now, so Party 1 skips him
+    pt_(2, CP_BTN_LEFT); CHECK(PO.db_set == 11 && PO.db_val == PCH_DONALD && P.db_v[10] == PCH_DONALD);
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 11 && PO.db_val == PCH_AURON);
+    pt_(2, CP_BTN_LEFT); pt_(2, CP_BTN_DOWN);  // Party 1 = Donald again: Party 2 offers Auron again
+    pt_(2, CP_BTN_A); CHECK(P.db_v[10] == PCH_DONALD && P.db_v[11] == PCH_AURON);
+    pt_(2, CP_BTN_A); CHECK(P.db_v[11] == PCH_SPARROW);
+    pt_(2, CP_BTN_A); CHECK(P.db_v[11] == PCH_GOOFY);
+    // no stand-in installed: every press on a Party row is refused on the page itself (the slot's own member stays)
+    GD.db_party_have = 0;
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0 && P.db_v[11] == PCH_GOOFY);
+    pt_(2, CP_BTN_A); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0 && P.db_v[11] == PCH_GOOFY);
+    pt_(2, CP_BTN_UP); pt_(2, CP_BTN_LEFT); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0 && P.db_v[10] == PCH_DONALD);
+    pt_(2, CP_BTN_DOWN);
+    GD.db_party_have = 1u << PCH_RIKU;  // one stand-in: in Party 2 he is not offered to Party 1 any more
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 12 && PO.db_val == PCH_RIKU);
+    pt_(2, CP_BTN_UP); pt_(2, CP_BTN_RIGHT); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0 && P.db_v[10] == PCH_DONALD);
+    pt_(2, CP_BTN_A); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0);
+    pt_(2, CP_BTN_DOWN); pt_(2, CP_BTN_LEFT); CHECK(PO.db_set == 12 && PO.db_val == PCH_GOOFY);
+    // (s223 cloud) Cloud installed: the last one on both rows ("Cloud"); in Party 2 he is never offered on Party 1
+    GD.db_party_have = 1u << PCH_RIKU | 1u << PCH_SPARROW | 1u << PCH_CLOUD;
+    pt_(2, CP_BTN_RIGHT); pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 12 && PO.db_val == PCH_SPARROW);
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 12 && PO.db_val == PCH_CLOUD && P.db_v[11] == PCH_CLOUD);
+    cp_db_value_(pb, sizeof pb, &P, 4); CHECK(!strcmp(pb, "Cloud"));
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0 && P.db_v[11] == PCH_CLOUD);
+    pt_(2, CP_BTN_UP);  // Party 1: Riku, Sparrow, then the end (Cloud stands in Party 2)
+    pt_(2, CP_BTN_RIGHT); pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 11 && PO.db_val == PCH_SPARROW && P.db_v[10] == PCH_SPARROW);
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.se == CP_SE_ERROR && PO.db_set == 0 && P.db_v[10] == PCH_SPARROW);
+    pt_(2, CP_BTN_A); CHECK(PO.db_set == 11 && PO.db_val == PCH_DONALD && P.db_v[10] == PCH_DONALD);  // A wraps past the absent Cloud
+    pt_(2, CP_BTN_DOWN); pt_(2, CP_BTN_A); CHECK(PO.db_set == 12 && PO.db_val == PCH_GOOFY && P.db_v[11] == PCH_GOOFY);  // A wraps from Cloud
+    pt_(2, CP_BTN_UP);  // Party 1 may take Cloud now (Party 2 = Goofy): Right x3 = Cloud, then the end
+    pt_(2, CP_BTN_RIGHT); pt_(2, CP_BTN_RIGHT); pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 11 && PO.db_val == PCH_CLOUD);
+    cp_db_value_(pb, sizeof pb, &P, 3); CHECK(!strcmp(pb, "Cloud"));
+    pt_(2, CP_BTN_RIGHT); CHECK(PO.se == CP_SE_ERROR && P.db_v[10] == PCH_CLOUD);
+    pt_(2, CP_BTN_A); CHECK(PO.db_set == 11 && PO.db_val == PCH_DONALD && P.db_v[10] == PCH_DONALD);
+    pt_(2, CP_BTN_DOWN); CHECK(P.db_row == 4 && P.db_v[11] == PCH_GOOFY);
+    pt_(2, CP_BTN_DOWN);  // row 5 = Sora Level = backend row 0
     pt_(2, CP_BTN_RIGHT); CHECK(PO.db_set == 1 && PO.db_val >= 1 && P.db_v[0] >= 1);
-    pt_(2, CP_BTN_DOWN);  // row 4 = Unlock Keyblades = backend row 1
+    pt_(2, CP_BTN_DOWN);  // row 6 = Unlock Keyblades = backend row 1
     pt_(2, CP_BTN_A); CHECK(PO.db_set == 2 && PO.db_val == 1 && P.db_v[1] == 1);
     for (int i = 0; i < CP_DB_ROWS; i++) pt_(2, CP_BTN_DOWN);  // the list scrolls: the last row (No Clip) is reachable
     CHECK(P.db_row == CP_DB_ROWS - 1 && P.db_top == CP_DB_ROWS - CP_DB_VIS && CP_DB_ORD[P.db_row] == 6);
@@ -871,6 +932,7 @@ static bool test_dbg_outfit_rows(void) {
     char b[32];
     cp_db_value_(b, sizeof b, &P, 1); CHECK(!strcmp(b, "Normal"));
     P.db_v[8] = 1; cp_db_value_(b, sizeof b, &P, 1); CHECK(!strcmp(b, "Halloween"));
+    PV = &GV;
     return true;
 }
 
@@ -903,10 +965,10 @@ static bool test_equip_forms(void) {
     PV = &GV;
     return true;
 }
-// all 24 owned: 9 rows shown, the list scrolls with the cursor (as Abilities) and back
+// all 26 owned (s214): 9 rows shown, the list scrolls with the cursor (as Abilities) and back
 static bool test_equip_scroll(void) {
     ge_(KB_KINGDOM_KEY, KB_STAR_SEEKER);
-    GE.kb_own = 0xffffffu;
+    GE.kb_own = 0x3ffffffu;  // (s214: 26)
     CHECK(equip_open_());
     pt_(2, CP_BTN_A); CHECK(P.sub == 2 && P.eq_pick == 0);
     CHECK(P.tree.n[P.tree.n[P.root[2]].kid0].nkids == 2 * CP_EQ_VIS);

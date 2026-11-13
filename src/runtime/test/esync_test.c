@@ -10,7 +10,6 @@
 
 static int fails, runs;
 #define CHECK(c) do { runs++; if (!(c)) { fails++; printf("  FAIL %s:%d %s\n", __FILE__, __LINE__, #c); } } while (0)
-#define NEAR(a, b, e) (fabs((double)(a) - (double)(b)) <= (e))
 static char g_log[16384];
 static void test_log(const char *f, ...) {
     va_list a; va_start(a, f);
@@ -20,6 +19,8 @@ static void test_log(const char *f, ...) {
 }
 #define LOG test_log
 #include "sora_net_esync.h"
+#undef NEAR  // (s195: windows.h, pulled in by the s179 diag timers, defines NEAR as empty: the checks below compared nothing)
+#define NEAR(a, b, e) (fabs((double)(a) - (double)(b)) <= (e))
 
 // ---- fake exe ----
 static uint32_t f_hids[ES_MAX + 8]; static int f_n;
@@ -778,6 +779,671 @@ static void test_two_games(void) {
     CHECK(sim_owner(&SA, 0x94) == 2 && sim_owner(&SB, 0x94) == 2 && flips == 1);
 }
 
+// ---- s191 (Melty spec 4.1): players on DIFFERENT maps over plain UDP, NO NET_AREA known (= an old build; task 2's AREA cases are
+// test_areas_fixed below). ESYNC itself has no area (NET_VERSION wire unchanged):
+// a shrine player's SNAP feet are shrine-local, and shrine / Divine Beast interiors sit near the world origin (s191 data:
+// shrine enemies x -65..62 z -116..42, Vah Ruta start 48 6 3), i.e. in central Hyrule's x/z. Each game has its OWN fake exe
+// here (what is loaded differs per map). The enemy hids of different maps never collide (recon/S166_HELPER_ENEMYIDS.md:
+// 0 shared hids among the 6300 enemy / animal rows of MainField + 41 shrine packs), so the sim uses disjoint hids.
+typedef struct {
+    uint32_t hid[8]; EsState st[8]; int n;
+    int brain[8], apply[8], sens_on[8];  // per loaded enemy: last brain told (-1 never), puppet frames, sensor ONs
+    int foreign;                         // brain(0) / puppet_apply / sensor ON for an hid NOT loaded here (must stay 0)
+    EsEvent ev[4]; int nev;              // owner-side sensor events the exe "saw" this frame
+} AWorld;
+static AWorld *g_aw;  // the game whose exe is being called
+static int aw_find(uint32_t hid) { for (int i = 0; i < g_aw->n; i++) if (g_aw->hid[i] == hid) return i; return -1; }
+static int aw_enum(uint32_t *h, int max) { int n = g_aw->n < max ? g_aw->n : max; memcpy(h, g_aw->hid, sizeof(uint32_t) * (size_t)n); return n; }
+static int aw_read(uint32_t hid, EsState *o) { int i = aw_find(hid); if (i < 0) return 0; *o = g_aw->st[i]; return 1; }
+static void aw_puppet(uint32_t hid, const EsState *t, int snap) { int i = aw_find(hid); if (i < 0) g_aw->foreign++; else g_aw->apply[i]++; }
+static void aw_brain(uint32_t hid, int on) { int i = aw_find(hid); if (i < 0) { if (!on) g_aw->foreign++; } else g_aw->brain[i] = on; }  // (brain(1) of an unloaded one = MF-1, fine)
+static int aw_events(EsEvent *o, int max) { int n = g_aw->nev < max ? g_aw->nev : max; memcpy(o, g_aw->ev, sizeof(EsEvent) * (size_t)n); g_aw->nev = 0; return n; }
+static void aw_sensor(uint32_t hid, int on, uint32_t name, const uint32_t *p) {  // (OFF of an unloaded hid: the exe ignores it, linkpos_esync_sensor)
+    int i = aw_find(hid);
+    if (i < 0) { if (on) g_aw->foreign++; } else if (on) g_aw->sens_on[i]++;
+}
+#define AG_N 3
+typedef struct { EsCtx c; uint16_t seq; NetEvSeen seen[AG_N]; AWorld w; float x; bool loading, in; char area[32]; } AreaG;  // in = in the session; area = what its AREA says ("" = none)
+static AreaG AG[AG_N];
+static const char *ag_name[AG_N] = {"Ann", "Ben", "Cid"};
+static void ag_init(void) {
+    memset(AG, 0, sizeof AG);
+    for (int g = 0; g < AG_N; g++) {
+        AG[g].c.io = (EsIface){aw_enum, aw_read, aw_puppet, aw_brain, aw_events, aw_sensor};
+        AG[g].c.me = (uint8_t)(g + 1), AG[g].seq = (uint16_t)(100 + 3000 * g);
+    }
+    g_log[0] = 0;
+}
+static void ag_add(int g, uint32_t hid, float x) {
+    AWorld *w = &AG[g].w;
+    memset(&w->st[w->n], 0, sizeof w->st[0]);
+    w->hid[w->n] = hid, w->st[w->n].hid = hid, w->st[w->n].pos[0] = x, w->brain[w->n] = -1, w->n++;
+}
+static int ag_idx(int g, uint32_t hid) { AWorld *s = g_aw; g_aw = &AG[g].w; int i = aw_find(hid); g_aw = s; return i; }
+static int ag_owner(int g, uint32_t hid) { EsEnt *e = es_find(&AG[g].c, hid); return e ? e->owner : -9; }
+// what each game knows of the players (as net_esync_tick builds it): itself + every peer in the session whose last SNAP is not NF_LOADING
+// (s191 task 2) a player whose area is known and not ours is "away" (sora_net_area.h hidden; "" = an old build / area off = never)
+static void ag_players(int g) {
+    EsPlayer p[AG_N]; int n = 0;
+    p[n++] = mk((uint8_t)(g + 1), ag_name[g], AG[g].x);
+    for (int h = 0; h < AG_N; h++)
+        if (h != g && AG[h].in && !AG[h].loading) p[n] = mk((uint8_t)(h + 1), ag_name[h], AG[h].x), p[n++].away = net_area_apart_txt(AG[g].area, AG[h].area);
+    es_set_players(&AG[g].c, p, n);
+}
+// one frame of every game: step (a loading game does not step: net_esync_tick returns early), its packets to every other game
+// (a loading game still receives); stall[g] += frames where a loaded enemy's brain is off but no puppet frame was applied
+static int g_stall[AG_N];
+static void ag_frame(uint64_t now) {
+    for (int g = 0; g < AG_N; g++) if (AG[g].in) ag_players(g);
+    for (int g = 0; g < AG_N; g++) {
+        if (!AG[g].in || AG[g].loading) continue;
+        g_aw = &AG[g].w;
+        int ap0[8];
+        memcpy(ap0, AG[g].w.apply, sizeof ap0);
+        uint64_t was = AG[g].c.next_send;
+        es_step(&AG[g].c, now, &O);
+        for (int i = 0; i < AG[g].w.n; i++) if (AG[g].w.brain[i] == 0 && AG[g].w.apply[i] == ap0[i]) g_stall[g]++;
+        g_npk = 0;
+        es_packets(&AG[g].c, &O, AG[g].c.next_send != was, AG[g].c.me, &AG[g].seq, collect, NULL);
+        for (int k = 0; k < g_npk; k++)
+            for (int h = 0; h < AG_N; h++) {
+                if (h == g || !AG[h].in) continue;
+                NetEsEnt e[NET_ESYNC_MAX]; NetEsEv v[NET_ESYNC_EVMAX]; int ne = 0, nv = 0; uint8_t pl; uint16_t sq;
+                g_aw = &AG[h].w;
+                if (net_unpack_esync(g_pk[k].b, g_pk[k].len, &pl, &sq, e, &ne, v, &nv)) es_on_recv(&AG[h].c, pl, e, ne, v, nv, &AG[h].seen[g], now);
+            }
+    }
+}
+#define S_SHR 0x5001u   // a shrine enemy (Ann's map only)
+#define E_CAMP 0x6001u  // an overworld camp enemy (Ben's / Cid's map only)
+static void test_areas(void) {
+    // Q1: Ann in a shrine owns its enemy, Ben in the overworld owns his camp enemy, far apart even in coordinates. 10 s of traffic
+    // both ways + a sensor event: neither game ever drives, stops or sensors an enemy that is not loaded there.
+    ag_init();
+    AG[0].in = AG[1].in = true, AG[0].x = 500, AG[1].x = 30;
+    ag_add(0, S_SHR, 502), ag_add(1, E_CAMP, 12);
+    uint64_t t = 0;
+    for (; t < 10000; t += 16) {
+        if (t == 2000) AG[0].w.ev[0] = (EsEvent){.hid = S_SHR, .on = 1, .name = 0xF00D}, AG[0].w.nev = 1;
+        ag_frame(t);
+    }
+    CHECK(ag_owner(0, S_SHR) == 1 && ag_owner(1, S_SHR) == 1 && ag_owner(1, E_CAMP) == 2 && ag_owner(0, E_CAMP) == 2);
+    CHECK(AG[0].w.foreign == 0 && AG[1].w.foreign == 0 && AG[0].c.st.tx_ev == NET_EVENT_REPEAT && AG[1].c.st.rx_ev_nolocal == 1 && AG[1].c.st.rx_ev_dup == NET_EVENT_REPEAT - 1);
+    CHECK(AG[0].w.brain[0] == 1 && AG[1].w.brain[0] == 1 && AG[0].w.apply[0] == 0 && AG[1].w.apply[0] == 0);  // (both run their own brains)
+    CHECK(AG[0].c.st.claims == 0 && AG[1].c.st.claims == 0 && AG[0].c.st.stale == 0 && AG[1].c.st.stale == 0);
+    // ... Ann leaves the session (her packets stop): Ben never claims her shrine enemy (not loaded here), it leaves his table after ES_FORGET_MS
+    AG[0].in = false;
+    for (; t < 10000 + ES_FORGET_MS + 500; t += 16) ag_frame(t);
+    CHECK(es_find(&AG[1].c, S_SHR) == NULL && AG[1].c.st.claims == 0 && AG[1].w.foreign == 0 && AG[1].w.brain[0] == 1);
+
+    // Q2: Ann's shrine-local feet are 1 m from Ben's camp enemy; Ben is 18 m from it. Ben's fresh election names Ann (nearest), his
+    // brain keeps running (no samples come), after ES_STALE_MS he claims it (two-phase: Ann is silent, done after 300 ms). From then
+    // on Ben keeps it for good: Ann never claims (not loaded there) and nobody claims it for her. No frame with the brain off.
+    ag_init();
+    AG[0].in = AG[1].in = true, AG[0].x = 11, AG[1].x = 30;
+    ag_add(0, S_SHR, 10), ag_add(1, E_CAMP, 12);
+    memset(g_stall, 0, sizeof g_stall);
+    int flips = 0, first_ben = -1;
+    for (t = 0; t < 20000; t += 16) {
+        int o = ag_owner(1, E_CAMP);
+        ag_frame(t);
+        if (t == 0) CHECK(ag_owner(1, E_CAMP) == 1 && strstr(g_log, "hid=00006001 owner none -> Ann"));
+        if (o >= 0 && ag_owner(1, E_CAMP) != o) flips++;
+        if (first_ben < 0 && ag_owner(1, E_CAMP) == 2) first_ben = (int)t;
+        AG[0].x = 11.0f + 0.5f * sinf((float)t * 0.001f);  // (she walks about in her shrine, always right "at" the camp)
+    }
+    CHECK(first_ben >= ES_STALE_MS && first_ben <= ES_STALE_MS + 100 && flips == 1 && ag_owner(1, E_CAMP) == 2 && ag_owner(0, E_CAMP) == 2);
+    CHECK(g_stall[1] == 0 && AG[1].w.brain[0] == 1 && AG[1].w.apply[0] == 0 && AG[1].c.st.claims == 1 && AG[1].c.st.claim_done == 1 && AG[1].c.st.claim_refused == 0);
+    CHECK(AG[0].c.st.claims == 0 && AG[0].w.foreign == 0 && AG[1].w.foreign == 0 && strstr(g_log, "Ann -> Ben (stale owner: claim)"));
+
+    // Q2, three games: Ann (shrine) 1 m, Ben 18 m, Cid 23 m; Ben and Cid have the camp loaded. Both elect Ann first, both brains run;
+    // after 1 s Ben (nearest after Ann) claims, Cid follows his claim and becomes a real puppet. Calm after 2 s, never a stall.
+    ag_init();
+    AG[0].in = AG[1].in = AG[2].in = true, AG[0].x = 11, AG[1].x = 30, AG[2].x = 35;
+    ag_add(0, S_SHR, 10), ag_add(1, E_CAMP, 12), ag_add(2, E_CAMP, 12);
+    memset(g_stall, 0, sizeof g_stall);
+    int dis = 0;
+    for (t = 0; t < 20000; t += 16) {
+        ag_frame(t);
+        if (t > 2000) dis += ag_owner(1, E_CAMP) != 2 || ag_owner(2, E_CAMP) != 2 || ag_owner(0, E_CAMP) != 2;
+    }
+    CHECK(dis == 0 && g_stall[1] == 0 && g_stall[2] == 0 && AG[2].w.brain[0] == 0 && AG[2].w.apply[0] > 1000 && AG[1].w.brain[0] == 1);
+    CHECK(AG[0].c.st.claims == 0 && AG[2].c.st.claims == 0 && AG[1].c.st.claims == 1 && AG[0].w.foreign == 0 && AG[1].w.foreign == 0 && AG[2].w.foreign == 0);
+    // ... Cid walks up to 2 m (16 m closer than Ben). With Ann's phantom at 0 m he is NOT the nearest player, so he never claims it
+    // as "closer": Ben (18 m) keeps running it. Not a stall (Ben runs it, Cid's puppet follows), only the hand-over to the truly
+    // nearest player is blocked while the phantom stands there.
+    AG[0].x = 12, AG[2].x = 14;
+    uint64_t tb = t;
+    for (; t < tb + 10000; t += 16) ag_frame(t);
+    CHECK(ag_owner(1, E_CAMP) == 2 && ag_owner(2, E_CAMP) == 2 && AG[2].c.st.claims == 0 && g_stall[2] == 0);
+    // ... control: the same with Ann gone (she left the session): Cid claims it as closer after ES_HANDOVER_MS
+    AG[0].in = false;
+    tb = t;
+    int cid_at = -1;
+    for (; t < tb + 6000; t += 16) {
+        ag_frame(t);
+        if (cid_at < 0 && ag_owner(2, E_CAMP) == 3) cid_at = (int)(t - tb);
+    }
+    CHECK(cid_at >= ES_HANDOVER_MS && cid_at <= ES_HANDOVER_MS + 100 && ag_owner(1, E_CAMP) == 3 && AG[2].c.st.claims == 1);
+
+    // Q2, the owner leaves: Ben (18 m) owns the camp, Cid 23 m, Ann's phantom 1 m. Ben goes into a loading screen (he left the area):
+    // Cid's nearest after Ben is the phantom, so Cid waits the 3 s fallback (instead of 1 s, counted from Ben's last sample) and then
+    // claims. Never a stall: his puppet holds on Ben's last samples for ES_STALE_MS, then his own brain runs.
+    ag_init();
+    AG[0].in = AG[1].in = AG[2].in = true, AG[0].x = 11, AG[1].x = 30, AG[2].x = 35;
+    ag_add(0, S_SHR, 10), ag_add(1, E_CAMP, 12), ag_add(2, E_CAMP, 12);
+    for (t = 0; t < 4000; t += 16) ag_frame(t);
+    CHECK(ag_owner(2, E_CAMP) == 2);
+    memset(g_stall, 0, sizeof g_stall);
+    AG[1].loading = true, AG[1].w.n = 0;
+    tb = t, cid_at = -1;
+    for (; t < tb + 8000; t += 16) {
+        ag_frame(t);
+        if (cid_at < 0 && ag_owner(2, E_CAMP) == 3) cid_at = (int)(t - tb);
+    }
+    CHECK(cid_at >= 3 * ES_STALE_MS - 100 && cid_at <= 3 * ES_STALE_MS + 100 && ag_owner(2, E_CAMP) == 3 && g_stall[2] == 0 && AG[2].w.brain[0] == 1);
+    CHECK(AG[0].w.foreign == 0 && AG[2].w.foreign == 0);
+
+    // Q2, the owner goes INTO a shrine: Ann owns the camp (she stands 1 m from it, Ben is a puppet 18 m away), then loads into a shrine
+    // (NF_LOADING: not a player for Ben) and comes back with shrine-local feet 0.5 m from the camp's coordinates. Ben claims at once
+    // ("old owner gone"; she is "player1" in his log: not a player while loading), Ann's stale "mine" yields to his claim, Ben keeps it for 20 s while her phantom stands there.
+    ag_init();
+    AG[0].in = AG[1].in = true, AG[0].x = 13, AG[1].x = 30;
+    ag_add(0, E_CAMP, 12), ag_add(1, E_CAMP, 12);
+    for (t = 0; t < 3000; t += 16) ag_frame(t);
+    CHECK(ag_owner(0, E_CAMP) == 1 && ag_owner(1, E_CAMP) == 1 && AG[1].w.brain[0] == 0 && AG[1].w.apply[0] > 100);
+    AG[0].loading = true, AG[0].w.n = 0;
+    tb = t;
+    int ben_at = -1;
+    for (; t < tb + 4000; t += 16) {
+        ag_frame(t);
+        if (ben_at < 0 && ag_owner(1, E_CAMP) == 2) ben_at = (int)(t - tb);
+    }
+    CHECK(ben_at >= 0 && ben_at <= 50 && strstr(g_log, "player1 -> Ben (old owner gone: claim)") && ag_owner(0, E_CAMP) == 2 && AG[0].c.st.claim_yield == 1);
+    AG[0].loading = false, AG[0].x = 12.5f;
+    ag_add(0, S_SHR, 10);
+    memset(g_stall, 0, sizeof g_stall);
+    flips = 0;
+    for (tb = t; t < tb + 20000; t += 16) {
+        int o = ag_owner(1, E_CAMP);
+        ag_frame(t);
+        flips += ag_owner(1, E_CAMP) != o;
+    }
+    CHECK(flips == 0 && ag_owner(1, E_CAMP) == 2 && ag_owner(0, E_CAMP) == 2 && g_stall[1] == 0 && AG[1].w.brain[0] == 1);
+    CHECK(AG[0].c.st.claims == 0 && AG[0].w.foreign == 0 && AG[1].w.foreign == 0 && ag_owner(1, S_SHR) == 1);
+}
+
+// (s191 task 2) the same with NET_AREA known: a player on another map is no player in the election (sora_net_esync.h glue,
+// sl->hidden). Ann "Dungeon012", Ben + Cid "MainField". (test_areas above = Ann an old build: no AREA = today's behaviour.)
+static bool log_line2(const char *a, const char *b) {  // one log line holds both
+    for (const char *p = g_log; p && *p;) {
+        const char *e = strchr(p, '\n'), *x = strstr(p, a), *y = strstr(p, b);
+        if (x && y && (!e || (x < e && y < e))) return true;
+        p = e ? e + 1 : NULL;
+    }
+    return false;
+}
+static void ag_set_area(int g, const char *a) { snprintf(AG[g].area, sizeof AG[g].area, "%s", a); }
+// one 3-game run of the camp (Ann's phantom 1 m, Ben 18 m, Cid 23 m), Cid walks up at 4 s; trace = Cid's owner each frame
+static int g_trace[2000];
+static void ag_run3(const char *aa, const char *ab, const char *ac, int *n) {
+    ag_init();
+    AG[0].in = AG[1].in = AG[2].in = true, AG[0].x = 11, AG[1].x = 30, AG[2].x = 35;
+    ag_set_area(0, aa), ag_set_area(1, ab), ag_set_area(2, ac);
+    ag_add(0, S_SHR, 10), ag_add(1, E_CAMP, 12), ag_add(2, E_CAMP, 12);
+    memset(g_stall, 0, sizeof g_stall);
+    *n = 0;
+    for (uint64_t t = 0; t < 12000; t += 16) {
+        if (t == 4000) AG[2].x = 14;
+        ag_frame(t);
+        if (*n < 2000) g_trace[(*n)++] = ag_owner(2, E_CAMP) * 16 + ag_owner(1, E_CAMP);
+    }
+}
+static void test_areas_fixed(void) {
+    // same map for everyone ("MainField" on all three) = exactly what no AREA at all gives: the same owners frame by frame
+    static int t1[2000];
+    int n1, n2;
+    ag_run3("", "", "", &n1);
+    memcpy(t1, g_trace, sizeof t1);
+    EsStats s1 = AG[2].c.st;
+    ag_run3("MainField", "MainField", "MainField", &n2);
+    CHECK(n1 == n2 && !memcmp(t1, g_trace, sizeof(int) * (size_t)n1) && !memcmp(&s1, &AG[2].c.st, sizeof s1));
+    ag_run3("Dungeon012", "Dungeon012", "Dungeon012", &n2);  // (all three in the same shrine: the same again)
+    CHECK(n1 == n2 && !memcmp(t1, g_trace, sizeof(int) * (size_t)n1) && !memcmp(&s1, &AG[2].c.st, sizeof s1));
+    // Ann in her shrine: never elected (Ben owns it from the first frame), and Cid walking up to 2 m claims it as "closer" after
+    // ES_HANDOVER_MS although her phantom stands at 1 m (task 1 side effect A, fixed)
+    ag_run3("Dungeon012", "MainField", "MainField", &n2);
+    CHECK(!log_line2("hid=00006001", "-> Ann") && g_trace[0] == 2 * 16 + 2 && ag_owner(1, E_CAMP) == 3 && ag_owner(2, E_CAMP) == 3 && AG[2].c.st.claims == 1);
+    CHECK(g_stall[1] == 0 && g_stall[2] == 0 && AG[0].c.st.claims == 0 && AG[0].w.foreign == 0 && AG[1].w.foreign == 0 && AG[2].w.foreign == 0);
+    int cid_at = -1;
+    for (int i = 0; i < n2 && cid_at < 0; i++) if (g_trace[i] / 16 == 3) cid_at = i * 16 - 4000;
+    CHECK(cid_at >= ES_HANDOVER_MS && cid_at <= ES_HANDOVER_MS + 100);
+    // Ben (the owner) loads out: Cid claims at once ("old owner gone"; the phantom is nobody's nearest), not after the 3 s fallback
+    // (side effect B, fixed)
+    ag_init();
+    AG[0].in = AG[1].in = AG[2].in = true, AG[0].x = 11, AG[1].x = 30, AG[2].x = 35;
+    ag_set_area(0, "Dungeon012"), ag_set_area(1, "MainField"), ag_set_area(2, "MainField");
+    ag_add(0, S_SHR, 10), ag_add(1, E_CAMP, 12), ag_add(2, E_CAMP, 12);
+    uint64_t t = 0, tb;
+    for (; t < 4000; t += 16) ag_frame(t);
+    CHECK(ag_owner(2, E_CAMP) == 2);
+    memset(g_stall, 0, sizeof g_stall);
+    AG[1].loading = true, AG[1].w.n = 0;
+    cid_at = -1;
+    for (tb = t; t < tb + 8000; t += 16) {
+        ag_frame(t);
+        if (cid_at < 0 && ag_owner(2, E_CAMP) == 3) cid_at = (int)(t - tb);
+    }
+    CHECK(cid_at >= 0 && cid_at <= 50 && log_line2("hid=00006001", "-> Cid (old owner gone: claim)") && g_stall[2] == 0 && AG[2].w.brain[0] == 1);
+    // the owner walks INTO a shrine and back: Ann owns the camp (Ben puppets it), loads into Dungeon012 (Ben claims at once, she is
+    // hidden for him while she is in there), then loads back out next to the camp: a player again, 17 m closer than Ben, she claims
+    // it back as "closer"; Ben yields. Never a stall on either side.
+    ag_init();
+    AG[0].in = AG[1].in = true, AG[0].x = 13, AG[1].x = 30;
+    ag_set_area(0, "MainField"), ag_set_area(1, "MainField");
+    ag_add(0, E_CAMP, 12), ag_add(1, E_CAMP, 12);
+    for (t = 0; t < 3000; t += 16) ag_frame(t);
+    CHECK(ag_owner(0, E_CAMP) == 1 && ag_owner(1, E_CAMP) == 1 && AG[1].w.brain[0] == 0);
+    memset(g_stall, 0, sizeof g_stall);
+    AG[0].loading = true, AG[0].w.n = 0;
+    for (tb = t; t < tb + 3000; t += 16) ag_frame(t);
+    CHECK(ag_owner(1, E_CAMP) == 2 && ag_owner(0, E_CAMP) == 2);
+    AG[0].loading = false, AG[0].x = 12.5f, ag_set_area(0, "Dungeon012");
+    ag_add(0, S_SHR, 10);
+    for (tb = t; t < tb + 10000; t += 16) ag_frame(t);
+    CHECK(ag_owner(1, E_CAMP) == 2 && AG[1].c.np == 2 && AG[1].c.pl[1].away && AG[0].c.pl[1].away && AG[1].w.brain[0] == 1 && g_stall[1] == 0);
+    CHECK(ag_owner(0, E_CAMP) == 2 && AG[0].c.st.claims == 0);  // (her table keeps following his samples: no stale claim when she is back)
+    AG[0].loading = true, AG[0].w.n = 0;
+    for (tb = t; t < tb + 2000; t += 16) ag_frame(t);
+    AG[0].loading = false, AG[0].x = 13, ag_set_area(0, "MainField");
+    ag_add(0, E_CAMP, 12);
+    int ann_at = -1;
+    for (tb = t; t < tb + 6000; t += 16) {
+        ag_frame(t);
+        if (ann_at < 0 && ag_owner(1, E_CAMP) == 1 && ag_owner(0, E_CAMP) == 1) ann_at = (int)(t - tb);
+    }
+    CHECK(ann_at >= ES_HANDOVER_MS && ann_at <= ES_HANDOVER_MS + 500 && AG[1].w.brain[0] == 0 && AG[1].w.apply[0] > 100 && g_stall[0] == 0 && g_stall[1] == 0);
+    CHECK(AG[0].w.foreign == 0 && AG[1].w.foreign == 0);
+}
+
+// ---- s195 eshit: the hit claim (my Sora hit an enemy another game runs -> I take it at once), held / sticky owners ----
+static void recvf(EsCtx *c, uint8_t from, EsState s, uint16_t fl, uint64_t now) { s.flags |= fl; recv1(c, from, s, now); }
+static int own(EsCtx *c, uint32_t hid) { EsEnt *e = es_find(c, hid); return e ? e->owner : -9; }
+static void test_hit(void) {
+    EsCtx c; fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0x5A1, 20, 0, 0);
+    players2(&c, 40, 18);  // me 20 m, Bob 2 m: Bob runs it, I am nowhere near "closer"
+    uint64_t t = 0;
+    for (; t <= 500; t += 50) recv1(&c, 2, sm(0x5A1, 20, 0), t), step(&c, t);
+    CHECK(own(&c, 0x5A1) == 2 && f_last_brain[f_brain_calls - 1] == 0 && c.st.claims == 0);
+    // one Sora hit: I claim it on the next step (no 5 m / 1 s wait); my samples carry CLAIM + HELD + HOT
+    es_note_hit(&c, 0x5A1, 520);
+    CHECK(c.st.hit_notes == 1 && es_find(&c, 0x5A1)->hit_ms == 520);
+    step(&c, 525);
+    CHECK(own(&c, 0x5A1) == 1 && strstr(g_log, "hid=000005a1 owner Bob -> Alpha (hit: claim)") && c.st.hit_claims == 1 && c.st.claims == 1 && es_find(&c, 0x5A1)->claim_from == 2);
+    uint16_t fl0 = 0xffff, fl_hot_end = 0xffff, fl_held_end = 0xffff;
+    for (t = 550; t <= 5000; t += 50) {
+        if (step(&c, t) != 1) continue;
+        if (fl0 == 0xffff) fl0 = O.ent[0].flags;
+        if (t == 2050) fl_hot_end = O.ent[0].flags;   // (1530 ms after the hit: HOT gone, HELD still on, claim done)
+        if (t == 4550) fl_held_end = O.ent[0].flags;  // (4030 ms: nothing)
+    }
+    CHECK(fl0 == (ES_FL_CLAIM | ES_FL_HELD | ES_FL_HOT) && fl_hot_end == ES_FL_HELD && fl_held_end == 0 && c.st.claim_done == 1 && c.st.tx_held > 0);
+    // live hold: eshitms 1000 = HELD only for 1 s (HOT stays 1.5 s: it is the sticky rule, not the hold)
+    c.hit_hold_ms = 1000;
+    es_note_hit(&c, 0x5A1, 5000);
+    uint16_t fh = 0xffff;
+    for (t = 5050; t <= 6200; t += 50) if (step(&c, t) == 1 && t == 6100) fh = O.ent[0].flags;
+    CHECK(fh == ES_FL_HOT);
+    // eshit 0 (the compiled default): hits change nothing, however many
+    fake_reset(&c);
+    add_enemy(0x5A2, 20, 0, 0);
+    players2(&c, 40, 18);
+    for (t = 0; t <= 5000; t += 50) { recv1(&c, 2, sm(0x5A2, 20, 0), t); if (t % 200 == 0) es_note_hit(&c, 0x5A2, t); step(&c, t); }
+    CHECK(own(&c, 0x5A2) == 2 && c.st.claims == 0 && c.st.hit_claims == 0 && c.st.hit_notes == 26 && !strstr(g_log, "(hit"));
+    // not loaded here: no claim (we could not send it)
+    fake_reset(&c);
+    c.hit_on = true;
+    players2(&c, 40, 18);
+    for (t = 0; t <= 3000; t += 50) recv1(&c, 2, sm(0x5A3, 20, 0), t), es_note_hit(&c, 0x5A3, t), step(&c, t);
+    CHECK(own(&c, 0x5A3) == 2 && c.st.claims == 0 && c.st.hit_notes == 61);
+    // an enemy not in the table yet: the note is counted, nothing stored, nothing breaks
+    es_note_hit(&c, 0x5FF, 3000);
+    CHECK(es_find(&c, 0x5FF) == NULL && c.st.hit_notes == 62);
+    // banned (we yielded to his claim ES_RECLAIM_MS ago): no hit claim; a hit that is old (> ES_HIT_FRESH_MS) when the ban ends never
+    // claims; the next fresh hit does
+    fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0x5A4, 20, 0, 0);
+    players2(&c, 22, 18);  // 2 m each: the tie-break gives it to me (Alpha < Bob), never 5 m closer
+    step(&c, 0);
+    CHECK(own(&c, 0x5A4) == 1);
+    claim1(&c, 2, sm(0x5A4, 20, 0), 100);
+    CHECK(own(&c, 0x5A4) == 2);
+    uint64_t ban_end = 100 + ES_RECLAIM_MS;
+    for (t = 150; t < ban_end + 1000; t += 50) {
+        recv1(&c, 2, sm(0x5A4, 20, 0), t);
+        if (t % 300 == 0 && t < ban_end - ES_HIT_FRESH_MS - 100) es_note_hit(&c, 0x5A4, t);
+        step(&c, t);
+    }
+    CHECK(own(&c, 0x5A4) == 2 && c.st.claims == 0 && c.st.hit_notes > 3);
+    es_note_hit(&c, 0x5A4, t);
+    recv1(&c, 2, sm(0x5A4, 20, 0), t), step(&c, t);
+    CHECK(own(&c, 0x5A4) == 1 && c.st.hit_claims == 1);
+    // a refused claim bans hit claims too (ES_CLAIM_BAN_MS)
+    for (uint64_t t2 = t + 50; t2 <= t + ES_CLAIM_MS + 100; t2 += 50) recv1(&c, 2, sm(0x5A4, 20, 0), t2), step(&c, t2);  // (he kept sending: old DLL)
+    CHECK(own(&c, 0x5A4) == 2 && c.st.claim_refused == 1);
+    t += ES_CLAIM_MS + 150;
+    es_note_hit(&c, 0x5A4, t), recv1(&c, 2, sm(0x5A4, 20, 0), t), step(&c, t);
+    CHECK(own(&c, 0x5A4) == 2 && c.st.hit_claims == 1);
+
+    // HELD blocks "closer" claims while it lasts (counted once), then the normal 1 s wait starts
+    fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0x5A5, 20, 0, 0);
+    players2(&c, 22, 10);  // me 2 m, Bob 10 m: 8 m closer
+    for (t = 0; t <= 3000; t += 50) recvf(&c, 2, sm(0x5A5, 20, 0), ES_FL_HELD, t), step(&c, t);
+    CHECK(own(&c, 0x5A5) == 2 && c.st.claims == 0 && c.st.closer_blocked == 1 && es_find(&c, 0x5A5)->o_held);
+    CHECK(f_apply_n > 0 && (f_apply_last.flags & 0xE000) == 0 && es_find(&c, 0x5A5)->sm[es_find(&c, 0x5A5)->nsm - 1].s.flags == 0);  // (never reaches the puppet)
+    uint64_t t0 = t;
+    int at = -1;
+    for (; t <= t0 + 2000; t += 50) { if (own(&c, 0x5A5) == 2) recv1(&c, 2, sm(0x5A5, 20, 0), t); step(&c, t); if (at < 0 && own(&c, 0x5A5) == 1) at = (int)(t - t0); }
+    CHECK(at == ES_HANDOVER_MS && strstr(g_log, "Bob -> Alpha (closer: claim)") && c.st.hit_claims == 0);
+    // eshit 0: HELD (and HOT) samples block nothing = today; the bits are stripped all the same
+    fake_reset(&c);
+    add_enemy(0x5A6, 20, 0, 0);
+    players2(&c, 22, 10);
+    at = -1;
+    for (t = 0; t <= 2000; t += 50) { if (own(&c, 0x5A6) != 1) recvf(&c, 2, sm(0x5A6, 20, 0), ES_FL_HELD | ES_FL_HOT, t); step(&c, t); if (at < 0 && own(&c, 0x5A6) == 1) at = (int)t; }
+    CHECK(at == ES_HANDOVER_MS && c.st.closer_blocked == 0 && f_apply_n > 0 && (f_apply_last.flags & 0xE000) == 0);
+    // a hit on a HELD (not HOT) owner = claims (the owner stopped hitting ES_HIT_STICKY_MS ago)
+    fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0x5A8, 20, 0, 0);
+    players2(&c, 40, 18);
+    for (t = 0; t <= 500; t += 50) recvf(&c, 2, sm(0x5A8, 20, 0), ES_FL_HELD, t), step(&c, t);
+    es_note_hit(&c, 0x5A8, 510), step(&c, 520);
+    CHECK(own(&c, 0x5A8) == 1 && c.st.hit_claims == 1 && c.st.hit_blocked == 0);
+
+    // STICKY ("stays with the first"): the owner keeps hitting (HOT): my hits never claim, each blocked hit counted once ...
+    fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0x5A7, 20, 0, 0);
+    players2(&c, 40, 18);
+    for (t = 0; t <= 3000; t += 50) { recvf(&c, 2, sm(0x5A7, 20, 0), ES_FL_HELD | ES_FL_HOT, t); if (t % 200 == 0) es_note_hit(&c, 0x5A7, t); step(&c, t); }
+    CHECK(own(&c, 0x5A7) == 2 && c.st.claims == 0 && c.st.hit_blocked == 16 && c.st.hit_claims == 0);
+    // ... he stops at 3000 (HOT off in his samples from 4500); I keep hitting: I claim with the first sample without HOT
+    at = -1;
+    for (t = 3050; t <= 6000; t += 50) {
+        if (own(&c, 0x5A7) == 2) recvf(&c, 2, sm(0x5A7, 20, 0), t < 3000 + ES_HIT_STICKY_MS ? ES_FL_HELD | ES_FL_HOT : ES_FL_HELD, t);
+        if (t % 200 == 0) es_note_hit(&c, 0x5A7, t);
+        step(&c, t);
+        if (at < 0 && own(&c, 0x5A7) == 1) at = (int)t;
+    }
+    CHECK(at == 3000 + ES_HIT_STICKY_MS && strstr(g_log, "Bob -> Alpha (hit: claim)") && c.st.hit_claims == 1 && c.st.claims == 1);
+    // ... and if I had stopped hitting > ES_HIT_FRESH_MS before his HOT ended, nothing happens (a claim follows a RECENT hit)
+    fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0x5A9, 20, 0, 0);
+    players2(&c, 40, 18);
+    for (t = 0; t <= 6000; t += 50) {
+        recvf(&c, 2, sm(0x5A9, 20, 0), t < 4000 ? ES_FL_HELD | ES_FL_HOT : ES_FL_HELD, t);
+        if (t == 2000) es_note_hit(&c, 0x5A9, t);
+        step(&c, t);
+    }
+    CHECK(own(&c, 0x5A9) == 2 && c.st.claims == 0 && c.st.hit_blocked == 1);
+}
+
+// two games (real codec): a hit claim, the sticky rule across the wire, then HELD keeping a "closer" claim off for the hold
+static void test_hit_two_games(void) {
+    sim_init();
+    SA.c.hit_on = SB.c.hit_on = true;
+    add_enemy(0x9A, 20, 0, 0);
+    sim_views(21, 36, 36, 21);  // PC 1 m, PC2 16 m: PC runs it
+    uint64_t t = 0;
+    for (; t < 1000; t += 16) sim_send(&SA, &SB, t, 1), sim_send(&SB, &SA, t, 1);
+    CHECK(sim_owner(&SA, 0x9A) == 1 && sim_owner(&SB, 0x9A) == 1);
+    // A: PC2's Sora hits it once: PC2 claims at once, PC yields on the claim sample
+    uint64_t t0 = t, b_hit = t;
+    es_note_hit(&SB.c, 0x9A, t);
+    int b_at = -1;
+    for (; t < t0 + 1000; t += 16) {
+        sim_send(&SA, &SB, t, 1), sim_send(&SB, &SA, t, 1);
+        if (b_at < 0 && sim_owner(&SA, 0x9A) == 2 && sim_owner(&SB, 0x9A) == 2) b_at = (int)(t - t0);
+    }
+    CHECK(b_at >= 0 && b_at <= 16 && SB.c.st.hit_claims == 1 && SA.c.st.claim_yield == 1 && SB.c.st.claim_done == 1 && SA.c.st.claim_refused == 0 && SB.c.st.claim_refused == 0);
+    CHECK(strstr(g_log, "owner PC -> PC2 (hit: claim)") && es_find(&SA.c, 0x9A)->o_held && es_find(&SA.c, 0x9A)->o_hot);
+    EsEnt *pa = es_find(&SA.c, 0x9A);
+    CHECK(pa->nsm > 0 && pa->sm[pa->nsm - 1].s.flags == 0 && pa->brain == 0);  // (PC is the puppet; no wire bit reaches it)
+    // B: both keep hitting for 6 s (PC2 every 400 ms, PC every 300 ms): PC is banned 3 s (it yielded), then PC2 is HOT: no claim;
+    // PC is 15 m closer, but PC2 is HELD: no "closer" claim either
+    int flips = 0;
+    for (; t < t0 + 6000; t += 16) {
+        int o = sim_owner(&SA, 0x9A);
+        if ((t - t0) % 400 < 16) es_note_hit(&SB.c, 0x9A, t), b_hit = t;
+        if ((t - t0) % 300 < 16) es_note_hit(&SA.c, 0x9A, t);
+        sim_send(&SA, &SB, t, 1), sim_send(&SB, &SA, t, 1);
+        flips += sim_owner(&SA, 0x9A) != o;
+    }
+    CHECK(flips == 0 && sim_owner(&SA, 0x9A) == 2 && sim_owner(&SB, 0x9A) == 2 && SA.c.st.claims == 0 && SA.c.st.hit_blocked > 5 && SA.c.st.closer_blocked >= 1);
+    // C: PC2 stops hitting; PC keeps on: PC claims ES_HIT_STICKY_MS after PC2's last hit (+ one sample / frame)
+    int a_at = -1;
+    uint64_t t1 = t;
+    for (; t < t1 + 4000; t += 16) {
+        if ((t - t0) % 300 < 16) es_note_hit(&SA.c, 0x9A, t);
+        sim_send(&SA, &SB, t, 1), sim_send(&SB, &SA, t, 1);
+        if (a_at < 0 && sim_owner(&SA, 0x9A) == 1 && sim_owner(&SB, 0x9A) == 1) a_at = (int)(t - b_hit);
+    }
+    CHECK(a_at >= ES_HIT_STICKY_MS && a_at <= ES_HIT_STICKY_MS + 70 && SA.c.st.hit_claims == 1 && SB.c.st.claim_yield == 1 && strstr(g_log, "owner PC2 -> PC (hit: claim)"));
+    // D: PC stops hitting; PC2 walks up (1 m, PC 16 m): PC2 waits PC's hold (4 s after PC's last hit), then the normal 1 s "closer"
+    uint64_t a_hit = 0;
+    for (uint64_t k = t1; k < t; k += 16) if ((k - t0) % 300 < 16) a_hit = k;
+    sim_views(36, 21, 21, 36);
+    b_at = -1;
+    uint64_t t2 = t;
+    for (; t < t2 + 8000; t += 16) {
+        sim_send(&SA, &SB, t, 1), sim_send(&SB, &SA, t, 1);
+        if (b_at < 0 && sim_owner(&SA, 0x9A) == 2 && sim_owner(&SB, 0x9A) == 2) b_at = (int)(t - a_hit);
+    }
+    CHECK(b_at >= ES_HIT_HOLD_MS + ES_HANDOVER_MS && b_at <= ES_HIT_HOLD_MS + ES_HANDOVER_MS + 100 && SB.c.st.closer_blocked >= 1 && strstr(g_log, "owner PC -> PC2 (closer: claim)"));
+    // E: calm afterwards, never two owners for long, nothing refused
+    flips = 0;
+    int dis = 0;
+    for (uint64_t t3 = t; t < t3 + 5000; t += 16) {
+        int o = sim_owner(&SA, 0x9A);
+        sim_send(&SA, &SB, t, 1), sim_send(&SB, &SA, t, 1);
+        flips += sim_owner(&SA, 0x9A) != o, dis += sim_owner(&SA, 0x9A) != sim_owner(&SB, 0x9A);
+    }
+    CHECK(flips == 0 && dis == 0 && SA.c.st.claim_refused == 0 && SB.c.st.claim_refused == 0);
+}
+
+// eshit 0 = the bytes on the wire are exactly today's, whatever the hits; eshit 1 without hits = the same bytes too
+static uint8_t g_rec[3][400000]; static int g_nrec[3];
+static void sim_rec(int r, uint64_t now, SimG *a, SimG *b) {
+    sim_send(a, b, now, 1);
+    for (int k = 0; k < g_npk; k++) {
+        if (g_nrec[r] + g_pk[k].len > (int)sizeof g_rec[r]) return;
+        memcpy(g_rec[r] + g_nrec[r], g_pk[k].b, (size_t)g_pk[k].len), g_nrec[r] += g_pk[k].len;
+    }
+}
+static int wire_bits(int r) {  // entries with a s195 bit (0x6000) in recording r
+    int n = 0, off = 0;
+    while (off < g_nrec[r]) {
+        int len = NET_HDR + 2 + 40 * g_rec[r][off + 7] + 26 * g_rec[r][off + 8];
+        NetEsEnt e[NET_ESYNC_MAX]; NetEsEv v[NET_ESYNC_EVMAX]; int ne = 0, nv = 0;
+        if (net_unpack_esync(g_rec[r] + off, len, NULL, NULL, e, &ne, v, &nv)) for (int i = 0; i < ne; i++) n += (e[i].flags & 0x6000) != 0;
+        off += len;
+    }
+    return n;
+}
+static void wire_run(int r, bool on, bool hits) {
+    sim_init();
+    SA.c.hit_on = SB.c.hit_on = on;
+    g_nrec[r] = 0;
+    add_enemy(0x9B, 20, 0, 0), add_enemy(0x9C, 30, 0, 0);
+    sim_views(21, 40, 40, 21);
+    for (uint64_t t = 0; t < 12000; t += 16) {
+        if (t == 4000) sim_views(40, 22, 22, 40);  // (PC2 walks up: "closer" hand-overs of both)
+        if (hits && t % 250 < 16) es_note_hit(&SA.c, 0x9B, t), es_note_hit(&SB.c, 0x9C, t);
+        sim_rec(r, t, &SA, &SB), sim_rec(r, t, &SB, &SA);
+    }
+}
+static void test_hit_wire(void) {
+    wire_run(0, false, false);   // (= today: nobody calls es_note_hit)
+    wire_run(1, false, true);    // eshit 0, hits
+    CHECK(g_nrec[0] > 10000 && g_nrec[0] == g_nrec[1] && !memcmp(g_rec[0], g_rec[1], (size_t)g_nrec[0]) && wire_bits(0) == 0 && wire_bits(1) == 0);
+    wire_run(1, true, false);    // eshit 1, no hits
+    CHECK(g_nrec[0] == g_nrec[1] && !memcmp(g_rec[0], g_rec[1], (size_t)g_nrec[0]));
+    wire_run(2, true, true);     // (control: eshit 1 + hits does change the bytes: the test can see it)
+    CHECK(wire_bits(2) > 100 && (g_nrec[2] != g_nrec[0] || memcmp(g_rec[0], g_rec[2], (size_t)g_nrec[0])));
+}
+
+// ---- s195b: the claiming hit claims AT the hit (es_note_hit, before ah_hit asks netreact), through the one predicate es_elect uses ----
+static void test_hit_sync(void) {
+    EsCtx c; fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0x5B1, 20, 0, 0);
+    players2(&c, 40, 18);  // me 20 m, Bob 2 m: a puppet here
+    uint64_t t = 0;
+    for (; t <= 500; t += 50) recv1(&c, 2, sm(0x5B1, 20, 0), t), step(&c, t);
+    EsEnt *e = es_find(&c, 0x5B1);
+    CHECK(e->owner == 2 && e->brain == 0 && es_hit_claim_ok(&c, e, 510) == ES_HC_NO);  // (no hit yet)
+    int nb = f_brain_calls, ns = f_nsens;
+    // the hit: claimed right here (no step in between), brain told ON at once, the old owner's sensors forced off
+    CHECK(es_note_hit(&c, 0x5B1, 510) && e->owner == 1 && e->claim_from == 2 && e->brain == 1 && f_brain_calls == nb + 1 && f_last_brain[nb] == 1 && f_brain_hid[nb] == 0x5B1);
+    CHECK(f_nsens == ns + 1 && c.st.hit_claims == 1 && c.st.hit_sync == 1 && c.st.claims == 1 && strstr(g_log, "Bob -> Alpha (hit: claim)"));
+    CHECK(es_hit_claim_ok(&c, e, 511) == ES_HC_NO);  // (ours now)
+    // the next steps: no second claim, no second brain call, our samples go out with CLAIM (+ HELD + HOT), no puppet frame
+    int sent = 0, ap = f_apply_n;
+    uint16_t fl = 0;
+    for (t = 520; t <= 900; t += 16) if (step(&c, t)) { if (!sent) fl = O.ent[0].flags; sent++; }
+    CHECK(sent >= 6 && fl == (ES_FL_CLAIM | ES_FL_HELD | ES_FL_HOT) && c.st.claims == 1 && c.st.hit_claims == 1 && f_brain_calls == nb + 1 && f_apply_n == ap);
+    // a second hit while it is ours: nothing (no claim, no brain call)
+    CHECK(!es_note_hit(&c, 0x5B1, 910) && c.st.claims == 1 && f_brain_calls == nb + 1);
+    // does NOT qualify -> false, nothing changes: owner HOT, eshit off, banned, not loaded, owner silent (the stale path's), not in the table
+    fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0x5B2, 20, 0, 0);
+    players2(&c, 40, 18);
+    for (t = 0; t <= 500; t += 50) recvf(&c, 2, sm(0x5B2, 20, 0), ES_FL_HELD | ES_FL_HOT, t), step(&c, t);
+    e = es_find(&c, 0x5B2);
+    nb = f_brain_calls;
+    CHECK(!es_note_hit(&c, 0x5B2, 510) && e->owner == 2 && e->brain == 0 && es_hit_claim_ok(&c, e, 510) == ES_HC_HOT && f_brain_calls == nb && c.st.claims == 0);
+    c.hit_on = false;
+    CHECK(es_hit_claim_ok(&c, e, 510) == ES_HC_NO);
+    recvf(&c, 2, sm(0x5B2, 20, 0), 0, 520);  // (HOT gone, eshit off: still no)
+    CHECK(!es_note_hit(&c, 0x5B2, 530) && e->owner == 2);
+    c.hit_on = true;
+    e->yield_ms = 500;
+    CHECK(!es_note_hit(&c, 0x5B2, 540) && e->owner == 2 && es_hit_claim_ok(&c, e, 540) == ES_HC_NO);
+    e->yield_ms = 0, e->local = false;
+    CHECK(!es_note_hit(&c, 0x5B2, 550) && e->owner == 2);
+    e->local = true;
+    CHECK(!es_note_hit(&c, 0x5B2, 520 + ES_STALE_MS + 1) && e->owner == 2);  // (Bob silent > ES_STALE_MS)
+    CHECK(!es_note_hit(&c, 0x5BF, 560) && c.st.claims == 0);
+    CHECK(es_note_hit(&c, 0x5B2, 600) && e->owner == 1 && c.st.claims == 1);  // (control: all fine again -> claimed)
+
+    // ONE predicate: for every combination es_elect claims exactly when es_hit_claim_ok says YES (the hit time set directly, so only
+    // es_elect acts), and counts a blocked hit exactly when it says HOT. YES needs: on, loaded, not yielded / refused, not stale,
+    // fresh, and not (HOT + alive owner) = 3 of the 4 (HOT, away) pairs; HOT = 1
+    int bad = 0, yes = 0, hot = 0;
+    for (int m = 0; m < 256; m++) {
+        fake_reset(&c);
+        c.hit_on = m & 1;
+        add_enemy(0x5C0, 20, 0, 0);
+        EsPlayer p[2] = {mk(1, "Alpha", 40), mk(2, "Bob", 18)};
+        p[1].away = (m >> 5) & 1;
+        es_set_players(&c, p, 2);
+        recvf(&c, 2, sm(0x5C0, 20, 0), (m & 4) ? ES_FL_HOT | ES_FL_HELD : 0, 5000);
+        step(&c, 5000);
+        e = es_find(&c, 0x5C0);
+        if (!(m & 2)) e->local = false;
+        if (m & 8) e->yield_ms = 4900;
+        uint64_t now = (m & 16) ? 5000 + ES_STALE_MS + 1 : 5010;  // (late enough that now - ES_HIT_FRESH_MS > 0)
+        e->hit_ms = (m & 64) ? now - ES_HIT_FRESH_MS : now - 5;
+        if (m & 128) e->claim_ban = 4990;
+        int want = es_hit_claim_ok(&c, e, now);
+        uint32_t c0 = c.st.hit_claims, b0 = c.st.hit_blocked;
+        es_elect(&c, e, now);
+        bool claimed = c.st.hit_claims != c0;
+        bad += claimed != (want == ES_HC_YES) || (c.st.hit_blocked != b0) != (want == ES_HC_HOT);
+        yes += want == ES_HC_YES, hot += want == ES_HC_HOT;
+    }
+    CHECK(bad == 0 && yes == 3 && hot == 1);
+}
+
+// ---- s195 esdead: a dead player is "away" (net_esync_tick, `set esdead 1`): never nearest / closer, never held ----
+static void test_dead(void) {
+    // the owner died next to it: I (10 m, alive) claim it as "closer" after ES_HANDOVER_MS (his dead feet count as INFINITY)
+    EsCtx c; fake_reset(&c);
+    add_enemy(0xDE1, 20, 0, 0);
+    EsPlayer p[2] = {mk(1, "Alpha", 30), mk(2, "Bob", 21)};
+    es_set_players(&c, p, 2);
+    uint64_t t = 0;
+    for (; t <= 500; t += 50) recv1(&c, 2, sm(0xDE1, 20, 0), t), step(&c, t);
+    CHECK(own(&c, 0xDE1) == 2);
+    p[1].away = 1, es_set_players(&c, p, 2);
+    int at = -1;
+    for (t = 550; t <= 3000; t += 50) {
+        if (own(&c, 0xDE1) == 2) recv1(&c, 2, sm(0xDE1, 20, 0), t);  // (a dead owner keeps sending until he sees the claim)
+        step(&c, t);
+        if (at < 0 && own(&c, 0xDE1) == 1) at = (int)(t - 550);
+    }
+    CHECK(at == ES_HANDOVER_MS && strstr(g_log, "Bob -> Alpha (closer: claim)") && c.st.claim_refused == 0);
+    // a hit claim against a dead owner: his last samples say HOT (he hit it, then died) - ignored, he is away
+    fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0xDE2, 20, 0, 0);
+    EsPlayer q[2] = {mk(1, "Alpha", 40), mk(2, "Bob", 21)};
+    es_set_players(&c, q, 2);
+    for (t = 0; t <= 500; t += 50) recvf(&c, 2, sm(0xDE2, 20, 0), ES_FL_HELD | ES_FL_HOT, t), step(&c, t);
+    es_note_hit(&c, 0xDE2, 510), step(&c, 520);
+    CHECK(own(&c, 0xDE2) == 2 && c.st.hit_blocked == 1);  // (alive + HOT: blocked)
+    q[1].away = 1, es_set_players(&c, q, 2);
+    recvf(&c, 2, sm(0xDE2, 20, 0), ES_FL_HELD | ES_FL_HOT, 540), step(&c, 550);
+    CHECK(own(&c, 0xDE2) == 1 && c.st.hit_claims == 1 && strstr(g_log, "(hit: claim)"));
+    // MY side, dead owner: I keep owning + sending (never on my own timer), no HELD / HOT while dead, until a claim sample arrives
+    fake_reset(&c);
+    c.hit_on = true;
+    add_enemy(0xDE3, 20, 0, 0);
+    EsPlayer r[2] = {mk(1, "Alpha", 21), mk(2, "Bob", 40)};
+    es_set_players(&c, r, 2);
+    step(&c, 0);
+    es_note_hit(&c, 0xDE3, 10);
+    CHECK(step(&c, 50) == 1 && own(&c, 0xDE3) == 1 && (O.ent[0].flags & ES_FL_HELD));
+    r[0].away = 1, es_set_players(&c, r, 2);
+    int sent = 0, bits = 0;
+    for (t = 100; t <= 6000; t += 50) if (step(&c, t)) sent++, bits += (O.ent[0].flags & (ES_FL_HELD | ES_FL_HOT)) != 0;
+    CHECK(own(&c, 0xDE3) == 1 && sent >= 115 && bits == 0 && c.st.handovers == 0);
+    claim1(&c, 2, sm(0xDE3, 20, 0), 6000);
+    CHECK(own(&c, 0xDE3) == 2 && strstr(g_log, "(claim: yield)"));
+    // me dead: I never claim as "closer" (I lie 1 m from it, the owner is 20 m away), nor as a fresh election
+    fake_reset(&c);
+    add_enemy(0xDE4, 20, 0, 0);
+    EsPlayer d[2] = {mk(1, "Alpha", 21), mk(2, "Bob", 40)};
+    d[0].away = 1;
+    es_set_players(&c, d, 2);
+    for (t = 0; t <= 5000; t += 50) recv1(&c, 2, sm(0xDE4, 20, 0), t), step(&c, t);
+    CHECK(own(&c, 0xDE4) == 2 && c.st.claims == 0);
+    fake_reset(&c);
+    add_enemy(0xDE5, 20, 0, 0);
+    es_set_players(&c, d, 2);
+    step(&c, 0);
+    CHECK(own(&c, 0xDE5) == 2);  // (the first election skips me: Bob, 20 m)
+    // the only player, dead: nobody elected, its brain runs, nothing sent, no crash; alive again -> mine
+    fake_reset(&c);
+    add_enemy(0xDE6, 1, 0, 0);
+    EsPlayer solo[1] = {mk(1, "Alpha", 0)};
+    solo[0].away = 1;
+    es_set_players(&c, solo, 1);
+    sent = 0;
+    for (t = 0; t <= 3000; t += 50) sent += step(&c, t);
+    CHECK(own(&c, 0xDE6) == -1 && sent == 0 && f_brain_calls == 1 && f_last_brain[0] == 1 && c.st.claims == 0);
+    solo[0].away = 0, es_set_players(&c, solo, 1);
+    CHECK(step(&c, 3050) == 1 && own(&c, 0xDE6) == 1);
+}
+
 int main(void) {
     test_codec();
     test_election();
@@ -790,6 +1456,13 @@ int main(void) {
     test_review_fixes();
     test_claim_refused();
     test_two_games();
+    test_areas();
+    test_areas_fixed();
+    test_hit();
+    test_hit_two_games();
+    test_hit_wire();
+    test_hit_sync();
+    test_dead();
     printf("esync_test: %d/%d passed\n", runs - fails, runs);
     return fails ? 1 : 0;
 }

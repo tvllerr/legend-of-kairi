@@ -143,6 +143,9 @@ case "party":  // (s57 party) party <out.bin>: KH2's party gauges (gaug anim gro
 case "partytest":  // (s57 party) partytest <party.bin> <hud.bin> <out.png>: the plates in several states as the wip sora_hud.c draws them
     PartyTest(args[1], args[2], args[3]);
     break;
+case "partyfaces":  // (s220 riku2) partyfaces <party.bin> <hud.bin> <out.png>: every face of the bake (rows) on a plate: normal, hurt, low HP, KO
+    PartyFaces(args[1], args[2], args[3]);
+    break;
 case "partyshot":  // (s57 party) partyshot <party.bin> <hud.bin> <shot.png> <out.png> [x y]: ring + plates over a screenshot (x, y = ring centre, HUD units from the bottom-right; default 60 177)
     PartyShot(args[1], args[2], args[3], args[4], args.Length > 6 ? float.Parse(args[5]) : 60, args.Length > 6 ? float.Parse(args[6]) : 177);
     break;
@@ -1220,7 +1223,8 @@ void LvupShot(string binPath, string hudPath, string shotPath, string outPath, i
 //            colours, corners x[4] y[4] TL TR BR BL (scale / rotation applied: group 67's red ring turns and grows),
 //            blend. Plate groups (67 70 71 72 73 74): KH2 frame px minus the orb; children (64 65 66) and the faces:
 //            relative to the plate's anchor (where KH2 attaches them, re:0x16ABF0)
-//   faces    n_face x RGBA8 face_w x face_h (0 Donald, 1 Goofy)
+//   faces    n_face x RGBA8 face_w x face_h (0 Donald, 1 Goofy; s220: then Riku, Auron, Mulan, Ping, Aladdin, Jack Sparrow)
+//   (s220) the header's reserved u32 = byte offset of the face table {"SKPC", u32 n_face, u16 KH2 character per face, pad to 4}
 // Animation = the Kh2A rules LvupBake uses (PHH kh2_2d re:0x192250 / re:0x193880), plus the part scale / rotation.
 void PartyBake(string outPath) {
     var bar = Bar.Read(new MemoryStream(File.ReadAllBytes($"{Kh2}/kh2_first/original/field2d/us/es0field.2dd")));
@@ -1231,16 +1235,14 @@ void PartyBake(string outPath) {
         var fe = fb.First(x => x.Type == Bar.EntryType.Seqd && x.Name == "face"); fe.Stream.Position = 0;
         return Sequence.Read(fe.Stream);
     }
-    string Sig(Sequence q) {  // the face sequences must match (one set of face groups serves both members)
-        var sb = new StringBuilder();
-        foreach (var sp in q.Sprites) sb.Append($"{sp.Left},{sp.Top},{sp.Right},{sp.Bottom},{sp.ColorLeft:X};");
-        foreach (var g in q.SpriteGroups) foreach (var p in g) sb.Append($"{p.SpriteIndex}:{p.Left},{p.Top},{p.Right},{p.Bottom};");
-        foreach (var g in q.AnimationGroups) { sb.Append($"|{g.DoNotLoop},{g.LoopStart}"); foreach (var a in g.Animations) sb.Append($"{a.Flags:X},{a.SpriteGroupIndex},{a.FrameStart},{a.FrameEnd},{a.ColorStart:X},{a.ColorEnd:X};"); }
-        return sb.ToString();
-    }
-    var fd = FaceSeq("P_EX020"); var fg = FaceSeq("P_EX030");
-    if (Sig(fd) != Sig(fg)) throw new Exception("Donald's and Goofy's face sequences differ: bake them per member");
-    Console.WriteLine($"face seqs: Donald == Goofy ({fd.Sprites.Count} sprites, {fd.AnimationGroups.Count} anim groups)");
+    // (s220 riku2) every party member's face, in this order (faces 0 Donald, 1 Goofy as before, so an exe from before s220 still
+    // shows them), each with its KH2 character id (00battle lvup / vtbl character = objentry neostatus): the face table below.
+    // HD face = the remastered .a.us folder's LAST dds (192 x 192 for all eight, VERIFIED s220); Mulan = P_MU000 (objentry 99,
+    // neostatus 6), Ping = P_MU010 (objentry 100, neostatus 15), Jack Sparrow = P_CA000 (his _HUMAN model's .a.us has the same face).
+    var members = new (string name, int ch, string obj, int dds)[] {
+        ("Donald", 2, "P_EX020", 6), ("Goofy", 3, "P_EX030", 2), ("Riku", 13, "P_EH000", 6), ("Auron", 5, "P_HE000", 3),
+        ("Mulan", 6, "P_MU000", 4), ("Ping", 15, "P_MU010", 0), ("Aladdin", 7, "P_AL000", 2), ("Jack Sparrow", 8, "P_CA000", 0) };
+    var fd = FaceSeq("P_EX020");
     (float x, float y, uint c) Anchor(Sequence q, int g, int f, (float, float, uint) keep) {
         foreach (var a in q.AnimationGroups[g].Animations) {
             if ((a.Flags & 2) == 0 || !Kh2A.Active(a, f)) continue;
@@ -1293,20 +1295,46 @@ void PartyBake(string outPath) {
     }
     foreach (int g in new[] { 64, 65, 66, 67, 70, 71, 72, 73, 74 }) Group(s, g, g, 0, plate.Contains(g));
     for (int g = 0; g < 4; g++) Group(fd, g, 0x100 + g, 1, false);
+    // (s220) one set of face groups serves every member: each member's own 'face' Seqd is baked the same way and must give the
+    // same frames and parts as Donald's (compares what is DRAWN: Jack Sparrow's Seqd v0x60 differs from the others' v0x50 in flag
+    // bits only, e.g. 0x400 "keep colour" on a part that is 0x80808080 anyway, so his bakes the same; VERIFIED by this check)
+    int f0 = grps[^4].first, nf = frames.Count - f0; long p0 = frames[f0].off * 68L, pl = parts.Length - p0;
+    byte[] Bytes(long from, long n) { var a = new byte[n]; Array.Copy(parts.GetBuffer(), from, a, 0, n); return a; }
+    var dParts = Bytes(p0, pl);
+    foreach (var m in members.Skip(1)) {
+        int g0 = grps.Count, fs = frames.Count; long ps = parts.Length;
+        for (int g = 0; g < 4; g++) Group(FaceSeq(m.obj), g, 0x100 + g, 1, false);
+        bool same = frames.Count - fs == nf && parts.Length - ps == pl && dParts.AsSpan().SequenceEqual(Bytes(ps, pl));
+        for (int k = 0; same && k < 4; k++) same = grps[g0 + k].n == grps[g0 - 4 + k].n && grps[g0 + k].loop == grps[g0 - 4 + k].loop;
+        for (int k = 0; same && k < nf; k++) same = frames[fs + k].n == frames[f0 + k].n && frames[fs + k].ax == frames[f0 + k].ax &&
+                                                   frames[fs + k].ay == frames[f0 + k].ay && frames[fs + k].ac == frames[f0 + k].ac;
+        grps.RemoveRange(g0, grps.Count - g0); frames.RemoveRange(fs, frames.Count - fs); parts.SetLength(ps); parts.Position = ps;
+        if (!same) throw new Exception($"{m.name}'s ({m.obj}) face groups bake differently from Donald's: bake them per member");
+    }
+    Console.WriteLine($"face groups: all {members.Length} members' faces bake the same as Donald's ({nf} frames, {pl / 68} parts)");
     var faces = new List<byte[]>(); int fw = 0, fh = 0;
-    foreach (var dds in new[] { $"{Kh2}/kh2_sixth/remastered/obj/P_EX020.a.us/-6.dds", $"{Kh2}/kh2_sixth/remastered/obj/P_EX030.a.us/-2.dds" }) {
+    foreach (var m in members) {
+        var dds = $"{Kh2}/kh2_sixth/remastered/obj/{m.obj}.a.us/-{m.dds}.dds";
         var img = LoadHd(dds, out int w, out int h);
         if (faces.Count > 0 && (w != fw || h != fh)) throw new Exception("faces differ in size");
         fw = w; fh = h; faces.Add(img);
         Console.WriteLine($"face {dds}: {w}x{h}");
     }
     using var o = new BinaryWriter(File.Create(outPath));
+    // (s220) the face table {'SKPC', n, u16 KH2 character per face, padded to 4} sits between the parts and the faces; the header's
+    // last (reserved) u32 = its byte offset (0 = no table: faces 0 Donald, 1 Goofy). Version stays 1: an older exe ignores the field,
+    // reads faces 0 / 1 from the file's end as always (the table only adds < 1 LPart to its parts count, never referenced).
+    long tableOff = 56 + 16L * grps.Count + 20L * frames.Count + parts.Length;
     o.Write(Encoding.ASCII.GetBytes("SKPT")); o.Write(1); o.Write(grps.Count); o.Write(frames.Count); o.Write(faces.Count); o.Write(fw); o.Write(fh); o.Write(48);
-    o.Write((int)orb.x); o.Write((int)orb.y); o.Write((int)(slot.x - orb.x)); o.Write((int)(slot.y - orb.y)); o.Write(pitch); o.Write(0);
+    o.Write((int)orb.x); o.Write((int)orb.y); o.Write((int)(slot.x - orb.x)); o.Write((int)(slot.y - orb.y)); o.Write(pitch); o.Write((int)tableOff);
     foreach (var g in grps) { o.Write((ushort)g.id); o.Write((ushort)g.tex); o.Write((ushort)g.n); o.Write((ushort)g.loop); o.Write((uint)g.first); o.Write(0u); }
     foreach (var f in frames) { o.Write((uint)f.off); o.Write((uint)f.n); o.Write(f.ax); o.Write(f.ay); o.Write(f.ac); }
     o.Write(parts.ToArray());
+    o.Write(Encoding.ASCII.GetBytes("SKPC")); o.Write(members.Length);
+    foreach (var m in members) o.Write((ushort)m.ch);
+    if (members.Length % 2 != 0) o.Write((ushort)0);
     foreach (var f in faces) o.Write(f);
+    Console.WriteLine("face table: " + string.Join(", ", members.Select((m, i) => $"{i} {m.name} (char {m.ch}, {m.obj})")));
     Console.WriteLine($"wrote {outPath}: {grps.Count} groups, {frames.Count} frames, {parts.Length / 68} parts, {faces.Count} faces {fw}x{fh}");
 }
 
@@ -1395,6 +1423,26 @@ void PartyTest(string binPath, string hudPath, string outPath) {
     for (int i = 0; i < ob.Length; i++) ob[i] = (byte)Math.Clamp(c.cv[i] * 255, 0, 255);
     Png.Write(outPath, W, H, ob);
     Console.WriteLine($"wrote {outPath} ({W}x{H})");
+}
+void PartyFaces(string binPath, string hudPath, string outPath) {
+    var pb = new PtBin(binPath); var hb = File.ReadAllBytes(hudPath);
+    const float U = 2; const int CW = 110, CH = 100;  // cell in HUD units
+    // {slot group, frame, face group, frame, hp, hurt, track frame, mp}: normal (72 / face 3), hit (70 / face 1), low (67 / face 0), KO (face 2)
+    var st = new[] { new float[] { 72, 30, 3, 30, 1, 1, -1, 1 }, new float[] { 70, 6, 1, 6, 0.5f, 1, 6, 0.8f },
+                     new float[] { 67, 30, 0, 30, 0.2f, 0.2f, -1, 1 }, new float[] { 72, 30, 2, 10, 0, 0, -1, 0.5f } };
+    int W = (int)(CW * U) * st.Length, H = (int)(CH * U) * pb.nface;
+    var c = new PtCanvas(W, H) { unit = U };
+    for (int i = 0; i < W * H; i++) { c.cv[i * 4] = 0.45f; c.cv[i * 4 + 1] = 0.55f; c.cv[i * 4 + 2] = 0.40f; c.cv[i * 4 + 3] = 1; }
+    for (int f = 0; f < pb.nface; f++)
+        for (int k = 0; k < st.Length; k++) {
+            var v = st[k];
+            c.ox = k * CW * U + 30 * U; c.oy = f * CH * U + 110 * U;  // the orb (the plate sits 21 right / 67 up of it)
+            PtMember(c, pb, hb, f, (int)v[0], (int)v[1], (int)v[2], (int)v[3], v[4], v[5], (int)v[6], v[7], 0);
+        }
+    var ob = new byte[c.cv.Length];
+    for (int i = 0; i < ob.Length; i++) ob[i] = (byte)Math.Clamp(c.cv[i] * 255, 0, 255);
+    Png.Write(outPath, W, H, ob);
+    Console.WriteLine($"wrote {outPath} ({W}x{H}): {pb.nface} faces x normal / hit / low / KO");
 }
 void PartyShot(string binPath, string hudPath, string shotPath, string outPath, float rx, float ry) {
     var pb = new PtBin(binPath); var hb = File.ReadAllBytes(hudPath);

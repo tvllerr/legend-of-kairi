@@ -710,7 +710,7 @@ int linkpos_link_state(void) { return servo_body() ? state_of(g_servo_actor) : L
 // gets no left stick and no action buttons (A B X Y L R ZL ZR, stick click), so he never starts a walk, climb, jump or
 // glide of his own; Plus / Minus, the d-pad and the right stick (camera) stay his. On while the servo drives him unless
 // linkpos_block_link_input(false); SAVAGEWIND_LINK_VEL_INPUT=1 leaves the scripted input alone in test windows.
-void (*g_game_input_filter)(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+extern void (*g_game_input_filter)(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);  // (defined in hle/input.c)
 static int g_block_input = -1;  // -1: while the servo drives, 0 never, 1 always
 static bool g_test_input;  // SAVAGEWIND_LINK_VEL_INPUT: test windows keep the scripted input
 static bool g_autocontinue;  // SAVAGEWIND_LINK_AUTOCONTINUE=1: tap A from the title until Link is in the world
@@ -725,6 +725,14 @@ void (*g_link_pad_tap)(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32
 void linkpos_set_pad_tap(void (*fn)(uint64_t *, int32_t *, int32_t *, int32_t *, int32_t *)) { g_link_pad_tap = fn; }  // (sora_mod.dll)
 
 int linkpos_link_life(void);
+// Link's actions are taken away now (the filter below strips them; also hle/input.c act_poll: rebound actions off).
+// The pause menu and the map keep the whole pad (blocking A there would leave the game unusable).
+static bool link_input_blocked(void) {
+    if (*(volatile uint32_t *)(uintptr_t)PAUSE_STATE) return false;
+    return g_block_input == 1 || (g_block_input == -1 && g_vel_on && !g_test_input);
+}
+extern bool (*g_game_input_blocked)(void);  // (defined in hle/input.c)
+
 static void link_input_filter(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     // (Continue on the title and the menu: A 8 frames every 2 s from frame 300; and after a Game Over in a test run -
     // life 0 or no Link - until he stands in the world with life again, so the run goes on from the autosave)
@@ -742,8 +750,7 @@ static void link_input_filter(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx
     }
     if (g_link_pad_tap) g_link_pad_tap(b, lx, ly, rx, ry);  // (may add its own scripted input: a test player's pad)
     // the pause menu and the map keep the whole pad (blocking A there would leave the game unusable)
-    if (*(volatile uint32_t *)(uintptr_t)PAUSE_STATE) return;
-    if (!(g_block_input == 1 || (g_block_input == -1 && g_vel_on && !g_test_input))) return;
+    if (!link_input_blocked()) return;
     // SAVAGEWIND_LINK_PASS=<mask>: these buttons still reach Link (tests: 8 = Y, his attack, so he draws his weapon)
     static int pass = -1;
     if (pass < 0) pass = (int)strtol(getenv("SAVAGEWIND_LINK_PASS") ? getenv("SAVAGEWIND_LINK_PASS") : "0", NULL, 0);
@@ -1100,13 +1107,21 @@ static uint64_t enemy_nearest(void);  // (enemies section)
 
 static int hook_calls(uint64_t caller, uint64_t target, HostFn fn) {
     uint64_t lo, hi, to = (uint64_t)(uintptr_t)dispatch_lookup(target);
-    if (!to || !host_range(caller, &lo, &hi)) return 0;
+    if (!to || !host_range(caller, &lo, &hi)) {
+        LOG("[linkpos] ERROR hook: f_%llx -> f_%llx NOT hooked: %s (0 direct calls; only indirect calls reach the hook)\n",
+            (unsigned long long)caller, (unsigned long long)target, !to ? "no host code for the target" : "no host code range for the caller");
+        return 0;
+    }
     static uint8_t *thunks;
     static int nthunks;
     if (!thunks)  // a page within reach of the DLL's rel32 calls
         for (uint64_t at = (lo - 0x10000) & ~0xffffull; at > lo - 0x7f000000 && !thunks; at -= 0x10000)
             thunks = VirtualAlloc((void *)(uintptr_t)at, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-    if (!thunks || nthunks >= 0x1000 / 16) return 0;
+    if (!thunks || nthunks >= 0x1000 / 16) {
+        LOG("[linkpos] ERROR hook: f_%llx -> f_%llx NOT hooked: %s (0 direct calls; only indirect calls reach the hook)\n",
+            (unsigned long long)caller, (unsigned long long)target, !thunks ? "no thunk page near the game code" : "thunk page full");
+        return 0;
+    }
     uint8_t *t = thunks + 16 * nthunks++;
     t[0] = 0xff, t[1] = 0x25, memset(t + 2, 0, 4);  // jmp [rip+0]
     uint64_t dst = (uint64_t)(uintptr_t)fn;
@@ -1128,6 +1143,9 @@ static int hook_calls(uint64_t caller, uint64_t target, HostFn fn) {
     FlushInstructionCache(GetCurrentProcess(), (void *)(uintptr_t)lo, (size_t)(hi - lo));
     LOG("[linkpos] hook: %d direct calls f_%llx -> f_%llx (host %llx..%llx) now go to the hook\n", n,
         (unsigned long long)caller, (unsigned long long)target, (unsigned long long)lo, (unsigned long long)hi);
+    if (!n)  // (the codegen may have inlined or moved the call: nothing else would tell)
+        LOG("[linkpos] ERROR hook: f_%llx -> f_%llx NOT hooked: 0 direct calls found in the caller's host code (only indirect calls reach the hook)\n",
+            (unsigned long long)caller, (unsigned long long)target);
     return n;
 }
 
@@ -1174,6 +1192,7 @@ void linkpos_init(void) {  // (main.c, after dispatch_init: before any guest cod
     g_test_input = getenv("SAVAGEWIND_LINK_VEL_INPUT") != NULL;
     g_autocontinue = getenv("SAVAGEWIND_LINK_AUTOCONTINUE") != NULL;
     g_game_input_filter = link_input_filter;
+    g_game_input_blocked = link_input_blocked;
     if (!(g_vel_step = dispatch_lookup(CC_VEL_STEP))) { LOG("[linkpos] no function at %llx: no velocity servo\n", CC_VEL_STEP); return; }
     hle_override(CC_VEL_STEP, vel_step, "linkpos velocity step");  // (indirect calls)
     hook_calls(CC_VEL_CALLER, CC_VEL_STEP, vel_step);
@@ -2239,13 +2258,11 @@ void linkpos_damage_enemy_ex(uint64_t actor, int n, int f54, int f40) {
     AcquireSRWLockExclusive(&g_enemy_lock);
     int i;
     for (i = 0; i < g_ndmg_q && g_dmg_q[i].actor != actor; i++) {}
-    if (i < g_ndmg_q) {
-        g_dmg_q[i].n += n;
-        if (f54 > g_dmg_q[i].f54) g_dmg_q[i].f54 = f54, g_dmg_q[i].f40 = f40;
-    } else if (g_ndmg_q < DMG_QUEUE) {
+    if (i == g_ndmg_q && g_ndmg_q < DMG_QUEUE) {  // (s194: a fresh entry starts at EDMG_RIDE_F54_NONE = no real hit yet)
         memset(&g_dmg_q[g_ndmg_q], 0, sizeof g_dmg_q[0]);
-        g_dmg_q[g_ndmg_q].actor = actor, g_dmg_q[g_ndmg_q].f54 = f54, g_dmg_q[g_ndmg_q].f40 = f40, g_dmg_q[g_ndmg_q++].n = n;
+        g_dmg_q[g_ndmg_q].actor = actor, g_dmg_q[g_ndmg_q].f54 = EDMG_RIDE_F54_NONE, g_ndmg_q++;
     }
+    if (i < g_ndmg_q) g_dmg_q[i].n += n, edmg_f54_merge(&g_dmg_q[i].f54, &g_dmg_q[i].f40, f54, f40);
     ReleaseSRWLockExclusive(&g_enemy_lock);
     LOG("[linkpos] damage %d (f54 %#x f40 %d) queued for enemy %llx\n", n, f54, f40, (unsigned long long)actor);
 }
@@ -2262,7 +2279,7 @@ static void dmg_add_common(Cpu *c, GuestFn orig) {
         for (int i = 0; i < g_ndmg_q; i++)
             if (g_dmg_q[i].actor == actor) {
                 int rn = g_dmg_q[i].rn, rkill = g_dmg_q[i].rkill;
-                n = g_dmg_q[i].n, f54 = g_dmg_q[i].f54, f40 = g_dmg_q[i].f40, g_dmg_q[i] = g_dmg_q[--g_ndmg_q];
+                n = g_dmg_q[i].n, f54 = edmg_ride_f54(g_dmg_q[i].f54), f40 = g_dmg_q[i].f40, g_dmg_q[i] = g_dmg_q[--g_ndmg_q];
                 if (rn > 0 || rkill) {  // (s166 edmg: another player's damage; the kill clamp uses the life of THIS moment)
                     ramt = edmg_remote_amount(*(const int32_t *)(uintptr_t)(actor + ACTOR_LIFE), rn, rkill);
                     if (ramt > 0) edmg_echo_add(&g_edmg_echo, actor, ramt, g_vel_frame_id), n += ramt, g_edmg_st.rides++;
@@ -2375,13 +2392,13 @@ static int edmg_queue_remote(uint64_t actor, uint32_t hid, int32_t dealt, int f5
     if (i == g_ndmg_q) {
         if (g_ndmg_q == DMG_QUEUE) return 0;
         memset(&g_dmg_q[g_ndmg_q], 0, sizeof g_dmg_q[0]);
-        g_dmg_q[g_ndmg_q].actor = actor, g_dmg_q[g_ndmg_q].f54 = DMG_F54_SMALL, g_ndmg_q++;
+        g_dmg_q[g_ndmg_q].actor = actor, g_dmg_q[g_ndmg_q].f54 = EDMG_RIDE_F54_NONE, g_ndmg_q++;  // (s194 BUG A: was 15, so a remote 7 rode as 15)
     }
     if (!g_dmg_q[i].rn && !g_dmg_q[i].rkill) g_dmg_q[i].rframe = g_vel_frame_id;
     g_dmg_q[i].rhid = hid;
     if (dealt > 0) g_dmg_q[i].rn = g_dmg_q[i].rn + dealt > EDMG_DMG_CAP ? EDMG_DMG_CAP : g_dmg_q[i].rn + dealt;
     g_dmg_q[i].rkill |= kill ? 1 : 0;
-    if (f54 > g_dmg_q[i].f54) g_dmg_q[i].f54 = f54, g_dmg_q[i].f40 = f40;
+    edmg_f54_merge(&g_dmg_q[i].f54, &g_dmg_q[i].f40, f54, f40);  // (the attacker's f54 / f40: highest of the REAL hits wins)
     return 1;
 }
 
@@ -2837,7 +2854,7 @@ static void enemy_frame(void) {  // (game thread, once a frame: drop stale entri
     for (int i = 0; i < g_ndmg_q;)  // (s166 E2: a remote hit whose enemy never got its addDamage call goes back to the pending map)
         if ((g_dmg_q[i].rn > 0 || g_dmg_q[i].rkill) && g_vel_frame_id - g_dmg_q[i].rframe > EDMG_RIDE_TTL) {
             uint32_t h = g_dmg_q[i].rhid;  // (s167 SF-1: kept in the queue entry, the row may be gone already)
-            if (h) edmg_pend_add(&g_edmg_pend, h, g_dmg_q[i].rn, g_dmg_q[i].f54, g_dmg_q[i].f40, g_dmg_q[i].rkill, g_dmg_q[i].rframe);
+            if (h) edmg_pend_add(&g_edmg_pend, h, g_dmg_q[i].rn, edmg_ride_f54(g_dmg_q[i].f54), g_dmg_q[i].f40, g_dmg_q[i].rkill, g_dmg_q[i].rframe);
             g_edmg_st.ride_expired++;
             if (g_dmg_q[i].n > 0) g_dmg_q[i].rn = 0, g_dmg_q[i].rkill = 0, i++;  // (a local hit of Sora's stays)
             else g_dmg_q[i] = g_dmg_q[--g_ndmg_q];
@@ -2959,6 +2976,55 @@ static bool rune_obj_shown(uint64_t a) {  // (s100d) Obj_RemoteBomb* (ball, cube
     return true;
 }
 
+// (s217 world follow-up) A barrel / rock / pot / orb Link CARRIES was invisible (user, 0.5.3 trial: "when I pick them up they are still
+// invisible"; mark_180638_1: BotW's Drop / Throw prompts, no barrel). Same as the held Remote Bomb in s100d: the carried object takes
+// its holder's opacity, and Link's is 0 (the s102b bombshow line: RemoteBomb factors 1.00 0.08 1.00 before = +0x4ec going to Link's
+// 0). Fix as rune_obj_shown (VERIFIED for the bomb, s102b): opacity back to 1 before BotW's apply, only for BotW's liftable actors
+// (Liftable block + CanLift, sb/s217/world/lift_rows.txt, Enemy_* parts left out) within CARRY_SHOW_DIST of Link whose opacity is
+// being lowered (+0x4ec or +0x4f0 below 0.95): an unheld barrel keeps 1 / 1 and is never written. SAVAGEWIND_LINK_CARRY_HIDE=1 = old.
+#define CARRY_SHOW_DIST 3.0f  // u: Link's origin to the object's (held overhead / in front: GUESS < 3)
+static const char *const carry_show_names[] = {
+    "AncientBall", "AncientBall_Kakariko", "Animal_Kokko_A", "Animal_Kokko_B", "Barrel", "BarrelBomb", "BarrelBomb2", "BarrelBomb3", "BarrelBomb_Balloon",
+    "Barrel_100enemy", "Barrel_CDungeon", "BrokenSnowBall", "DgnObj_AncientBall_04", "DgnObj_AncientBall_048", "DgnObj_AncientBall_B_01",
+    "DgnObj_BeamDevice_Static", "DgnObj_DLC_BeamDevice_Static", "DgnObj_DLC_ColorfulAncientBall_A", "DgnObj_DLC_ColorfulAncientBall_A_02",
+    "DgnObj_DLC_ColorfulAncientBall_A_03", "DgnObj_DLC_ColorfulAncientBall_A_04", "DgnObj_DLC_ColorfulAncientBall_Big_A",
+    "DgnObj_DLC_ColorfulAncientBall_Big_A_02", "DgnObj_DLC_ColorfulAncientBall_Big_A_03", "DgnObj_DLC_ColorfulAncientBall_Big_A_04",
+    "DgnObj_DLC_IceBlock_B", "DgnObj_ElectricBallGenerator_A_01", "DgnObj_ElectricBoxGenerator", "DgnObj_IceBlock", "DgnObj_RemainsLithograghBall",
+    "DgnObj_RemainsLithograghBall_AoC", "DgnObj_StoneBarrel_A", "ElectricBallGenerator", "ElectricBallNoCarriable", "FldObj_Bottle_Letter",
+    "FldObj_ChampionshipBall_01", "FldObj_DarkWoodsBall_01", "FldObj_FourJewelBall_A_01", "FldObj_FourJewelBall_A_02", "FldObj_FourJewelBall_A_03",
+    "FldObj_FourJewelBall_A_04", "FldObj_GiantBrotherBall_01", "FldObj_GiantBrotherBall_02", "FldObj_GiantBrotherBall_03", "FldObj_KorokStoneLift_A_01",
+    "FldObj_MacuseIsekiBall_01", "FldObj_NakedIslandBall_01", "FldObj_NakedIslandBall_02", "FldObj_NakedIslandBall_03", "FldObj_RemainsFancierBall_01",
+    "Giant_Bomb_Weapon", "IceBlock", "Lizalfos_IceBall", "Obj_BarrelOld_A_01", "Obj_GrilledMeatRock", "Obj_HideBarrel", "Obj_KorokPot_A_01",
+    "Obj_LiftRockEldin_A_01", "Obj_LiftRockGerudo_A_01", "Obj_LiftRockWhite_100enemy", "Obj_LiftRockWhite_A_01", "Obj_MeatRock", "OctObj_Grass_01",
+    "OctObj_Grass_02", "OctObj_Grass_03", "OctObj_Grass_04", "OctObj_Grass_05", "OctObj_Grass_06", "OctObj_Grass_07", "OctObj_Grass_08", "OctObj_Stone_01",
+    "OctObj_Stone_TBox", "Pot", "SnowBowl", "Test_MetalBarrel_A",
+};
+static bool carry_show_name(const char *n) {
+    for (size_t i = 0; i < sizeof carry_show_names / sizeof *carry_show_names; i++) if (!strcmp(n, carry_show_names[i])) return true;
+    // (the pack scan stopped at 600 KB packs: every town pot "TwnObj_*Pot_*_Act_*" counts, not only the 19 it listed)
+    return !strncmp(n, "TwnObj_", 7) && strstr(n, "Pot_") && strstr(n, "_Act_");
+}
+static bool carry_obj_shown(uint64_t a) {  // (opacity hook, any thread: reads only, like rune_obj_shown)
+    static int off = -1;
+    if (off < 0) off = env_int("SAVAGEWIND_LINK_CARRY_HIDE", 0) ? 1 : 0;
+    if (off) return false;
+    const char *n = actor_name(a);
+    if (!n || !carry_show_name(n)) return false;
+    float s = opac(a, ACTOR_START_OPACITY), f = opac(a, ACTOR_FINAL_OPACITY);
+    if (s >= 0.95f && f >= 0.95f) return false;  // (not being lowered: BotW's own value stays)
+    float d = link_dist(a);
+    if (d > CARRY_SHOW_DIST) return false;
+    static volatile uint64_t last;  // (one line per newly carried actor, 16 in all; a racy check on draw threads = at worst a 2nd line)
+    static volatile long logged;
+    if (last != a) {
+        last = a;
+        if (__atomic_fetch_add(&logged, 1, __ATOMIC_RELAXED) < 16)
+            LOG("[linkpos] carryshow: %s %llx kept visible, %.2f m from Link (opacity factors %.2f %.2f %.2f before)\n", n, (unsigned long long)a, d,
+                opac(a, ACTOR_OPACITY), s, f);
+    }
+    return true;
+}
+
 // (s108 slatexlu) The Slate held in rune mode was NOT in any 3D pass of the s107 F9 dump (frame 8908, Stasis: its projected
 // box px 1203-1253 x 932-994 empty in every scene image) although its three opacity factors were written 1 before the
 // apply (slatefade log) - only its glow showed = the "see-through blue ghost". applyOpacityIfDirty takes the alpha from
@@ -3065,6 +3131,11 @@ static void opacity_apply(Cpu *c) {
     } else if (g_hide && g_servo_actor && in_guest(a) && rune_obj_shown(a)) {
         // (s100d) Remote Bombs: user saw only the blue glow over Sora's hands, no bomb (GUESS: the held bomb takes Link's
         // requested opacity 0 like his weapons do). Opacity back to 1, as for the Slate. SAVAGEWIND_LINK_BOMB_HIDE=1 = old.
+        *(float *)(uintptr_t)(a + ACTOR_FINAL_OPACITY) = 1;
+        *(float *)(uintptr_t)(a + ACTOR_START_OPACITY) = 1;
+        *(uint8_t *)(uintptr_t)(a + ACTOR_OPACITY_DIRTY) = 1;
+    } else if (g_hide && g_servo_actor && in_guest(a) && carry_obj_shown(a)) {
+        // (s217 world follow-up) a carried barrel / rock / pot: the same as the bomb above
         *(float *)(uintptr_t)(a + ACTOR_FINAL_OPACITY) = 1;
         *(float *)(uintptr_t)(a + ACTOR_START_OPACITY) = 1;
         *(uint8_t *)(uintptr_t)(a + ACTOR_OPACITY_DIRTY) = 1;

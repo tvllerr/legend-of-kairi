@@ -761,11 +761,21 @@ static void pl_cancel(const char *why) {
     PLM.req = -1;
 }
 
+// (s217 riku) KH2 offers a party Limit only with its member in the party: shown while the member's slot holds his OWN character
+// (Comet / Duck Flare: Donald in slot 0, Whirli-Goof / Knocksmash: Goofy in slot 1); with Riku in Donald's place they are not listed
+static bool pl_shown(int k) { return k >= 0 && k < PL_NLIM && pchar_limit_ok(g_pchar, PL_LIMS[k].member); }
+static int pl_vis(int rows[PL_NLIM]) {  // the listed Limits, in table order
+    int n = 0;
+    for (int k = 0; k < PL_NLIM; k++)
+        if (pl_shown(k)) rows[n++] = k;
+    return n;
+}
 static const char *pl_gate(int k) {  // NULL = can start
     const PlDef *d = &PL_LIMS[k];
     int mi = d->member;
     static char msg[64];
     if (!g_plimit) return "limitparty 0";
+    if (!pl_shown(k)) return mi ? "Goofy is not in the party (a stand-in has his place)" : "Donald is not in the party (a stand-in has his place)";  // (s217 riku / s220)
     if (d->spark && !g_ks_on) return "lpks 0";  // (s149) Knocksmash off
     if (d->custom && !g_df_on) return "lpdf 0";  // (s150) Duck Flare off
     if (PLM.on) return "a Limit is running";
@@ -1583,16 +1593,19 @@ static void pl_draw(float to_u) {
 // The names are drawn with the camp font (the baked command atlas has no Comet / Whirli-Goof labels).
 static bool pl_any_member(void) { return g_plimit && P.on && (g_party_id[0] > 0 || g_party_id[1] > 0); }
 static bool pl_open_left(void) {
-    if (!pl_any_member() || ROXCMD || PLM.on) return false;
+    int vis[PL_NLIM];
+    if (!pl_any_member() || ROXCMD || PLM.on || !pl_vis(vis)) return false;  // (s217 riku: nothing listed = no page)
     M.sub = PL_SUB, M.sub_cursor = 0;
     sora_sfx_event("submenu", 1);
     PLOG("[plimit] menu: Limit page open (Comet %s, Whirli-Goof %s, Knocksmash %s, Duck Flare %s)\n", pl_gate(0) ? pl_gate(0) : "ready", pl_gate(1) ? pl_gate(1) : "ready", pl_gate(2) ? pl_gate(2) : "ready", pl_gate(3) ? pl_gate(3) : "ready");
     return true;
 }
 static int pl_menu_tick(uint64_t *press) {
-    if (!pl_any_member() || PLM.on) { M.sub = -1, M.cursor = 0; return -1; }
-    if (*press & BTN_UP) M.sub_cursor = (M.sub_cursor + PL_NLIM - 1) % PL_NLIM, sora_sfx_event("cursor", 1);
-    if (*press & BTN_DOWN) M.sub_cursor = (M.sub_cursor + 1) % PL_NLIM, sora_sfx_event("cursor", 1);
+    int vis[PL_NLIM], nv = pl_vis(vis);  // (s217 riku: the cursor walks the LISTED Limits; M.sub_cursor = their row)
+    if (!pl_any_member() || PLM.on || !nv) { M.sub = -1, M.cursor = 0; return -1; }
+    if (M.sub_cursor >= nv) M.sub_cursor = nv - 1;
+    if (*press & BTN_UP) M.sub_cursor = (M.sub_cursor + nv - 1) % nv, sora_sfx_event("cursor", 1);
+    if (*press & BTN_DOWN) M.sub_cursor = (M.sub_cursor + 1) % nv, sora_sfx_event("cursor", 1);
     if (*press & (BTN_JUMP | BTN_LEFT | BTN_RIGHT)) {
         *press &= ~(BTN_JUMP | BTN_LEFT | BTN_RIGHT);
         M.sub = -1, M.cursor = 0;
@@ -1601,7 +1614,7 @@ static int pl_menu_tick(uint64_t *press) {
     }
     if (*press & BTN_ATTACK) {
         *press &= ~BTN_ATTACK;
-        int k = M.sub_cursor;
+        int k = vis[M.sub_cursor];
         const char *why = pl_gate(k);
         if (M.dead > 0 || why) {
             sora_sfx_event("error", 1);
@@ -1635,12 +1648,13 @@ static void pl_text(CsOut *o, const char *txt, float x, float y, const float col
 static bool g_plbox = false;  // live "plbox 1": the old camp-font list box (the page is a real command-menu page otherwise)
 static int pl_prompt_cmd(void) { return pl_def()->custom ? DF.offer : pl_step()->prompt; }  // (s150) Duck Flare's offer is dynamic (347 / 348)
 static void pl_hud(SoraHudMenu *m) {
-    bool list = M.sub == PL_SUB && pl_any_member(), prompt = PLM.on && PLM.prompt;
+    int vis[PL_NLIM], nv = pl_vis(vis);  // (s217 riku: only the listed Limits)
+    bool list = M.sub == PL_SUB && pl_any_member() && nv, prompt = PLM.on && PLM.prompt;
     if (list && !g_plbox) {  // (s134 rcslot) the Limit list = a real command-menu page, as the Slate page (sk_hud): the Drive page's look + the names as text rows
-        m->sub = 2, m->n_sub = PL_NLIM;
+        m->sub = 2, m->n_sub = nv;
         const char *rows[PL_NLIM];
-        for (int k = 0; k < PL_NLIM; k++) rows[k] = PL_LIMS[k].name, m->sub_label[k] = 23, m->sub_state[k] = (uint8_t)pl_state(k), m->sub_cost[k] = 0;
-        sub_text_rows(m, rows, PL_NLIM, M.sub_cursor);
+        for (int j = 0; j < nv; j++) rows[j] = PL_LIMS[vis[j]].name, m->sub_label[j] = 23, m->sub_state[j] = (uint8_t)pl_state(vis[j]), m->sub_cost[j] = 0;
+        sub_text_rows(m, rows, nv, M.sub_cursor);
         list = false;
     } else if (M.sub == PL_SUB) m->sub = -1;  // plbox 1: the exe draws the top page only; the list is ours
     if (prompt && rcs_show(pl_cmd_name(pl_prompt_cmd()), false)) {  // (s134 rcslot) KH2's Reaction Command slot
@@ -1658,12 +1672,12 @@ static void pl_hud(SoraHudMenu *m) {
     CsOut o = {PLM.q, 0, 96};
     if (list) {
         const float box[4] = {0.05f, 0.05f, 0.08f, 0.75f};
-        pl_quad_box(&o, 150, 292, 190, 24.0f * PL_NLIM + 16, box);
-        for (int k = 0; k < PL_NLIM; k++) {
-            bool ok = pl_state(k) == 0;
+        pl_quad_box(&o, 150, 292, 190, 24.0f * nv + 16, box);
+        for (int j = 0; j < nv; j++) {  // (s217 riku: j = the listed row, vis[j] = the Limit)
+            bool ok = pl_state(vis[j]) == 0;
             const float on[4] = {1, 1, 1, 1}, off[4] = {0.55f, 0.55f, 0.55f, 1}, cur[4] = {1, 0.9f, 0.4f, 1};
-            pl_text(&o, PL_LIMS[k].name, 176, 300.0f + 24.0f * (float)k, !ok ? off : k == M.sub_cursor ? cur : on);
-            if (k == M.sub_cursor) pl_text(&o, ">", 158, 300.0f + 24.0f * (float)k, cur);
+            pl_text(&o, PL_LIMS[vis[j]].name, 176, 300.0f + 24.0f * (float)j, !ok ? off : j == M.sub_cursor ? cur : on);
+            if (j == M.sub_cursor) pl_text(&o, ">", 158, 300.0f + 24.0f * (float)j, cur);
         }
     }
     if (prompt) {  // the reaction-command box look of sora_react.h: a Triangle + the command's name

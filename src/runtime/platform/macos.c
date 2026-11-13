@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/ucontext.h>
 #include <unistd.h>
@@ -39,6 +40,12 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e) {  // (the whole window is backed)
+    if (addr >= end) return false;
+    *a = addr, *e = end;
+    return true;
+}
+
 void plat_decommit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
@@ -55,6 +62,10 @@ void plat_sleep_until_ns(uint64_t t) {
     if (!tb.denom) mach_timebase_info(&tb);
     mach_wait_until(t * tb.denom / tb.numer);
 }
+
+void plat_wait_until_ns(uint64_t t) { plat_sleep_until_ns(t); }  // (mach_wait_until doesn't spin)
+
+int plat_cpu_count(void) { int n = (int)sysconf(_SC_NPROCESSORS_ONLN); return n > 0 ? n : 1; }
 
 void plat_cpu_placement(void) {}  // (one logical processor per core: measured on Windows only)
 
@@ -73,9 +84,27 @@ void plat_thread_realtime(uint64_t period_ns) {
                       THREAD_TIME_CONSTRAINT_POLICY_COUNT);
 }
 
+const char *plat_log_path(void) { return ""; }  // (the log goes to stderr)
+
 bool plat_exe_path(char *buf, size_t size) {
     uint32_t len = (uint32_t)size;
     return _NSGetExecutablePath(buf, &len) == 0;
+}
+
+long plat_read_beside_exe(const char *name, char *buf, size_t cap) {
+    char path[4096];
+    if (!plat_exe_path(path, sizeof path)) return -1;
+    char *slash = strrchr(path, '/');
+    size_t room = slash ? sizeof path - (size_t)(slash + 1 - path) : 0;
+    if (!slash || strlen(name) >= room) return -1;
+    memcpy(slash + 1, name, strlen(name) + 1);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    size_t got = fread(buf, 1, cap, f);
+    char extra;
+    long r = got == cap && fread(&extra, 1, 1, f) == 1 ? (long)cap + 1 : (long)got;
+    fclose(f);
+    return r;
 }
 
 void plat_exec(char *const argv[]) {
@@ -167,3 +196,7 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
     return remove(path);
 }
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
+
+bool plat_guest_sparse_heap_enabled(void) { return false; }
+
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }  // (Windows only)

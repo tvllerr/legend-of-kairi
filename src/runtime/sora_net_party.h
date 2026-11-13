@@ -60,25 +60,25 @@ static int np_actor(int k, int who) {
     int cap = AV.cap ? AV.cap() : 0;
     if (cap && cap - av_used() <= AV_RESERVE) {  // (review I1: as the remote forms, AV_RESERVE stay free for local summons / skate / Roxas)
         NP[k].id[who] = -1;
-        LOG("[net] slot %d remote %s: %d of %d draw actors in use, not drawn (this session)\n", k + 1, PARTY[who].name, av_used(), cap);
+        LOG("[net] slot %d remote %s: %d of %d draw actors in use, not drawn (this session)\n", k + 1, party_home_def(who)->name, av_used(), cap);
         return -1;
     }
     const char *dir = getenv("SAVAGEWIND_PARTY_DIR");
     if (!dir || !*dir) dir = "D:/SoraBotW/data/party";
     dir = sora_path(dir);
     char mp[512], pp[512], dm[600], dp[600];
-    snprintf(mp, sizeof mp, "%s/%s_model.bin", dir, PARTY[who].name);
-    snprintf(pp, sizeof pp, "%s/%s_pose.bin", dir, PARTY[who].name);
+    snprintf(mp, sizeof mp, "%s/%s_model.bin", dir, party_home_def(who)->name);
+    snprintf(pp, sizeof pp, "%s/%s_pose.bin", dir, party_home_def(who)->name);
     av_dot_pathn(mp, dm, sizeof dm, k + 1), av_dot_pathn(pp, dp, sizeof dp, k + 1);
     uint64_t t = GetTickCount64();
     int id = PD.load(dm, dp);
     NP[k].id[who] = id > 0 ? id : -1;
     if (id > 0) {
-        PD.shape(id, PARTY[who].shadow_r, 0, 0, 0);
+        PD.shape(id, party_home_def(who)->shadow_r, 0, 0, 0);
         if (PD.weapon) PD.weapon(id, true);
         if (PD.weapon_at) PD.weapon_at(id, NULL, 0, NULL, 0, 0);
-        LOG("[net] slot %d remote %s loaded (%llu ms): actor %d (%s)\n", k + 1, PARTY[who].name, (unsigned long long)(GetTickCount64() - t), id, dm);
-    } else LOG("[net] slot %d remote %s: load failed (%s), not drawn (this session)\n", k + 1, PARTY[who].name, dm);
+        LOG("[net] slot %d remote %s loaded (%llu ms): actor %d (%s)\n", k + 1, party_home_def(who)->name, (unsigned long long)(GetTickCount64() - t), id, dm);
+    } else LOG("[net] slot %d remote %s: load failed (%s), not drawn (this session)\n", k + 1, party_home_def(who)->name, dm);
     return NP[k].id[who];
 }
 
@@ -100,7 +100,7 @@ static void np_slot_tick(int k, uint64_t now) {
         if (on) q = peer_party_sample(&NETP(k), w, now);
         if (!on || !q.valid || (id = np_actor(k, w)) <= 0) { np_hide(k, w); continue; }
         float feet[3] = {q.feet[0] + (g_net_loop ? g_av_shift[k][0] : 0), q.feet[1], q.feet[2] + (g_net_loop ? g_av_shift[k][1] : 0)};
-        const PMotX *mo = pmot_find(w, q.slot);  // (the clock past its motion's end, as the local party's)
+        const PMotX *mo = party_home_mot(w, q.slot);  // (s217 riku: his own Donald / Goofy, whoever stands in here)  // (the clock past its motion's end, as the local party's)
         float clock = mo ? peer_clock_wrap(q.clock, mo->frames, mo->loop, mo->loop < mo->frames) : q.clock;
         PD.shadow(id, feet[1] + q.floor_dy, blob_str(0.55f));
         if (PD.ghost) {

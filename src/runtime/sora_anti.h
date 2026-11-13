@@ -79,6 +79,7 @@ static bool anti_battle(void) { return P.on && P.combat && P.battle; }
 // KH2's party check for Anti (re:0x4005E0, both slots): Donald and Goofy in the party, loaded, standing, not absorbed
 static bool anti_party_ok(void) {
     if (!P.on || !P.ticks) return false;
+    if (!pchar_need_ok(g_pchar, PNEED_ANTI)) return false;  // (s217 riku: user s214: no Anti while Donald is out; the log line below says "both able")
     for (int mb = 0; mb < 2; mb++)
         if (g_party_id[mb] <= 0 || P.m[mb].hp <= 0 || g_party_absorbed[mb]) return false;
     return true;

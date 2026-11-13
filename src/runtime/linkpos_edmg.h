@@ -64,6 +64,19 @@ static inline int edmg_pend_take(EdmgPendTab *t, uint32_t hid, uint64_t now, Edm
     return 0;
 }
 
+// ---- f54 / f40 of a ride entry (linkpos.c g_dmg_q: a frame's local hits + the remote part for one enemy) ----
+// s194 BUG A: an entry made only for a remote hit used to start at f54 15 and keep the higher value, so the attacker's
+// f54 7 (Shock: upright stagger) rode as 15 (small flinch, partial ragdoll). A fresh entry now starts at NONE (0 = no
+// real hit yet); every real hit (local or remote) merges in with the old rule: f54 <= 0 = small (15), the highest
+// f54 wins with its f40. The ride itself takes edmg_ride_f54 (NONE -> 15).
+#define EDMG_F54_SMALL 15
+#define EDMG_RIDE_F54_NONE 0
+static inline void edmg_f54_merge(int32_t *cur_f54, int32_t *cur_f40, int32_t f54, int32_t f40) {
+    if (f54 <= 0) f54 = EDMG_F54_SMALL;
+    if (f54 > *cur_f54) *cur_f54 = f54, *cur_f40 = f40;
+}
+static inline int32_t edmg_ride_f54(int32_t f54) { return f54 > 0 ? f54 : EDMG_F54_SMALL; }
+
 // ---- the amount a remote hit really puts into the local enemy (computed at ride time with its CURRENT life) ----
 // kill: life > dealt -> dealt = life (HP drifted: the kill still kills). A hit that did not kill there never kills here
 // (capped at life - 1: a drifted HP must not give a death the sender did not have). Dead / unknown life: 0.

@@ -1219,6 +1219,7 @@ static void sl_slot_tick(void) {
                 if (!looked) looked = true, edmg_reset = (int (*)(int *))(void *)GetProcAddress(GetModuleHandleA(NULL), "linkpos_edmg_reset");
                 if (edmg_reset) edmg_reset(NULL);
                 else LOG("[sora] slot %d load: this exe has no linkpos_edmg_reset (old remote kills may still apply)\n", slot);
+                net_kills_on_load(slot);  // (s196 killsync, after the exe reset: our kill list goes too, then the peers are asked again)
             }
             else if (kind == 1) sl_pend(slot, now);
             else sl_slot_done(slot, "written out (fs event)");

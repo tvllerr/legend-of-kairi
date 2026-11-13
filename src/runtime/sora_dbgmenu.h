@@ -17,7 +17,10 @@
 //                 row 8 Outfit = g_outfit 0 Normal / 1 Halloween Town / 2 Christmas Town / 3 Space Paranoids / 4 Timeless River,
 //                 row 9 Auto Outfits = g_outfit_auto (night -> Halloween Town, cold -> Christmas Town; sora_outfit.h). None is saved.
 //   The page shows them on top in the order Become Sora, Outfit, Auto Outfits (CP_DB_ORD in sora_camp_page.h).
-// Live keys: dbmlv N (0 = off, 1..99), dbmkb 0/1, dbmforms 0/1, dbmsmn 0/1, dbmab, dbmgod, dbmclip, dbmsora 0/1, dbmoutfit 0..4,
+//   (s217 riku / s220 members) row 10 Party 1 = who stands in Donald's place, row 11 Party 2 = in Goofy's place: the value = the
+//                 character id (sora_pchar.h PCH_*: 0 Donald, 1 Goofy, 2 Riku, 3 Auron, 4 Mulan, 5 Aladdin, 6 Sparrow, 7 Cloud); sora_party.h
+//                 party_swap (session only, rides a hot reload in its own env var SORA_PARTY_PICK, never saved).
+// Live keys: dbmparty 0/1 (s217: Donald / Riku in Donald's place), dbmparty1 <id> / dbmparty2 <id> (s220), dbmlv N (0 = off, 1..99), dbmkb 0/1, dbmforms 0/1, dbmsmn 0/1, dbmab, dbmgod, dbmclip, dbmsora 0/1, dbmoutfit 0..4,
 // dbmautoout 0/1 (+ dbmcold / dbmofres, sora_outfit.h), dbmoff 1 (all off), dbmlog 1 (state line).
 // Included from sora.c after sora_summon_menu.h. All LOG lines carry "[dbgmenu]".
 #pragma once
@@ -99,7 +102,7 @@ static void dbm_kb_fix_(const char *why) {
     LOG("[dbgmenu] keyblades back to what is really owned (%s): %d slot(s) put back, %d reset by the one-copy rule\n", why, n, bad);
 }
 
-static int dbm_state(int row) { return row == 0 ? SL.devlv : row == 1 ? DM.kb : row == 2 ? DM.forms : row == 3 ? DM.smn : row == 4 ? DM.ab : row == 5 ? g_dbm_god : row == 6 ? g_dbm_clip : row == 7 ? g_dbm_sora : row == 8 ? g_outfit : row == 9 ? g_outfit_auto : 0; }  // (the camp page at open)
+static int dbm_state(int row) { return row == 0 ? SL.devlv : row == 1 ? DM.kb : row == 2 ? DM.forms : row == 3 ? DM.smn : row == 4 ? DM.ab : row == 5 ? g_dbm_god : row == 6 ? g_dbm_clip : row == 7 ? g_dbm_sora : row == 8 ? g_outfit : row == 9 ? g_outfit_auto : row == 10 ? g_pchar[0] : row == 11 ? g_pchar[1] : 0; }  // (the camp page at open)
 
 // ---- (s142 dbgexp) the real EXP snapshots
 static void dbm_forms_snap_(const char *why) {
@@ -275,6 +278,11 @@ static int dbm_set(int row, int val, const char *why) {
         dbm_persist();
         return val;
     }
+    if (row == 10 || row == 11) {  // (s217 riku / s220) Party 1 / 2: the character val in Donald's / Goofy's place; the one in force comes back
+        int slot = row - 10, c = party_swap(slot, val, why);
+        LOG("[dbgmenu] party: %s in %s's place (%s)%s\n", PCH_TAB[c].name, slot ? "Goofy" : "Donald", why, c != val ? " (refused: the [party] line says why)" : "");
+        return c;
+    }
     if (row == 9) {  // (s146 outfit)
         val = val != 0;
         if (val == g_outfit_auto) return val;
@@ -349,11 +357,12 @@ static int dbm_set(int row, int val, const char *why) {
 }
 
 static void dbm_log(const char *why) {
+    LOG("[dbgmenu] party: %s in Donald's place, %s in Goofy's (installed mask %#x)\n", PCH_TAB[g_pchar[0]].name, PCH_TAB[g_pchar[1]].name, party_have_mask());  // (s217 / s220)
     LOG("[dbgmenu] state (%s): become sora %d, outfit %d (%s), auto outfits %d (auto now %s), test level %d (real LV %d), keyblades %d, drive forms %d, summons %d, god %d, no clip %d (speed %.1f), all abilities %d (AP %d/%d) (owned: Chicken %d Stitch %d Genie %d PeterPan %d)\n",
         why, g_dbm_sora, g_outfit, OF_NAME[g_outfit], g_outfit_auto, OF_NAME[OF.auto_now], SL.devlv, SL.lv, DM.kb, DM.forms, DM.smn, g_dbm_god, g_dbm_clip, g_dbm_clip_spd, DM.ab, ab_used(AB.on), ab_ap_max(), smn_owned_def(0), smn_owned_def(1), smn_owned_def(2), smn_owned_def(3));
 }
 static void dbm_all_off(const char *why) {
-    for (int r = 9; r >= 0; r--) dbm_set(r, 0, why);  // (s146: + Become Sora / Outfit / Auto Outfits)
+    for (int r = 11; r >= 0; r--) dbm_set(r, r >= 10 ? PCH_HOME[r - 10] : 0, why);  // (s146: + Become Sora / Outfit / Auto Outfits; s217 / s220: + Party 1 / 2 = Donald / Goofy)
 }
 // "set debugall 1 / 2" is about to snapshot the live values: the level, Keyblade and Drive Form toggles go back first
 static void dbm_pre_debugall(void) {
@@ -435,6 +444,9 @@ static bool dbm_set_key(const char *key, int v) {
     else if (!strcmp(key, "dbmsora")) dbm_set(7, v, "live set dbmsora");  // (s146 outfit)
     else if (!strcmp(key, "dbmoutfit")) dbm_set(8, v, "live set dbmoutfit");
     else if (!strcmp(key, "dbmautoout")) dbm_set(9, v, "live set dbmautoout");
+    else if (!strcmp(key, "dbmparty")) dbm_set(10, pchar_of_pick(v), "live set dbmparty");  // (s217 riku: 0 Donald, 1 Riku)
+    else if (!strcmp(key, "dbmparty1")) dbm_set(10, v, "live set dbmparty1");  // (s220: character id in Donald's place)
+    else if (!strcmp(key, "dbmparty2")) dbm_set(11, v, "live set dbmparty2");  // (s220: ... in Goofy's place)
     else if (!strcmp(key, "dbmcold")) g_of_cold = v < -1 ? -1 : v, LOG("[outfit] dbmcold %d (%s)\n", g_of_cold, g_of_cold == -1 ? "snow weather" : g_of_cold == 0 ? "never cold" : g_of_cold == 1 ? "always cold" : "climate id = value - 2");
     else if (!strcmp(key, "dbmofres")) g_of_reserve = v < 0 ? 0 : v, LOG("[outfit] draw actors an outfit leaves free: %d\n", g_of_reserve);
     else if (!strcmp(key, "dbmclipspd")) g_dbm_clip_spd = v > 0 ? (float)v : 0, LOG("[dbgmenu] no clip speed %d u/s (0 = KH2 run speed)\n", v);

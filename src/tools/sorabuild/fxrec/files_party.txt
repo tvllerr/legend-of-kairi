@@ -1,0 +1,6 @@
+# s223 rikufx: the party stand-ins' weapon effect sets (W_<xx>000.a.us: element 1 / 2 = hit sparks, 10 = swing ribbon)
+obj/W_EH000.a.us w_eh000
+obj/W_HE000.a.us w_he000
+obj/W_MU000.a.us w_mu000
+obj/W_AL000.a.us w_al000
+obj/W_CA000_HUMAN.a.us w_ca000_human

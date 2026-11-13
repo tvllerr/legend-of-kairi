@@ -1,5 +1,5 @@
 {
- "build_id": "f9088e2d0399c69c",
+ "build_id": "b1efd6e10b2f4f62",
  "files": {
   "forms/anti_hits_l.bin": {
    "sha256": "520fe47129b2b56c9c6d8e4816fe0bd0f0c9eee9338a08f1f998324aa7e5365e",
@@ -70,8 +70,8 @@
    "size": 51320
   },
   "forms/final_model.bin": {
-   "sha256": "33f54dc8f2dc551936f7e7c01822a5729c97222f57a75acca2d6f8d360675908",
-   "size": 8764492
+   "sha256": "a84bc6fbfbd17adc8060f9e494ce2db7af599d8203a9f8ffdf09b39ef60a5e68",
+   "size": 10523308
   },
   "forms/final_motion.bin": {
    "sha256": "d2358b4c12a3a4c068e2001ac5ed1aaac992e9ae5c0b3f96aa543d8c9d8fb4cc",
@@ -118,8 +118,8 @@
    "size": 43560
   },
   "forms/limit_model.bin": {
-   "sha256": "78ca7eb6d7c60043b65ed2053aa1d1211ce0196276607865a8a6a5dead84a94a",
-   "size": 4757128
+   "sha256": "22a97877ff78d31d034edf5be15303fb7c2a9eb418dc4b3fe5dc064d8f64837a",
+   "size": 5636536
   },
   "forms/limit_motion.bin": {
    "sha256": "c07ef1913c60230f90041438bd57e48a273e2fffbbdcda6f18b0a807e6cfbc90",
@@ -138,8 +138,8 @@
    "size": 21952
   },
   "forms/master_model.bin": {
-   "sha256": "67b12003b8d74c3dbb6f980912d1106cbaaa214c8d4c886c36df7d31a5a7683f",
-   "size": 8764492
+   "sha256": "19a886810985aa43eb8265a5eef255c5780b43d3473c7bb023c26f37e737f7e3",
+   "size": 10523308
   },
   "forms/master_motion.bin": {
    "sha256": "56a0ff724c1884abddd562a13da8c0cf931839aa358425ed9e5cac7b5363f586",
@@ -286,8 +286,8 @@
    "size": 20576
   },
   "forms/valor_model.bin": {
-   "sha256": "ce97c0f93e82cb4b62d59cfe0df0412a5e90db3c80172c4624da6835bdd0a664",
-   "size": 8764492
+   "sha256": "818071e419829484fa9b138f454a8488f0a6bdf2e3752458daab0d9e4b24c897",
+   "size": 10523308
   },
   "forms/valor_motion.bin": {
    "sha256": "bf23fb9f3c0a75a84fdd33bbe86c0d368ab53a32eef276daa575eef6652806d1",
@@ -298,8 +298,8 @@
    "size": 30276600
   },
   "forms/wisdom_model.bin": {
-   "sha256": "c7383d6461381ec7e1c5541cebd87c8463233b2bd4b7d4ff6777ca08a9d525d1",
-   "size": 4757128
+   "sha256": "f0720d890e9c390c7fec16246e7c821c2a23f5c4a30f0ef55f4ca9e3bc51db70",
+   "size": 5636536
   },
   "forms/wisdom_motion.bin": {
    "sha256": "262b053dc224e2ffa18b4dd00aba9f9d65c8b0b1157ece0dd7344c3833859910",
@@ -310,8 +310,8 @@
    "size": 33373816
   },
   "fx/fx.bin": {
-   "sha256": "114f54e0b4b053ac25e23885c535e480ee503847d58f67389a68c1ceb1d160fb",
-   "size": 1930887872
+   "sha256": "2b2340d6f5196a6539b04f79f289120154e43392ae34f739d87331d3170d369a",
+   "size": 1967789424
   },
   "gameover_pose.bin": {
    "sha256": "65a45284d1bbfc6326508c1c218a601d9f9cfc9877251e27221b47e9bd8f4d3f",
@@ -322,12 +322,12 @@
    "size": 6291508
   },
   "hud/camp_seq.bin": {
-   "sha256": "ab8c35be347e3c3891351a526459284078021c0e9db1a159d4645208a88549bc",
-   "size": 204401
+   "sha256": "fdb0fabbef58252db522f97ebdf193cfc4c4bfbe616709c076699492dba18b5c",
+   "size": 204549
   },
   "hud/camp_text.txt": {
-   "sha256": "a79d127bdb71deaaf71ea6b7e2c8857bb7b626b1d7fcf0ff51a5d3a5655e2688",
-   "size": 10360
+   "sha256": "07c8a27486f07df2d72b0e408f0762ce1f7f998e06ec647a57a52bba231d5995",
+   "size": 10749
   },
   "hud/cmd.bin": {
    "sha256": "b17c4dfb30b4d14bd29afed6a8a4342a8b617377b851ed267ecc7ab1fa9898e4",
@@ -346,24 +346,24 @@
    "size": 2687024
   },
   "hud/itempic.bin": {
-   "sha256": "b7f1192dbbae80da5ba7bea4b8b7027f6940dbb0edd6fa110a6825b8c1c99a08",
-   "size": 6291768
+   "sha256": "460ff67ff57f3e2010ad80497b2d66fa55cc37887627199a28ea986ec166272e",
+   "size": 7864656
   },
   "hud/lock.bin": {
    "sha256": "95b0a354bab34deea6474e1e4db8bc78b4e6d8ec4657ba948b9d1b8e9835a738",
    "size": 4264920
   },
   "hud/lvup.bin": {
-   "sha256": "012df583a9d34a3a7a41c5c7680d0d3d3a6d4af9c07f605653c44e1384e66fbf",
-   "size": 15174080
+   "sha256": "247cb8f467f0646a4e5d1110bdcb7dfd30190c85e803937db8b8140ee855d850",
+   "size": 15452656
   },
   "hud/mkface.bin": {
    "sha256": "3ac5e89fb1237dbc30115a88479367b8fc448d4cb4c59c41350f2f8ad435df71",
    "size": 589840
   },
   "hud/party.bin": {
-   "sha256": "e53f342b0835e022f79b66579d84a65bfb2f60015bf623d6efcbf51013f73f01",
-   "size": 453424
+   "sha256": "c68ecf13096d85dbe82ad3d0bdea33dc75045c7c9db782955968c7b2b7ccf0ad",
+   "size": 1338184
   },
   "hud/roxface.bin": {
    "sha256": "4946d0e204f03e301a7264e9d808732c1dbf3a6ebd847d09c499b3766203abb3",
@@ -390,116 +390,164 @@
    "size": 775712
   },
   "outfits/nm_final_model.bin": {
-   "sha256": "daa5ab0a79c018681f07521c5748251bdfe31ebb0e90efe6721476f6eadf7733",
-   "size": 8789888
+   "sha256": "6fbf497a950da95830d587f4600626636c308e590cf2252df0f3fcf78c48dd31",
+   "size": 10548704
   },
   "outfits/nm_limit_model.bin": {
-   "sha256": "cfdce0390aa3f3d6764fd4d7aedc2d91567d1e26ef85f73ac3c541c52387cf79",
-   "size": 4784156
+   "sha256": "6fab69b8c5ad471a8d00b6ae5629a162701a70f09feb093b40797dfdb4116498",
+   "size": 5663564
   },
   "outfits/nm_master_model.bin": {
-   "sha256": "a68fdc31494d3c7261225149d3c7c5a017ecd06edf1d4d1fcc0c35c81bc89e09",
-   "size": 8792184
+   "sha256": "5dccf31885ac348c864524e47ebb0639f74c70ebafa29036389bddd0087141a3",
+   "size": 10551000
   },
   "outfits/nm_sora_model.bin": {
-   "sha256": "7dc85d4d43b1ff2dd1d5403ff412d331f8b929c9c39f92ecc0f5a849a9eccf24",
-   "size": 4782572
+   "sha256": "aecc35bfce2ad4179f5b71547ff35b2d0cde0b18f65a54fbe725257bd2b38de8",
+   "size": 5661980
   },
   "outfits/nm_valor_model.bin": {
-   "sha256": "3908b580a6bcf2abf898bc2ec5ed7e63a15c9258998f57055e9a05149ba99c82",
-   "size": 8792088
+   "sha256": "410857b8d2f99b9d6ed86ea82f47f007c8d9c4a2d72f9b3f487f5169c6b386dd",
+   "size": 10550904
   },
   "outfits/nm_wisdom_model.bin": {
-   "sha256": "335ffe5e510b1fc79abf4d9d3aff20f9ca8eabc333510478731caaad4fc9c3ef",
-   "size": 4782332
+   "sha256": "78cb7d9e025476ace22f42c189ceceacdf38b75a4ee3b0a3b957c8e8597d9fdf",
+   "size": 5661740
   },
   "outfits/tr_anti_model.bin": {
    "sha256": "050ec984712771f70d29a765ce831618e0d7122dc9ba76cb487eb9cf7c3266ed",
    "size": 1022300
   },
   "outfits/tr_final_model.bin": {
-   "sha256": "9c9e6e26f67f1e40b0291a75ce90e1e4e45a4615b162c895e550a812f9bfca66",
-   "size": 9037028
+   "sha256": "e6a48c0ea88140d539593a26c2ffa5546aed3fd10410fc2766b38088782138aa",
+   "size": 10795844
   },
   "outfits/tr_limit_model.bin": {
-   "sha256": "08a5df9969a4a13e963b11a58ed8db29f51cf2706764a332ffd03aef97867be0",
-   "size": 5029664
+   "sha256": "e74e8bf5fc52d674c7d8f77a85b50949789e87cddddcc8cc8b50dbd4f75afaba",
+   "size": 5909072
   },
   "outfits/tr_master_model.bin": {
-   "sha256": "4972fa15afef94bff3cfe9d81f86ddcbda904dbd10481facc1c72d1376fb861f",
-   "size": 9037028
+   "sha256": "764e12ecbeb994d6f00a9a9e456f636cb61695a663cd7c452f5cf8c4b22df7f1",
+   "size": 10795844
   },
   "outfits/tr_sora_model.bin": {
-   "sha256": "4d0c09e8a9aec50d53a383e9005117b21820eb2aee32170280ac814e7d87426d",
-   "size": 5029664
+   "sha256": "41839678e916e40a6d25b2a52853a59c5d9d6f5aac3070422572d3f705e7ab50",
+   "size": 5909072
   },
   "outfits/tr_valor_model.bin": {
-   "sha256": "5626f5ea9d59fc666d6362e0364a6db5bf8239dba9d6973acbb9aa59d24634f6",
-   "size": 9037028
+   "sha256": "3ed9c62ad7798fb1f4cf01240e99a5dca314c22a85e08ddb9b79f3f5b0f265d5",
+   "size": 10795844
   },
   "outfits/tr_wisdom_model.bin": {
-   "sha256": "8d2e1f82de4562c93b7d8b732cbbfd58864fd6d3b67532dfd821dfd9a9586265",
-   "size": 5029664
+   "sha256": "79854c3806be6c9e1612dc7ad97bb690a1c9a0c6271689a8d3de5d5b446735bc",
+   "size": 5909072
   },
   "outfits/wi_anti_model.bin": {
    "sha256": "430af2f32fe7e9d2abe98349a57959d7ae8180eb75c4bc3ce86348e3b79d8292",
    "size": 711516
   },
   "outfits/wi_final_model.bin": {
-   "sha256": "295b6e77bb29dd8d901e136ca0e88b25d67c580c70e8e811cbc984f43fb53b0f",
-   "size": 8726244
+   "sha256": "83d6bcb71b1ad4399942e3dabd82089e66375f38495533f2ddb5532aee507541",
+   "size": 10485060
   },
   "outfits/wi_limit_model.bin": {
-   "sha256": "8cc3620c15e985fed041a0df2f8c4919d4d8dbde9f9ed12c49138d556e963fa8",
-   "size": 4718880
+   "sha256": "35a2c7b2c0034b1bf559e76f83e963918284b5005fdf269a35ed68c72adc36f4",
+   "size": 5598288
   },
   "outfits/wi_master_model.bin": {
-   "sha256": "295b6e77bb29dd8d901e136ca0e88b25d67c580c70e8e811cbc984f43fb53b0f",
-   "size": 8726244
+   "sha256": "83d6bcb71b1ad4399942e3dabd82089e66375f38495533f2ddb5532aee507541",
+   "size": 10485060
   },
   "outfits/wi_sora_model.bin": {
-   "sha256": "8cc3620c15e985fed041a0df2f8c4919d4d8dbde9f9ed12c49138d556e963fa8",
-   "size": 4718880
+   "sha256": "35a2c7b2c0034b1bf559e76f83e963918284b5005fdf269a35ed68c72adc36f4",
+   "size": 5598288
   },
   "outfits/wi_valor_model.bin": {
-   "sha256": "295b6e77bb29dd8d901e136ca0e88b25d67c580c70e8e811cbc984f43fb53b0f",
-   "size": 8726244
+   "sha256": "83d6bcb71b1ad4399942e3dabd82089e66375f38495533f2ddb5532aee507541",
+   "size": 10485060
   },
   "outfits/wi_wisdom_model.bin": {
-   "sha256": "8cc3620c15e985fed041a0df2f8c4919d4d8dbde9f9ed12c49138d556e963fa8",
-   "size": 4718880
+   "sha256": "35a2c7b2c0034b1bf559e76f83e963918284b5005fdf269a35ed68c72adc36f4",
+   "size": 5598288
   },
   "outfits/xm_anti_model.bin": {
    "sha256": "25ffbd521f0e3fa0f673c80da1f31ae367c528a47cfc74b341cc9e6c965bfb21",
    "size": 724736
   },
   "outfits/xm_final_model.bin": {
-   "sha256": "2b9b2377a0d7f4125b0a3478f52f3d2befdf15779a7ff4caf7b756867879ea18",
-   "size": 8739368
+   "sha256": "c59d709280e849721fa2a831e9a41f4aac4f9f3d3a6152fc00ced45700411bc7",
+   "size": 10498184
   },
   "outfits/xm_limit_model.bin": {
-   "sha256": "f37964de4b4c226cd281b6c69bf23c2f9612f306ad541efd50c58788106b7486",
-   "size": 4732004
+   "sha256": "e0cc6efd086b73eada494975d9895d532368c78d6a17155ebfb3ce9838b66117",
+   "size": 5611412
   },
   "outfits/xm_master_model.bin": {
-   "sha256": "4ed904fdefc187e9a3acc5ee0dd386041a094362b271231ed9692e97f66bb02e",
-   "size": 8739368
+   "sha256": "45cf704e336d699decbbd8e95c4706911af2c5aaf4415ce15bc75d871e8b259a",
+   "size": 10498184
   },
   "outfits/xm_sora_model.bin": {
-   "sha256": "b948a3064f285da1ee6a9311b9785a1341de37c75038e0bee555dfabfb3ef270",
-   "size": 4732004
+   "sha256": "539bec1112e338076154895b2376c00beb63e34ddb4e03edb88c46bc954c9dcc",
+   "size": 5611412
   },
   "outfits/xm_valor_model.bin": {
-   "sha256": "641906ada33801082d4b9d9e8ae0f748e8210658a8970214f7558419511df21a",
-   "size": 8739368
+   "sha256": "5091445042b7b5101cd4d36a64f4b559d00631e1346c0c7307d2fa90f210c2ab",
+   "size": 10498184
   },
   "outfits/xm_wisdom_model.bin": {
-   "sha256": "af3a208117a6324785daf7e2fd1910bf3b24e1ff43e61040068e3e12970f7703",
-   "size": 4732004
+   "sha256": "433bc5e56a991ceaefe4f528a389700de0f3806260bb56a8334ebd6c57ca4edc",
+   "size": 5611412
   },
   "overlay/Pack/Title.pack": {
    "sha256": "91e3b13e71e4e1fb728904e28fd32836011072ccda57bbd277db146270245f4d",
    "size": 4851009
+  },
+  "party/aladdin_hits.bin": {
+   "sha256": "da42b3949c56f394c5efec96ec2e95127c4e98d5757e4de5e22d658ec87c3d29",
+   "size": 9712
+  },
+  "party/aladdin_model.bin": {
+   "sha256": "a1801e3a65126edca58cbd9a422c1eee52fc9a3ec795cc0719f2ba92839cf4a6",
+   "size": 757584
+  },
+  "party/aladdin_motion.bin": {
+   "sha256": "929c8ebe34558f4fc78b905384db67194dec4a99f7338364491d69332a98606a",
+   "size": 19840
+  },
+  "party/aladdin_pose.bin": {
+   "sha256": "2f89e7383c42930ea0077fa3154f7d15be1376e773fa05632ea2c74be3c844b8",
+   "size": 29050928
+  },
+  "party/auron_hits.bin": {
+   "sha256": "5bc0ce93f16500859e1a059afffb9afb50f7fc1e549f621775dc702304328249",
+   "size": 18904
+  },
+  "party/auron_model.bin": {
+   "sha256": "ab4a008d1835ef543e763fcd7f08b64b98c88dc2e85198a8e59d2507595f4918",
+   "size": 986444
+  },
+  "party/auron_motion.bin": {
+   "sha256": "ff876564496bacada444b71f2fb73c82ebd795f7e23efe986fb52e433b213b22",
+   "size": 25400
+  },
+  "party/auron_pose.bin": {
+   "sha256": "d69ad6babe5065afc1148aa67270771a24aa722ef82287816806826031cef0b6",
+   "size": 28867880
+  },
+  "party/cloud_hits.bin": {
+   "sha256": "a07612a3cc2caf92b3e65f5c3124519b529e2bc9abb9e8d4c7dfe93de111e46e",
+   "size": 5200
+  },
+  "party/cloud_model.bin": {
+   "sha256": "6bf7ad9f0ad609f89e5e231b23f4003900e645c761f86dd3d64591883d0a4e90",
+   "size": 1112580
+  },
+  "party/cloud_motion.bin": {
+   "sha256": "62cb042b1582dc08d45f58a147c303e84e1758fe944528e9ed0679506b9ecca4",
+   "size": 9400
+  },
+  "party/cloud_pose.bin": {
+   "sha256": "109192d34531814a2cc9250f1d72bd054320797c7fcf2a0cc8cc97523ec919cb",
+   "size": 5764592
   },
   "party/donald_hits.bin": {
    "sha256": "3a2b8136f423887bdeb4a53c3e399aef2ff05673536a548a57ca742a23e74ea6",
@@ -537,6 +585,54 @@
    "sha256": "d6f0f182dd820ceb996bc64d0e83bf1a9087723980ad202efb2e56ef18699630",
    "size": 4056
   },
+  "party/mulan_hits.bin": {
+   "sha256": "4489f0052f518ef0f2d3f1a9e66d81109b2fa461451b009ba841b350cb414f01",
+   "size": 12000
+  },
+  "party/mulan_model.bin": {
+   "sha256": "099e6762d45ae3436e3ed5b05b3ddde97b2cd2c562504f4941810a8947a4d85d",
+   "size": 703156
+  },
+  "party/mulan_motion.bin": {
+   "sha256": "cb3011f6b63fdcd343a4b1373aab35173d2f348e8b11aa1d63d9d8bce3654da1",
+   "size": 21672
+  },
+  "party/mulan_pose.bin": {
+   "sha256": "34f0628e892f37c7162d016b95853491df9696afb1acf0db3cc2f800cb534839",
+   "size": 30860888
+  },
+  "party/riku_hits.bin": {
+   "sha256": "7214ec835c7b905bd68c7a1267f1a5ea5919b9c792950040e2bf3cc834f56c17",
+   "size": 13312
+  },
+  "party/riku_model.bin": {
+   "sha256": "bce9bc0c1ad2dc4750c2db61ccb1b15492361e7d58ba92e632a86eee0e784665",
+   "size": 1025956
+  },
+  "party/riku_motion.bin": {
+   "sha256": "43d235c9f773f2f6f1a728748222df85714022be3152dfdcff84125ca7983dff",
+   "size": 26200
+  },
+  "party/riku_pose.bin": {
+   "sha256": "00c047e48cf0ef382378b8fd2e80b6699467bc8673a5a9d2d1aaa061ff31dd26",
+   "size": 28949560
+  },
+  "party/sparrow_hits.bin": {
+   "sha256": "4776712f10b31b3c374300227cc82927f51c40bf82270f9929f8dbe5bef8f1db",
+   "size": 30968
+  },
+  "party/sparrow_model.bin": {
+   "sha256": "68e4d1c3089d4dfd51ebf6b9f8fb96fa87343dbc14482557022cf9927cba8b0a",
+   "size": 1478420
+  },
+  "party/sparrow_motion.bin": {
+   "sha256": "bd768429e88589b271b589e39f826cecf0d0e29f0d3314c3155937e7c3ee1ae0",
+   "size": 34720
+  },
+  "party/sparrow_pose.bin": {
+   "sha256": "bb50ee8d339cc18f040a0f89476a1debae1426009c7db68f7c445f0d4f4c8ae6",
+   "size": 38419552
+  },
   "ragmap/mickey.bin": {
    "sha256": "8051fe8e4c0ca4bda68b29d04434ff7d5c11bdc7d4438a9f7843d279af860ac8",
    "size": 3244
@@ -554,16 +650,16 @@
    "size": 635308
   },
   "sfx/sfx.bin": {
-   "sha256": "c3c5419bc458d2c3e4ec39e79687acf43147c7e19aeb3b7902d308ea00f4af47",
-   "size": 116420716
+   "sha256": "b757541368047ec494b6ad46c789762f18cbdbb1d7ef8e3088f5076c0bccc31a",
+   "size": 129359992
   },
   "sora_hits.bin": {
    "sha256": "67624782f927bf0159b32f60a83900b8dd7132f75639f4a52ef6adc7b04fb99c",
    "size": 48320
   },
   "sora_model.bin": {
-   "sha256": "1949fe8fb7e5aed7f566c72c56919893f80694786cba74959a26e859dcba748f",
-   "size": 4757128
+   "sha256": "f4ce5cbb46bb200843910a81b8f3c7789e1fc282b9c19a83e3bbf88f5a38d9a5",
+   "size": 5636536
   },
   "sora_motion.bin": {
    "sha256": "c0c54b07afd6eef1addeb6290d616d9c7734f08ac546ee9831e2f897c978dc6d",

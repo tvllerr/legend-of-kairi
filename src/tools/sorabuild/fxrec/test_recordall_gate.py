@@ -9,9 +9,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recordall
 
 
-def run(order, jobs, free=lambda: 16000, grow=0.6, secs=0.3):
+def run(order, jobs, free=lambda: 16000, grow=0.6, secs=0.3, **kw):
     """order: string like 'LHLLHHL'; returns [(name, heavy, t0, t1)]"""
     g = recordall.Gate(free, grow_s=grow, poll=(0.02, 0.05), log=lambda m: None)
+    for k, v in kw.items():     # (set after, so an old Gate without the field hangs = the test fails on the behaviour)
+        setattr(g, k, v)
     rows, lk = [], threading.Lock()
 
     def job(it):
@@ -64,6 +66,29 @@ def main():
     lowuntil = time.time() + 0.5
     rows = run("LL", 2, free=lambda: 1000 if time.time() < lowuntil else 8000)
     assert min(r[2] for r in rows) >= lowuntil - 0.01, "started with low RAM"
+    # s224: RAM stays low (held by something else) and nothing of ours runs -> a file starts after idle_wait, one at a time
+    # (before s224 this waited forever: the setup hung on "waits for 4 GB free RAM")
+    box = []
+    th = threading.Thread(target=lambda: box.append(run("LLL", 2, free=lambda: 1000, grow=0.05, idle_wait=0.3)), daemon=True)
+    t = time.time()
+    th.start()
+    th.join(20)
+    assert box, "hung with low RAM and nothing running (no idle_wait)"
+    rows = box[0]
+    assert len(rows) == 3 and min(r[2] for r in rows) >= t + 0.29, "started before idle_wait"
+    assert not any(overlap(a, b) for a in rows for b in rows if a is not b), "low RAM: two files ran at once"
+    # s226 (review G7): the long idle wait is paid once; the files after the first forced start wait only idle_wait_after
+    box = []
+    th = threading.Thread(target=lambda: box.append(run("LLLL", 2, free=lambda: 1000, grow=0.05, secs=0.1, idle_wait=1.5,
+                                                        idle_wait_after=0.05)), daemon=True)
+    t = time.time()
+    th.start()
+    th.join(30)
+    assert box, "hung with low RAM (idle_wait_after)"
+    rows = sorted(box[0], key=lambda r: r[2])
+    assert len(rows) == 4 and rows[0][2] >= t + 1.49, "the first file started before idle_wait"
+    assert all(b[2] - a[3] < 1.0 for a, b in zip(rows, rows[1:])), "a later file paid the long idle wait again"
+    assert not any(overlap(a, b) for a in rows for b in rows if a is not b), "low RAM: two files ran at once (after)"
     # list parsing
     import tempfile
     with tempfile.TemporaryDirectory() as d:
@@ -73,4 +98,8 @@ def main():
     print("PASS")
 
 
-main()
+try:
+    main()
+except AssertionError as e:      # exit at once: a hung Gate leaves pool threads that would keep the process alive
+    print("FAIL:", e, flush=True)
+    os._exit(1)

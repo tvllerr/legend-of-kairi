@@ -13,6 +13,8 @@ const F = (name, ...a) => { try { return window.Feel && Feel[name] ? Feel[name](
 let DEMO_T0 = null;   // (s185) the fake install waits on the setup screen until Install is pressed; pressed again = it starts over
 let demoSfx = null;
 const DEMO_END = new URLSearchParams(location.search).get("demo_end");   // (s185 polish) DEV only: failed | cancelled = the fake install ends that way at 15 s
+// (s186) DEV only: &demo_from=21 = pressing Install starts the fake install 21 s in (to show only the end: the last fill + done)
+const DEMO_FROM = +(new URLSearchParams(location.search).get("demo_from") || 3);
 function demoState() {
   const t0 = DEMO_FREEZE !== null ? Math.min(28, +DEMO_FREEZE) : DEMO_T0 === null ? 0 : Math.min(28, (performance.now() - DEMO_T0) / 1000);
   const stopAt = DEMO_END === "failed" || DEMO_END === "cancelled" ? 15 : 99, t = Math.min(t0, stopAt);
@@ -31,10 +33,10 @@ function demoState() {
     upd: { path: "", ok: false, msg: "" }, disk: { free: 200, need: 40, ok: true }, phases, frac: status === "setup" ? 0 : run,
     elapsed: Math.max(0, t - 3) * 36, eta: status === "running" ? Math.round((1 - run) * 900) : null, build_id: "demo",
     error: status === "failed" ? "Some files did not come out right; press Install again to rebuild them. (2 file(s): fx/kh2_fx.bin, sora_model.bin)" : "",
-    launchers: status === "done" ? { solo: true } : {}, seq: 0, lines: [], sw_version: "0.4.1" };
+    launchers: status === "done" ? { solo: true } : {}, seq: 0, lines: [], sw_version: "0.5.3-alpha.5" };
 }
 async function api(path, body) {
-  if (DEMO && path === "/api/install") { DEMO_T0 = performance.now() - 3000; return {}; }
+  if (DEMO && path === "/api/install") { DEMO_T0 = performance.now() - Math.max(3, Math.min(27, DEMO_FROM)) * 1000; return {}; }
   if (DEMO && path !== "/api/open") {   // (s185) the Open buttons are real in the demo too; Play / desktop shortcut fake success ({})
     if (!path.startsWith("/api/state")) return {};
     if (demoSfx === null) {             // the sounds are real in the demo: ask the server once whether they exist
@@ -61,6 +63,7 @@ async function poll() {
     seq = st.seq;
     const was = S && S.status, busy = ["running", "verifying"];
     S = st;
+    if (st.melty) view = "run";   // (s213) Melty's setup (melty-setup/build.py): only the progress screen, nothing to press
     if (window.kairiSfx) kairiSfx.onState(st);   // s184 menu sounds
     // an install started any other way (API call, resume) must show the progress screen too
     if (DEMO && st.status !== "setup" && !was) view = "run";
@@ -155,7 +158,9 @@ function renderSetup() {
   F("ptr");     // (s185) the menu pointer follows the selected row
 }
 
-const SHORT = { copy: "Program files", kh2: "KH2 files", bakes: "Characters", fxrec: "Effects", fx: "Effect packs", other: "HUD + sounds", verify: "Checking files", game: "Game setup" };
+const SHORT = { copy: "Program files", kh2: "KH2 files", bakes: "Characters", fxrec: "Effects", fx: "Effect packs", other: "HUD + sounds", verify: "Checking files", game: "Game setup",
+  // (s213) Melty's setup stages (melty-setup/build.py STAGES)
+  files: "Game files", code: "Game code", shaders: "Shaders", sora: "Sora's data", check: "Checking Sora's data", recheck: "Checking Sora's data" };
 const pct = (f) => Math.round(Math.min(1, Math.max(0, f)) * 100);
 function nowPhase() {   // the running phase that is furthest behind (several run at once), else the first running one
   const run = S.phases.filter((p) => p.state === "run");
@@ -165,6 +170,19 @@ function nowPhase() {   // the running phase that is furthest behind (several ru
 
 let scrolledTo = "";
 const PRETTY = (n) => n.replace(/^(form|summon|party|fxsfx|fx|sfx|hud)_/, "").replace(/_/g, " ");
+
+function renderMelty() {   // (s213) Melty runs this setup: the same progress screen, no buttons, its own words
+  const s = S.status, running = s === "running";
+  $("run-title").textContent = { running: "Setting up Legend of Kairi", done: "Legend of Kairi is ready", failed: "The setup stopped" }[s] || "Setting up Legend of Kairi";
+  document.title = "Legend of Kairi - setting up";   // (no "installing": the window program asks before closing only then)
+  $("run-lead").textContent = s === "done" ? "Melty starts the game now."
+    : s === "failed" ? "Melty shows what went wrong. Press Play in Melty to try again: it carries on where it stopped."
+    : "Melty is setting up Legend of Kairi from your own games. You can keep using your PC. This window closes by itself " +
+      "when the game starts, and closing it does not stop the setup.";
+  document.querySelector("#s-run .actions").style.display = "none";
+  $("log").hidden = true;
+  $("ver").textContent = S.version ? "Version " + S.version : "";
+}
 
 function renderRun() {
   const s = S.status;
@@ -244,6 +262,7 @@ function renderRun() {
   $("err").textContent = S.error;
   $("b-cancel").hidden = !running;
   $("b-back").hidden = running;
+  if (S.melty) renderMelty();
 }
 
 // ------------------------------------------------------------------ events
@@ -288,7 +307,7 @@ document.querySelectorAll(".rows .row").forEach((r) => {
   r.addEventListener("mouseenter", sel);
   r.addEventListener("focus", sel);
 });
-window.addEventListener("beforeunload", (e) => { if (S && ["running", "verifying"].includes(S.status)) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("beforeunload", (e) => { if (S && !S.melty && ["running", "verifying"].includes(S.status)) { e.preventDefault(); e.returnValue = ""; } });   // (s213) Melty's: closing never stops it
 
 let creditsLoaded = false;
 async function loadCredits() {
@@ -813,7 +832,8 @@ function tick() {
     try { frame(now); } catch (e) { console.error(e); }     // (s184 review) one bad frame must not stop the background for good
     if (smooth) { tick(); return; }
     const spent = performance.now() - t0;
-    const fps = calm || !document.hasFocus() ? (busy ? FPS_AWAY_BUSY : FPS_AWAY) : (busy ? FPS_BUSY : FPS_MENU);
+    const m = busy && S.melty;   // (s213) Melty's setup: lighter still (12 a second in front, 4 behind), the setup's work comes first
+    const fps = calm || !document.hasFocus() ? (busy ? (m ? 4 : FPS_AWAY_BUSY) : FPS_AWAY) : (busy ? (m ? 12 : FPS_BUSY) : FPS_MENU);
     setTimeout(tick, Math.max(1, 1000 / fps - spent));
   });
 }

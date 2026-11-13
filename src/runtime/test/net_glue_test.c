@@ -130,6 +130,10 @@ static void queue_hit(uint32_t hid, int dealt, int after, int kill) {
     e->hid = hid, e->dealt = dealt, e->after = after, e->kill = kill, e->f54 = 15, e->f40 = 1;
     snprintf(e->name, sizeof e->name, "Enemy_Test");
 }
+// (s197) kill sync's world / exe hooks: sora_world_open (1 open world, 0 not, -1 not known) and linkpos_edmg_reset
+static int g_open_v = 1, g_reset_calls, g_reset_ret = 3, g_reset_kills = 2;
+static int fake_open(void) { return g_open_v; }
+static int fake_reset(int *kills) { g_reset_calls++; if (kills) *kills = g_reset_kills; return g_reset_ret; }
 
 // (s168 v7) fake enemy-sync exe
 static int g_es_enum, g_es_brain_last = -1, g_es_brain_n, g_es_apply_n, g_es_sens_n;
@@ -144,11 +148,17 @@ static void reset_all(void) {
     memset(&NETES, 0, sizeof NETES), NETES.bound = true;
     NETES.c.io = (EsIface){es_enum, es_read, es_pup, es_brn, es_evs, es_sns};
     g_net_esync = g_net_esynclog = false, g_es_enum = g_es_brain_n = g_es_apply_n = g_es_sens_n = 0, g_es_brain_last = -1;
-    memset(&NETED, 0, sizeof NETED), NETED.bound = true, NETED.take = fake_take, NETED.apply = fake_apply;
+    memset(&NETED, 0, sizeof NETED), NETED.bound = true, NETED.take = fake_take, NETED.apply = fake_apply, NETED.reset = fake_reset;
     memset(&NETF, 0, sizeof NETF), g_net_fire = true, g_net_fire_en = false, g_net_fire_log = false, g_nfr = g_fr_ret = 0;
     g_nfq = g_nap = 0, g_ap_ret = 1, g_net_edmg = true, g_net_edmg_log = false;
+    g_open_v = 1, g_reset_calls = 0;  // (s197)
     memset(g_fx_gen, 0, sizeof g_fx_gen), memset(g_fx_live, 0, sizeof g_fx_live), memset(g_kills, 0, sizeof g_kills);
     g_nkill = g_drops = 0, g_log[0] = 0;
+    memset(&NETR, 0, sizeof NETR), g_net_react = false;  // (s194)
+    g_net_eshit = g_net_esdead = false, g_net_eshitms = ES_HIT_HOLD_MS;  // (s195)
+    memset(&NETK, 0, sizeof NETK), NETK.bound = true, g_net_kills_log = false;  // (s196: no hooks unless a test sets them)
+    NETK.open_fn = fake_open;  // (s197 S2: the open world, as in normal play; a test about shrines / no world says so)
+    g_net_kills = NET_KILLS_DEFAULT;  // (s197: the compiled default, ON, in every test, as after a DLL load; a test about killsync 0 says so)
 }
 
 static void test_rfx_seq_wrap(void) {
@@ -1009,6 +1019,1105 @@ static void test_esync_glue(void) {
     net_set_on(false);
 }
 
+// (s191, Melty spec 4.1) who takes part in the enemy election (net_esync_tick): a peer is a player while his SNAPs come (PEER_LIVE)
+// and his last SNAP is not NF_LOADING, at the feet of that SNAP. Over UDP the SNAP has no area: a peer in a shrine IS a player, at
+// his shrine-local feet (shrine / Divine Beast interiors sit near the world origin) unless his NET_AREA says another map (task 2:
+// then "away", test_area_filters). A peer whose SNAPs stop (as when a Melty room hides a player of another area) fades after
+// NET_FADE_MS and is no player any more.
+static void test_esync_players_area(void) {
+    reset_all();
+    NET.on = true, NET.have_feet = true, NET.me = 5, snprintf(NET.name, sizeof NET.name, "Alpha");
+    g_net_esync = true;
+    float feet[3] = {0, 0, 0};
+    uint64_t T0 = 100000;
+    NetPeerSlot *sl = &NET.slot[0];
+    sl->used = true;  // (ip 0: no destination, nothing is sent)
+    peer_on_hello(&sl->p, 77, "Zed", T0);
+    NetSnap sn;
+    memset(&sn, 0, sizeof sn);
+    sn.player = 77, sn.seq = 1, sn.feet[0] = 48, sn.feet[1] = 6, sn.feet[2] = 3;  // (inside Vah Ruta: its start point, s190 log)
+    CHECK(peer_on_snap(&sl->p, &sn, T0));
+    net_esync_tick(feet, T0);
+    int zi = es_pidx(&NETES.c, 77);
+    CHECK(NETES.c.np == 2 && zi >= 0 && NETES.c.pl[zi].pos[0] == 48 && NETES.c.pl[zi].pos[2] == 3);
+    sn.seq = 2, sn.flags |= NF_LOADING;  // his loading screen (leaving the beast): not a player
+    peer_on_snap(&sl->p, &sn, T0 + 50);
+    net_esync_tick(feet, T0 + 50);
+    CHECK(NETES.c.np == 1 && es_pidx(&NETES.c, 77) < 0);
+    sn.seq = 3, sn.flags = 0, sn.feet[0] = 1500, sn.feet[2] = -2000;  // back in the world: a player again, at the new map's place
+    peer_on_snap(&sl->p, &sn, T0 + 100);
+    net_esync_tick(feet, T0 + 100);
+    zi = es_pidx(&NETES.c, 77);
+    CHECK(NETES.c.np == 2 && zi >= 0 && NETES.c.pl[zi].pos[0] == 1500);
+    peer_tick(&sl->p, T0 + 100 + NET_FADE_MS + 1);  // his SNAPs stop: fading = no player
+    net_esync_tick(feet, T0 + 100 + NET_FADE_MS + 1);
+    CHECK(sl->p.st == PEER_FADING && NETES.c.np == 1 && es_pidx(&NETES.c, 77) < 0);
+    es_release_all(&NETES.c);
+    NET.on = false;
+}
+
+// ---- (s191 task 2, spec 4.1) NET_AREA: who is on which map ----
+static int count_in_log(const char *s) {
+    int c = 0;
+    for (const char *p = strstr(g_log, s); p; p = strstr(p + 1, s)) c++;
+    return c;
+}
+static uint16_t g_fire_seq = 50, g_area_seq = 100;
+static int fire_from_zed(void) {  // a Fire Zed cast inside Vah Ruta (its start point, the last tick, bursts on) -> fire calls made here
+    NetFireEnt e = {{48, 6, 3}, 260, 130, NFRF_LAST | NFRF_BURST};
+    uint8_t pk[NET_PKT_MAX];
+    int n = net_pack_fire(77, g_fire_seq++, &e, 1, pk, sizeof pk), was = g_nfr;
+    NETF.rx_left = NET_FIRE_RX_FRAME;
+    net_fire_recv(0, pk, n);
+    return g_nfr - was;
+}
+static void area_from_zed(const char *a, uint64_t now) {
+    uint8_t pk[NET_PKT_MAX];
+    net_area_recv(0, pk, net_pack_area(77, g_area_seq++, a, pk, sizeof pk), now);
+}
+static int players_now(uint64_t now) { float f[3] = {0, 0, 0}; net_esync_tick(f, now); return NETES.c.np; }
+static int zed_away(void) { int i = es_pidx(&NETES.c, 77); return i < 0 ? -1 : NETES.c.pl[i].away; }  // (-1 = no player)
+// a slot with Zed in it (live, one SNAP at his feet), we are Alpha on `mine`
+static void zed_slot(const char *mine, uint64_t now) {
+    reset_all();
+    net_area_reset(now);
+    NET.on = true, NET.have_feet = true, NET.me = 5, snprintf(NET.name, sizeof NET.name, "Alpha");
+    g_net_esync = true;
+    NetPeerSlot *sl = &NET.slot[0];
+    sl->used = true, sl->joined_ms = now;  // (ip 0: no destination, nothing is sent)
+    peer_on_hello(&sl->p, 77, "Zed", now);
+    NetSnap sn;
+    memset(&sn, 0, sizeof sn);
+    sn.player = 77, sn.seq = 1, sn.feet[0] = 48, sn.feet[1] = 6, sn.feet[2] = 3;
+    peer_on_snap(&sl->p, &sn, now);
+    net_set_area(mine);
+}
+
+// the filters: old peer = today; another area = hidden (FIRE dropped, no player in the election, slot kept); same area = shown;
+// `set area 0` (our area "") = shown; an AREA that is late / older / lost; the slot freed = forgotten
+static void test_area_filters(void) {
+    uint64_t T = 500000;
+    // an OLD peer (never sends AREA): exactly today, whatever map we are on
+    zed_slot("MainField", T);
+    net_area_tick(T);
+    CHECK(!NET.slot[0].hidden && fire_from_zed() == 1 && players_now(T) == 2 && zed_away() == 0 && count_in_log("[net] area:") == 0);
+    // (the bug of s191 task 1, fixed) he says Dungeon012, we are on MainField: hidden at once, his FIRE dropped, "away" in the
+    // election (his samples still taken, but never nearest / closer)
+    area_from_zed("Dungeon012", T + 10);
+    CHECK(NET.slot[0].hidden && strstr(g_log, "[net] area: peer \"Zed\" is on Dungeon012 (we are on MainField): hidden"));
+    CHECK(fire_from_zed() == 0 && NETF.st.rx_area == 1 && players_now(T + 20) == 2 && zed_away() == 1);
+    CHECK(NET.slot[0].used && NET.slot[0].p.st == PEER_LIVE);  // (the slot is held as it is)
+    // the same AREA every 2 s: no new line; an OLDER one that comes late is ignored
+    for (int i = 1; i <= 5; i++) area_from_zed("Dungeon012", T + 10 + 2000 * (uint64_t)i), net_area_tick(T + 10 + 2000 * (uint64_t)i);
+    uint8_t pk[NET_PKT_MAX];
+    net_area_recv(0, pk, net_pack_area(77, (uint16_t)(g_area_seq - 3), "MainField", pk, sizeof pk), T + 10100);
+    CHECK(NET.slot[0].hidden && NETA.st.rx_dup == 1 && count_in_log("[net] area:") == 1);
+    // we walk into HIS shrine: shown (one line), his Fire burns here, he is a player again
+    uint64_t t = T + 10200;
+    net_set_area("Dungeon012");
+    net_area_tick(t);
+    CHECK(!NET.slot[0].hidden && strstr(g_log, "[net] area: peer \"Zed\" is on Dungeon012 (we are on Dungeon012): shown") && count_in_log("[net] area:") == 2);
+    CHECK(fire_from_zed() == 1 && g_fr[g_nfr - 1].pos[0] == 48 && players_now(t + 10) == 2 && zed_away() == 0);
+    // he goes on to another shrine: hidden again
+    area_from_zed("Dungeon013", t + 100);
+    CHECK(NET.slot[0].hidden && fire_from_zed() == 0);
+    // `set area 0` here (area_now() then gives ""): one world, shown
+    net_set_area("");
+    net_area_tick(t + 200);
+    CHECK(!NET.slot[0].hidden && fire_from_zed() == 1 && strstr(g_log, "is on Dungeon013 (we are on (not known)): shown"));
+    // area on again on MainField: hidden; then his AREAs stop (lost / he went back to an old build): after NET_AREA_FORGET periods
+    // he is "not known" = shown again
+    net_set_area("MainField");
+    net_area_tick(t + 300);
+    CHECK(NET.slot[0].hidden);
+    net_area_tick(t + 100 + NET_AREA_FORGET * NET_AREA_MS);
+    CHECK(NET.slot[0].hidden);
+    net_area_tick(t + 100 + NET_AREA_FORGET * NET_AREA_MS + 1);
+    CHECK(!NET.slot[0].hidden && strstr(g_log, "is on (not known) (we are on MainField): shown") && fire_from_zed() == 1);
+    // AREA late (lost, then one comes): his Fire before it is used, after it dropped
+    zed_slot("MainField", T);
+    net_area_tick(T);
+    CHECK(fire_from_zed() == 1);
+    area_from_zed("RemainsWater", T + 3000);
+    CHECK(fire_from_zed() == 0 && NET.slot[0].hidden);
+    // the slot freed (he left): his area goes with it; a new slot of the same player starts as "never said"
+    net_slot_free(0);
+    NetPeerSlot *sl = &NET.slot[0];
+    sl->used = true, sl->joined_ms = T + 4000;
+    peer_on_hello(&sl->p, 77, "Zed", T + 4000);
+    net_area_tick(T + 4000);
+    CHECK(!sl->hidden && sl->area_ms == 0 && sl->area[0] == 0 && fire_from_zed() == 1);
+    // EDMG is never filtered: a hit from a peer in another area is still applied
+    area_from_zed("Dungeon012", T + 4100);
+    CHECK(sl->hidden);
+    NetEdEnt ed = {0x4444, 7, 30, 15, 1, 0};
+    int n = net_pack_edmg(77, 9, &ed, 1, pk, sizeof pk), ap = g_nap;
+    net_edmg_recv(0, pk, n, 1000);
+    CHECK(g_nap == ap + 1);
+    g_log[0] = 0;
+    net_diag_log();
+    CHECK(strstr(g_log, "[net] area: we are on MainField") && strstr(g_log, "slot 1 \"Zed\" Dungeon012 HIDDEN") && strstr(g_log, "other map "));
+    es_release_all(&NETES.c);
+    NET.on = false;
+}
+
+// the send side (UDP, a pinned peer): nothing while our area was never known; on a change at once; then every NET_AREA_MS; a
+// new slot gets it at once; "" goes out once we said a map; loopback sends nothing
+static int area_rx(NetSock *rx, char out[NET_AREA_MAX + 1]) {  // AREA packets waiting on rx (the last one's text in out)
+    uint8_t got[NET_PKT_MAX];
+    int c = 0;
+    for (int t = 0; t < 20; t++) {
+        int n = nsock_recv(rx, got, sizeof got, NULL, NULL);
+        if (n <= 0) { if (c) break; Sleep_ms(2); continue; }
+        if (got[3] == NET_AREA && net_unpack_area(got, n, NULL, NULL, out)) c++;
+    }
+    return c;
+}
+static void test_area_send(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47861;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47860, false) && net_tg_add(lo, 47860, true, 0));
+    net_set_on(true);
+    CHECK(NET.on);
+    char a[NET_AREA_MAX + 1] = "?";
+    uint64_t T = 900000;
+    net_area_tick(T);
+    CHECK(area_rx(&rx, a) == 0 && NETA.st.tx == 0);  // (area not known yet: nothing to say)
+    net_set_area("MainField");
+    net_area_tick(T + 10);
+    CHECK(area_rx(&rx, a) == 1 && !strcmp(a, "MainField"));
+    net_area_tick(T + 100), net_area_tick(T + 10 + NET_AREA_MS - 1);
+    CHECK(area_rx(&rx, a) == 0);
+    net_area_tick(T + 10 + NET_AREA_MS);
+    CHECK(area_rx(&rx, a) == 1 && !strcmp(a, "MainField"));
+    net_set_area("Dungeon012");
+    net_area_tick(T + 2100);
+    CHECK(area_rx(&rx, a) == 1 && !strcmp(a, "Dungeon012"));
+    NET.slot[1].used = true, NET.slot[1].joined_ms = T + 2200;  // (a slot appears: ours goes out at once)
+    net_area_tick(T + 2200);
+    CHECK(area_rx(&rx, a) == 1);
+    memset(&NET.slot[1], 0, sizeof NET.slot[1]);
+    net_set_area("");
+    net_area_tick(T + 2300);
+    CHECK(area_rx(&rx, a) == 1 && a[0] == 0 && NETA.st.tx == 5);
+    g_net_loop = true;
+    net_set_area("MainField");
+    net_area_tick(T + 2400);
+    CHECK(area_rx(&rx, a) == 0);
+    g_net_loop = false;
+    net_set_on(false);
+    nsock_close(&rx);
+}
+
+// ---- (s194) NET_REACT: the KH2 hit reaction on an enemy another game owns (sora_net_react.h) ----
+static EsEnt *es_put(uint32_t hid, bool local, int owner, int brain) {
+    EsEnt *e = es_get(&NETES.c, hid, 1000);
+    e->local = local, e->owner = owner, e->brain = brain;
+    return e;
+}
+static int react_rx(NetSock *rx, NetReactEnt *last, int *nent, uint16_t *seq, uint8_t *pl) {  // NET_REACT packets waiting on rx
+    int c = 0;
+    uint8_t got[NET_PKT_MAX];
+    for (int t = 0; t < 60; t++) {
+        int n = nsock_recv(rx, got, sizeof got, NULL, NULL);
+        if (n <= 0) { if (c >= 3) break; Sleep_ms(3); continue; }
+        if (got[3] != NET_REACT) continue;
+        int k = net_unpack_react(got, n, pl, seq, last, NULL);
+        if (k > 0) c++, *nent = k;
+    }
+    return c;
+}
+// the attacker: a hit on a puppet sends (no local reaction), a hit on our own / an unsynced enemy stays local; netreact 0 = as before
+static void test_react_attacker(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47941;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47940, false) && net_tg_add(lo, 47940, true, 0));
+    net_set_on(true);
+    CHECK(NET.on);
+    NET.me = 5;
+    g_net_esync = true, NETES.active = true, NETES.c.me = 5;
+    es_put(0x88, true, 77, 0);   // a puppet here: Zed owns it, its brain is frozen by us
+    es_put(0x77, true, 5, 1);    // ours
+    es_put(0x99, true, 77, 1);   // Zed's, but he went quiet: its brain runs here again
+    es_put(0xaa, false, 77, 0);  // Zed's, not loaded here this step
+    float from[3] = {-1234.5f, 87.0f, 4321.0f};
+    // the compiled default: off = today's behaviour exactly (every hit local, nothing queued, no log)
+    CHECK(!g_net_react && !net_react_wanted() && !net_react_hit(0x88, from, 3, 125, 0, 7, "blade", false) && NETR.tx.n == 0 && !strstr(g_log, "[react]"));
+    CHECK(net_live_set("netreact", 1) && g_net_react && net_react_wanted() && strstr(g_log, "[react] on"));
+    // own / quiet owner / not loaded / unknown / hid 0 (a spawned enemy): local, nothing sent
+    CHECK(!net_react_hit(0x77, from, 3, 125, 0, 7, "blade", false) && !net_react_hit(0x99, from, 3, 125, 0, 7, "blade", false));
+    CHECK(!net_react_hit(0xaa, from, 3, 125, 0, 7, "blade", false) && !net_react_hit(0x1234, from, 3, 125, 0, 7, "blade", false));
+    CHECK(!net_react_hit(0, from, 4, 30, 0, 7, "thunder", false) && NETR.tx.n == 0 && NETR.st.hit_local == 5);
+    // the puppet: no local reaction (true), one entry queued with what ah_hit would have used; a class-1 hit = nothing at all
+    g_log[0] = 0;
+    CHECK(net_react_hit(0x88, from, 3, 125, 0, 7, "blade", false) && NETR.tx.n == 1 && NETR.st.hit_send == 1);
+    CHECK(strstr(g_log, "[react] tx hid=00000088 blade (blade) react 3 kb 125/0 f54 0x7 from -1234.5 87.0 4321.0: puppet here (owner player 77), no local reaction"));
+    CHECK(net_react_hit(0x88, from, 1, 0, 0, 7, "blade", false) && NETR.tx.n == 1 && NETR.st.hit_skip == 1);
+    float spell[3] = {10, 20, 30};
+    CHECK(net_react_hit(0x88, spell, 4, 30, 0, 0x14, "thunder", true) && NETR.tx.n == 2 && strstr(g_log, "f54 0x14 form"));
+    // the pump: one packet (2 entries), 3 copies with the SAME seq, 40 ms apart, then nothing
+    net_react_pump(2000);
+    CHECK(NETR.tx.n == 0 && NETR.st.tx_pkt == 1 && NETR.st.tx_send == 1);
+    net_react_pump(2010);
+    CHECK(NETR.st.tx_send == 1);
+    net_react_pump(2000 + NET_EDMG_REP_MS), net_react_pump(2000 + 2 * NET_EDMG_REP_MS), net_react_pump(6000);
+    CHECK(NETR.st.tx_send == 3 && NETR.nout == 0);
+    NetReactEnt got[NET_REACT_MAX];
+    int nent = 0;
+    uint16_t sq = 0;
+    uint8_t pl = 0;
+    CHECK(react_rx(&rx, got, &nent, &sq, &pl) == 3 && nent == 2 && pl == 5);
+    CHECK(got[0].hid == 0x88 && got[0].kind == NRK_BLADE && got[0].react == 3 && got[0].kb1 == 125 && got[0].f54 == 7 && got[0].flags == 0 && got[0].from[0] == from[0] && got[0].from[2] == from[2]);
+    CHECK(got[1].kind == NRK_THUNDER && got[1].react == 4 && got[1].kb1 == 30 && got[1].f54 == 0x14 && got[1].flags == NRF_FORM && got[1].from[1] == 20);
+    // 10 puppet hits in one frame = 2 packets (8 + 2)
+    for (int i = 0; i < 10; i++) net_react_hit(0x88, from, 3, 125, 0, 7, "blade", false);
+    net_react_pump(7000);
+    CHECK(NETR.st.tx_pkt == 3 && NETR.nout == 2);
+    // netreact 0: every hit local again, the queues emptied
+    CHECK(net_live_set("netreact", 0) && !g_net_react && NETR.nout == 0 && NETR.tx.n == 0 && !net_react_hit(0x88, from, 3, 125, 0, 7, "blade", false));
+    CHECK(net_live_set("netreact", 1));
+    // loopback: queued hits are dropped, nothing goes out
+    g_net_loop = true;
+    net_react_hit(0x88, from, 3, 125, 0, 7, "blade", false);
+    net_react_pump(8000);
+    CHECK(NETR.st.tx_drop == 1 && NETR.st.tx_pkt == 3 && NETR.tx.n == 0);
+    g_net_loop = false;
+    // esync off: no puppets anywhere = every hit local
+    g_net_esync = false;
+    CHECK(!net_react_wanted() && !net_react_hit(0x88, from, 3, 125, 0, 7, "blade", false));
+    g_net_esync = true;
+    g_log[0] = 0;
+    net_diag_log();
+    CHECK(strstr(g_log, "[react] (on): hits on own / unsynced enemies") && strstr(g_log, "on puppets 13 sent + 1 skipped"));
+    net_set_on(false);
+    CHECK(NETR.tx.n == 0 && NETR.nout == 0 && !net_react_wanted());
+    nsock_close(&rx);
+    g_net_react = false;
+}
+
+// the owner: entries of known peers queued; played only for an enemy we own, have loaded and alive; repeats once; the rest counted
+static struct { int n; uint64_t actor; float epos[3], from[3]; int kind, flags, react, kb1, f54; } g_rp;
+static int g_rfind;
+static bool rp_find(uint32_t hid, uint64_t *actor, float epos[3], int32_t *life, void *user) {
+    (void)user;
+    g_rfind++;
+    if (hid == 0x66) return false;  // (ours in the table, but not in the enemy list now)
+    *actor = 0x5000 + hid, *life = hid == 0x55 ? 0 : 12, epos[0] = 1, epos[1] = 2, epos[2] = (float)hid;
+    return true;
+}
+static void rp_play(uint64_t actor, const float epos[3], const NetReactEnt *e, void *user) {
+    (void)user;
+    g_rp.n++, g_rp.actor = actor, memcpy(g_rp.epos, epos, 12), memcpy(g_rp.from, e->from, 12);
+    g_rp.kind = e->kind, g_rp.flags = e->flags, g_rp.react = e->react, g_rp.kb1 = e->kb1, g_rp.f54 = e->f54;
+}
+static int react_send(NetSock *tx, uint32_t lo, uint8_t player, uint16_t seq, const NetReactEnt *e, int n, int copies, uint32_t recv_was, uint64_t now) {
+    uint8_t pk[NET_PKT_MAX];
+    int len = net_pack_react(player, seq, e, n, pk, sizeof pk);
+    for (int r = 0; r < copies; r++) nsock_send(tx, lo, 47943, pk, len);
+    for (int t = 0; t < 100 && NET.st.recv < recv_was + (uint32_t)copies; t++) { net_recv_all(now); if (NET.st.recv < recv_was + (uint32_t)copies) Sleep_ms(5); }
+    return (int)(NET.st.recv - recv_was);
+}
+static void test_react_owner(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47943;
+    net_set_on(true);
+    CHECK(NET.on);
+    NET.me = 5;
+    NetSock tx, tx2;
+    CHECK(nsock_open(&tx, 47942, false) && nsock_open(&tx2, 47944, false));
+    g_net_esync = true, NETES.active = true, NETES.c.me = 5;
+    es_put(0x77, true, 5, 1), es_put(0x66, true, 5, 1), es_put(0x55, true, 5, 1);  // ours (0x66: gone from the list, 0x55: dead)
+    es_put(0x88, true, 77, 0);  // Zed's (a puppet here)
+    memset(&g_rp, 0, sizeof g_rp), g_rfind = 0;
+    float f[3] = {40, 6, -3};
+    NetReactEnt e[5];
+    e[0] = nr_ent_make(0x77, 3, 125, 0, 7, "blade", f, true);
+    e[1] = nr_ent_make(0x88, 3, 125, 0, 7, "blade", f, false);
+    e[2] = nr_ent_make(0x66, 4, 30, 0, 0x14, "thunder", f, false);
+    e[3] = nr_ent_make(0x55, 4, 30, 0, 0x14, "thunder", f, false);
+    e[4] = nr_ent_make(0x44, 11, -100, 45, 0xf, "wisdom", f, false);
+    g_net_react = true;
+    // a stranger (no HELLO): no slot, nothing taken; our own id: an echo
+    CHECK(react_send(&tx, lo, 77, 10, e, 5, 1, NET.st.recv, 3000) == 1 && netslot_count(NET.slot, NET_MAX_PEERS) == 0 && NETR.st.rx_pkt == 0 && net_react_pending() == 0);
+    CHECK(react_send(&tx2, lo, 5, 11, e, 5, 1, NET.st.recv, 3000) == 1 && NET.st.echo == 1 && NETR.st.rx_pkt == 0);
+    uint8_t pk[NET_PKT_MAX];
+    int hn = net_pack_hello(77, 1, "Zed", pk, sizeof pk);
+    CHECK(nsock_send(&tx, lo, 47943, pk, hn) == hn);
+    for (int t = 0; t < 100 && netslot_count(NET.slot, NET_MAX_PEERS) < 1; t++) { net_recv_all(3000); Sleep_ms(3); }
+    CHECK(netslot_count(NET.slot, NET_MAX_PEERS) == 1 && NET.slot[0].p.st == PEER_LIVE);
+    // Zed's packet, 3 UDP copies: taken once, 5 entries queued (nothing played before the frame body runs)
+    g_log[0] = 0;
+    CHECK(react_send(&tx, lo, 77, 65535, e, 5, 3, NET.st.recv, 3000) == 3);
+    CHECK(NETR.st.rx_pkt == 1 && NETR.st.rx_dup == 2 && NETR.st.rx_ent == 5 && net_react_pending() == 5 && g_rp.n == 0);
+    CHECK(strstr(g_log, "[react] rx peer 1 (seq 65535) -> dup (a repeat copy)"));
+    // the frame body: 0x77 played (ours, loaded, alive), 0x88 / 0x44 not ours, 0x66 not loaded, 0x55 dead
+    g_log[0] = 0;
+    CHECK(net_react_play(3010, rp_find, rp_play, NULL) == 1 && net_react_pending() == 0);
+    CHECK(g_rp.n == 1 && g_rp.actor == 0x5077 && g_rp.epos[2] == (float)0x77 && g_rp.from[0] == 40 && g_rp.from[2] == -3 && g_rp.kind == NRK_BLADE && g_rp.flags == NRF_FORM);
+    CHECK(g_rp.react == 3 && g_rp.kb1 == 125 && g_rp.f54 == 7 && !strcmp(net_react_what(g_rp.kind), "blade"));
+    CHECK(NETR.st.played == 1 && NETR.st.not_owner == 2 && NETR.st.not_loaded == 1 && NETR.st.dead == 1 && g_rfind == 3);  // (no lookup for the ones we do not own)
+    CHECK(strstr(g_log, "[react] rx peer 1 hid=00000077 blade react 3 kb 125/0 f54 0x7 form from 40.0 6.0 -3.0 -> played"));
+    CHECK(strstr(g_log, "hid=00000088 blade react 3 kb 125/0 f54 0x7 from 40.0 6.0 -3.0 -> not owner (owner 77)") && strstr(g_log, "hid=00000044 other react 11 kb -100/45"));
+    CHECK(strstr(g_log, "hid=00000066 thunder") && strstr(g_log, "-> not loaded here") && strstr(g_log, "hid=00000055 thunder react 4 kb 30/0 f54 0x14 from 40.0 6.0 -3.0 -> dead"));
+    // the seq wraps (65535 -> 0): a new packet; an old copy of 65535 again: dup
+    CHECK(react_send(&tx, lo, 77, 0, e, 1, 1, NET.st.recv, 3100) == 1 && NETR.st.rx_pkt == 2 && net_react_pending() == 1);
+    CHECK(react_send(&tx, lo, 77, 65535, e, 1, 1, NET.st.recv, 3100) == 1 && NETR.st.rx_dup == 3 && net_react_pending() == 1);
+    // not played in time (a menu): late
+    CHECK(net_react_play(3100 + NR_RX_TTL_MS + 1, rp_find, rp_play, NULL) == 0 && NETR.st.late == 1 && g_rp.n == 1);
+    // the owner changed between the packet and the frame (a hand-over): not owner, nothing played
+    CHECK(react_send(&tx, lo, 77, 1, e, 1, 1, NET.st.recv, 3200) == 1);
+    es_find(&NETES.c, 0x77)->owner = 77;
+    CHECK(net_react_play(3210, rp_find, rp_play, NULL) == 0 && NETR.st.not_owner == 3);
+    es_find(&NETES.c, 0x77)->owner = 5;
+    // esync off here: we own nothing
+    CHECK(react_send(&tx, lo, 77, 2, e, 1, 1, NET.st.recv, 3300) == 1);
+    g_net_esync = false;
+    CHECK(net_react_play(3310, rp_find, rp_play, NULL) == 0 && NETR.st.not_owner == 4);
+    g_net_esync = true;
+    // Zed is on another map (AREA): hidden, never queued
+    NET.slot[0].hidden = true;
+    g_log[0] = 0;
+    CHECK(react_send(&tx, lo, 77, 3, e, 2, 1, NET.st.recv, 3400) == 1 && NETR.st.rx_hidden == 2 && net_react_pending() == 0);
+    CHECK(strstr(g_log, "hid=00000077 blade react 3 f54 0x7 (seq 3) -> hidden (he is on another map)"));
+    NET.slot[0].hidden = false;
+    // a slot that is not a known peer (st NONE): unknown peer
+    NET.slot[0].p.st = PEER_NONE;
+    {
+        uint8_t b[NET_PKT_MAX];
+        int n = net_pack_react(77, 4, e, 1, b, sizeof b);
+        net_react_recv(0, b, n, 3500);
+    }
+    CHECK(NETR.st.rx_unknown == 1 && net_react_pending() == 0);
+    NET.slot[0].p.st = PEER_LIVE;
+    // netreact 0: received entries dropped quietly; queued ones are cleared by the live switch
+    CHECK(react_send(&tx, lo, 77, 5, e, 1, 1, NET.st.recv, 3600) == 1 && net_react_pending() == 1);
+    CHECK(net_live_set("netreact", 0) && net_react_pending() == 0);
+    g_log[0] = 0;
+    CHECK(react_send(&tx, lo, 77, 6, e, 2, 1, NET.st.recv, 3700) == 1 && NETR.st.rx_off == 2 && net_react_pending() == 0 && !strstr(g_log, "[react]"));
+    g_net_react = true;
+    // a cut packet is bad at the header check; a whole one with only bad entries is a bad NET_REACT packet
+    uint32_t bad = NET.st.bad;
+    {
+        int n = net_pack_react(77, 7, e, 1, pk, sizeof pk);
+        nsock_send(&tx, lo, 47943, pk, n - 1);
+        for (int t = 0; t < 100 && NET.st.bad == bad; t++) { net_recv_all(3800); if (NET.st.bad == bad) Sleep_ms(5); }
+        CHECK(NET.st.bad == bad + 1 && NETR.st.rx_bad == 0);
+        n = net_pack_react(77, 8, e, 1, pk, sizeof pk);
+        net_w32f(pk + NET_HDR + 12, NAN);
+        uint32_t r0 = NET.st.recv;
+        nsock_send(&tx, lo, 47943, pk, n);
+        for (int t = 0; t < 100 && NET.st.recv == r0; t++) { net_recv_all(3800); if (NET.st.recv == r0) Sleep_ms(5); }
+        CHECK(NETR.st.rx_bad == 1 && NETR.st.rx_bad_ent == 1 && net_react_pending() == 0);
+    }
+    // a received reaction is never sent on
+    CHECK(NETR.tx.n == 0 && NETR.nout == 0);
+    g_log[0] = 0;
+    net_diag_log();
+    CHECK(strstr(g_log, "[react] (on)") && strstr(g_log, "played 1, not owner 4, not loaded 1, dead 1, late 1, other map 2, unknown peer 1, off 2"));
+    net_set_on(false);
+    nsock_close(&tx), nsock_close(&tx2);
+    g_net_esync = false, g_net_react = false;
+}
+
+// ---- (s195) eshit / esdead: the live keys, the hit note glue, a dead player = "away" in the election ----
+static void zed_snap(uint16_t seq, uint16_t flags, uint64_t now) {
+    NetSnap sn;
+    memset(&sn, 0, sizeof sn);
+    sn.player = 77, sn.seq = seq, sn.flags = flags, sn.feet[0] = 48, sn.feet[1] = 6, sn.feet[2] = 3;
+    peer_on_snap(&NET.slot[0].p, &sn, now);
+}
+static void test_eshit_glue(void) {
+    reset_all();
+    // the compiled defaults: hit claim off, hold 4000 ms, dead players count as before
+    CHECK(!g_net_eshit && g_net_eshitms == ES_HIT_HOLD_MS && ES_HIT_HOLD_MS == 4000 && !g_net_esdead);
+    CHECK(net_live_set("eshit", 1) && g_net_eshit && strstr(g_log, "[esync] hit claim on"));
+    g_log[0] = 0;
+    CHECK(net_live_set("eshit", 1) && !strstr(g_log, "[esync]"));  // (a live rewrite re-applies every line: no new line)
+    CHECK(net_live_set("eshitms", 100) && g_net_eshitms == ES_HIT_HOLD_MIN && strstr(g_log, "[esync] hit hold 500 ms (clamped)"));
+    CHECK(net_live_set("eshitms", 999999) && g_net_eshitms == ES_HIT_HOLD_MAX && net_live_set("eshitms", 2500) && g_net_eshitms == 2500 && strstr(g_log, "[esync] hit hold 2500 ms\n"));
+    CHECK(net_live_set("esdead", 1) && g_net_esdead && strstr(g_log, "[esync] dead players away"));
+    CHECK(net_live_set("esdead", 0) && !g_net_esdead && strstr(g_log, "[esync] dead players count as before"));
+    CHECK(net_live_set("eshit", 0) && !g_net_eshit && strstr(g_log, "[esync] hit claim off"));
+    // the hit note: esync off / not active / net off / hid 0 = nothing; else stored on the enemy, counted
+    NET.on = true, NET.me = 5, NETES.c.me = 5;
+    EsEnt *e = es_put(0x88, true, 77, 0);
+    net_esync_note_hit(0x88);
+    CHECK(!net_esync_hit_wanted() && e->hit_ms == 0 && NETES.c.st.hit_notes == 0);
+    g_net_esync = true;
+    net_esync_note_hit(0x88);
+    CHECK(!net_esync_hit_wanted() && e->hit_ms == 0 && NETES.c.st.hit_notes == 0);  // (not active yet: no tick ran)
+    NETES.active = true;
+    net_esync_note_hit(0);
+    CHECK(net_esync_hit_wanted() && NETES.c.st.hit_notes == 0);
+    net_esync_note_hit(0x88);
+    CHECK(e->hit_ms != 0 && NETES.c.st.hit_notes == 1);  // (eshit 0: stored all the same, only es_elect / es_step use it with eshit 1)
+    NET.on = false;
+    net_esync_note_hit(0x88);
+    CHECK(NETES.c.st.hit_notes == 1);
+    es_release_all(&NETES.c);
+    // the tick hands the keys to the core; a dead peer (SNAP NF_DEAD) / me dead = "away" only with esdead 1
+    uint64_t T = 700000;
+    zed_slot("", T);
+    g_net_eshitms = 2500;  // (zed_slot resets the keys)
+    zed_snap(2, NF_DEAD, T);
+    CHECK(players_now(T) == 2 && zed_away() == 0 && !NETES.c.hit_on && NETES.c.hit_hold_ms == 2500 && !NETES.c.pl[0].away);
+    g_net_esdead = true, g_net_eshit = true;
+    CHECK(players_now(T + 16) == 2 && zed_away() == 1 && NETES.c.hit_on && !NETES.c.pl[0].away);
+    zed_snap(3, 0, T + 20);  // (he stands again)
+    CHECK(players_now(T + 32) == 2 && zed_away() == 0);
+    NET.dead = true;
+    CHECK(players_now(T + 48) == 2 && NETES.c.pl[0].id == 5 && NETES.c.pl[0].away && zed_away() == 0);
+    g_net_esdead = false;
+    CHECK(players_now(T + 64) == 2 && !NETES.c.pl[0].away);
+    NET.dead = false;
+    zed_snap(4, NF_DEAD | NF_LOADING, T + 70);  // (loading still means no player at all)
+    CHECK(players_now(T + 80) == 1);
+    // net diag: the s195 line
+    g_log[0] = 0;
+    net_diag_log();
+    CHECK(strstr(g_log, "[esync] hit claim on (hold 2500 ms): hits noted 0, hit claims 0") && strstr(g_log, "dead players count as before (set esdead 1)"));
+    es_release_all(&NETES.c);
+    NET.on = false, g_net_esync = false, g_net_eshit = false, g_net_eshitms = ES_HIT_HOLD_MS;
+}
+
+// (s195b) the claiming hit plays its reaction HERE: sora_airhold.h ah_hit notes the hit first (net_esync_note_hit: a qualifying hit
+// claims at once), then asks netreact (net_react_hit): the enemy is ours now = local, no NET_REACT. A hit that does not qualify
+// (owner HOT) or eshit 0: NET_REACT to the owner as before. (The two calls below are ah_hit's order.)
+static void test_eshit_react(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47961;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47960, false) && net_tg_add(lo, 47960, true, 0));
+    net_set_on(true);
+    CHECK(NET.on);
+    NET.me = 5, snprintf(NET.name, sizeof NET.name, "Alpha");
+    g_net_esync = true, NETES.active = true, NETES.c.me = 5, g_net_react = true;
+    g_net_eshit = true, NETES.c.hit_on = true;  // (net_esync_tick copies the key; no tick here)
+    EsPlayer pl[2];
+    memset(pl, 0, sizeof pl);
+    pl[0].id = 5, snprintf(pl[0].name, sizeof pl[0].name, "Alpha"), pl[0].pos[0] = 40;
+    pl[1].id = 77, snprintf(pl[1].name, sizeof pl[1].name, "Zed"), pl[1].pos[0] = 18;
+    es_set_players(&NETES.c, pl, 2);
+    uint64_t now = GetTickCount64();
+    EsEnt *e = es_put(0x88, true, 77, 0), *h = es_put(0x99, true, 77, 0), *o = es_put(0xaa, true, 77, 0);
+    e->have_pos = h->have_pos = o->have_pos = true, e->alive_ms = h->alive_ms = o->alive_ms = now;
+    h->o_hot = h->o_held = true;  // (Zed keeps hitting 0x99)
+    float from[3] = {1, 2, 3};
+    g_log[0] = 0;
+    // the claiming hit: ours at the note (brain told on), so netreact says local: no NET_REACT, ah_hit_ex plays it here
+    CHECK(net_esync_note_hit(0x88) && e->owner == 5 && e->brain == 1 && g_es_brain_last == 1 && strstr(g_log, "owner Zed -> Alpha (hit: claim)"));
+    CHECK(!net_react_hit(0x88, from, 3, 125, 0, 7, "blade", false) && NETR.tx.n == 0 && NETR.st.hit_local == 1 && NETR.st.hit_send == 0 && NETES.c.st.hit_sync == 1);
+    // owner HOT: no claim, the reaction goes to him as before
+    CHECK(!net_esync_note_hit(0x99) && h->owner == 77 && h->brain == 0 && net_react_hit(0x99, from, 3, 125, 0, 7, "blade", false) && NETR.tx.n == 1 && NETR.st.hit_send == 1);
+    // eshit 0: exactly as before (a puppet hit sends)
+    g_net_eshit = false, NETES.c.hit_on = false;
+    CHECK(!net_esync_note_hit(0xaa) && o->owner == 77 && net_react_hit(0xaa, from, 4, 30, 0, 0x14, "thunder", false) && NETR.tx.n == 2 && NETR.st.hit_local == 1);
+    // on the wire: one NET_REACT packet with 0x99 + 0xaa only
+    net_react_pump(now);
+    NetReactEnt got[NET_REACT_MAX];
+    int nent = 0;
+    uint16_t sq = 0;
+    uint8_t who = 0;
+    CHECK(react_rx(&rx, got, &nent, &sq, &who) >= 1 && nent == 2 && got[0].hid == 0x99 && got[1].hid == 0xaa && who == 5);
+    CHECK(NETES.c.st.claims == 1 && NETES.c.st.hit_claims == 1 && NETES.c.st.hit_notes == 3);
+    net_set_on(false);
+    nsock_close(&rx);
+    es_release_all(&NETES.c);
+    g_net_esync = false, g_net_react = false, NETES.active = false;
+}
+
+// ---- (s196) killsync: the kill list, catch-up asks / answers over real sockets, the apply scan (sora_net_kills.h) ----
+static uint32_t g_kl_hids[64];
+static int g_kl_n, g_kl_calls, g_moons_v = -1;
+static int fake_loaded(uint32_t *h, int max) { g_kl_calls++; int n = g_kl_n < max ? g_kl_n : max; memcpy(h, g_kl_hids, sizeof *h * (size_t)n); return n; }
+static int fake_moons(void) { return g_moons_v; }
+// NET_KILLS packets waiting on rx (others skipped): up to max into m[]
+static int kills_rx(NetSock *rx, NetKillsMsg *m, int max) {
+    int c = 0, idle = 0;
+    uint8_t got[NET_PKT_MAX + 64];
+    for (int t = 0; t < 200 && c < max; t++) {
+        int n = nsock_recv(rx, got, sizeof got, NULL, NULL);
+        if (n <= 0) { if (++idle > 6) break; Sleep_ms(2); continue; }
+        idle = 0;
+        if (n > 3 && got[3] == NET_KILLS && net_unpack_kills(got, n, NULL, NULL, &m[c])) c++;
+    }
+    return c;
+}
+static void kills_slot(int k, uint32_t ip, uint16_t port, uint8_t player, const char *name, uint64_t joined) {  // (a peer slot as the receive makes it)
+    NetPeerSlot *sl = &NET.slot[k];
+    memset(sl, 0, sizeof *sl);
+    sl->used = true, sl->ip = ip, sl->port = port, sl->joined_ms = sl->last_recv_ms = joined;
+    peer_reset(&sl->p, player), peer_set_name(&sl->p, name), sl->p.st = PEER_LIVE, sl->p.last_ms = joined;
+}
+// Zed (the rx socket) sends one NET_KILLS packet to us and we receive it
+static void kills_from(NetSock *tx, uint32_t lo, const uint8_t *b, int n, uint64_t now) {
+    uint32_t r0 = NET.st.recv;
+    CHECK(n > 0 && nsock_send(tx, lo, NET.port, b, n) == n);
+    for (int t = 0; t < 100 && NET.st.recv == r0; t++) { net_recv_all(now); if (NET.st.recv == r0) Sleep_ms(3); }
+}
+static float g_kfeet[3] = {10, 20, 30};
+static int kills_count(const char *h, const char *n) { int c = 0; for (const char *p = strstr(h, n); p; p = strstr(p + 1, n)) c++; return c; }
+
+// killsync 0 (the compiled default until s197; now `set killsync 0`): own kills and EDMG kills are not recorded, a new peer is not
+// asked, his ask is not answered, nothing NET_KILLS goes out, no "[kills]" line after net on but the diag one
+static void test_kills_off(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47981;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47980, false));
+    CHECK(g_net_kills && net_live_set("killsync", 0) && !g_net_kills && strstr(g_log, "[kills] kill sync off (set killsync 1)"));  // (s197: off by the key)
+    net_set_on(true);
+    NET.me = 5;
+    CHECK(NET.on && !g_net_kills && kills_count(g_log, "[kills] kill sync OFF (set killsync 0: not the compiled default)") == 1);
+    g_log[0] = 0;  // (from here on: no "[kills]" line at all)
+    NETK.loaded = fake_loaded, NETK.moons_fn = fake_moons;
+    uint64_t T = 3000000;
+    kills_slot(0, lo, 47980, 77, "Zed", T);
+    queue_hit(0xA1, 40, 0, 1);
+    net_edmg_pump(T);
+    uint8_t pk[NET_KILLS_PKT];
+    NetEdEnt ed = {0xA2, 50, 0, 15, 1, NEDF_KILL};
+    int n = net_pack_edmg(77, 9, &ed, 1, pk, sizeof pk);
+    kills_from(&rx, lo, pk, n, T + 1);
+    CHECK(g_nap == 1 && g_ap[0].hid == 0xA2 && g_ap[0].kill == 1);  // (the EDMG apply as before)
+    g_kl_n = 1, g_kl_hids[0] = 0xA2, g_moons_v = 3;
+    for (int i = 0; i < 5; i++) net_kills_tick(g_kfeet, T + 2 + 200 * i);
+    kills_from(&rx, lo, pk, net_pack_kills_ask(77, 1, 0x4242, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk), T + 1100);
+    for (int i = 0; i < 5; i++) net_kills_tick(g_kfeet, T + 1200 + 20 * i);
+    NetKillsMsg m[4];
+    CHECK(kills_rx(&rx, m, 4) == 0);
+    CHECK(NETK.L.n == 0 && NETK.st.rx_off == 1 && NETK.st.ask_tx == 0 && NETK.st.part_tx == 0 && g_kl_calls == 0 && g_nap == 1);
+    CHECK(!strstr(g_log, "[kills]"));
+    net_diag_log();
+    CHECK(strstr(g_log, "[kills] (OFF (set killsync 1))"));
+    // (s197) `set killsync 1` again: the key's own line, and Zed (there all along) counts as new = asked at the next tick
+    CHECK(net_live_set("killsync", 1) && g_net_kills && strstr(g_log, "[kills] kill sync on: placed enemies killed"));
+    net_kills_tick(g_kfeet, T + 2000);
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].op == NKO_ASK && NETK.st.ask_tx == 1 && strstr(g_log, "asking peer 1 \"Zed\""));
+    net_set_on(false);
+    nsock_close(&rx);
+}
+
+// (s197) killsync is ON with no live key: the compiled default (also what a DLL hot reload starts with). Net on says so in ONE
+// line (per net on, never per frame); own kills are kept, a new peer is asked, his ask answered; `set killsync 1` changes nothing
+static void test_kills_default_on(void) {
+    reset_all();
+    CHECK(NET_KILLS_DEFAULT && g_net_kills);
+    CHECK(!NETK.moons_known && !NETK.idle && !NETK.want_all && NETK.L.n == 0);  // (what `set killsync 1` would set up = the zero state)
+    for (int k = 0; k < NET_MAX_PEERS; k++) CHECK(NETK.joined[k] == 0);
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47987;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47986, false));
+    net_set_on(true);
+    NET.me = 5;
+    const char *on_line = "[kills] kill sync on (the compiled default since s197, no live key needed; set killsync 0 to change it)";
+    CHECK(NET.on && kills_count(g_log, on_line) == 1 && kills_count(g_log, "[kills]") == 1);
+    CHECK(strstr(g_log, "[net] on: UDP port 47987") < strstr(g_log, on_line));  // (right after the "[net] on:" line)
+    NETK.loaded = fake_loaded, NETK.moons_fn = fake_moons, g_moons_v = 1, g_kl_n = 0, g_kl_calls = 0;
+    uint64_t T = 6000000;
+    for (int i = 0; i < 300; i++) net_kills_tick(g_kfeet, T + 16 * (uint64_t)i);  // (5 s of frames alone: no more lines, nothing out)
+    NetKillsMsg m[8];
+    CHECK(kills_count(g_log, "[kills]") == 1 && kills_rx(&rx, m, 4) == 0 && NETK.st.ask_tx == 0 && NETK.moons_known && NETK.moons == 1);
+    CHECK(net_live_set("killsync", 1) && g_net_kills && kills_count(g_log, "[kills]") == 1);  // (a no-op now: no line)
+    queue_hit(0xA5, 40, 0, 1);
+    net_edmg_pump(T + 5000);
+    CHECK(NETK.L.n == 1 && NETK.L.hid[0] == 0xA5 && NETK.st.own == 1);
+    kills_slot(0, lo, 47986, 77, "Zed", T + 5000);
+    net_kills_tick(g_kfeet, T + 5010);
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].op == NKO_ASK && NETK.st.ask_tx == 1);
+    uint8_t pk[NET_KILLS_PKT];
+    kills_from(&rx, lo, pk, net_pack_kills_ask(77, 3, 0x2525, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk), T + 5020);
+    net_kills_tick(g_kfeet, T + 5021);
+    int c = kills_rx(&rx, m, 4), parts = 0;
+    for (int i = 0; i < c; i++) parts += m[i].op == NKO_PART && m[i].nonce == 0x2525 && m[i].k == 1 && m[i].hid[0] == 0xA5;
+    CHECK(parts == 1 && NETK.st.part_tx == 1);
+    // net off -> on: one more line (not per frame), the list kept
+    net_set_on(false);
+    net_set_on(true);
+    CHECK(kills_count(g_log, on_line) == 2 && NETK.L.n == 1);
+    net_diag_log();
+    CHECK(strstr(g_log, "[kills] (on): list 1"));
+    net_set_on(false);
+    nsock_close(&rx);
+}
+
+static void test_kills_glue(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47983;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47982, false));
+    net_set_on(true);
+    NET.me = 5;
+    NETK.loaded = fake_loaded, NETK.moons_fn = fake_moons, g_moons_v = 2, g_kl_n = 0, g_kl_calls = 0;
+    CHECK(g_net_kills && strstr(g_log, "[kills] kill sync on (the compiled default since s197"));  // (s197: on with no live key)
+    uint64_t T = 4000000;
+    NetKillsMsg m[64];
+    uint8_t pk[NET_KILLS_PKT];
+    // alone (no slot, no pin): an own kill is still recorded (and dropped from sending as ever)
+    queue_hit(0xD1, 40, 0, 1), queue_hit(0xD2, 40, 10, 0), queue_hit(0, 40, 0, 1);
+    net_edmg_pump(T);
+    CHECK(NETK.L.n == 1 && NETK.L.hid[0] == 0xD1 && NETK.L.src[0] == KSRC_OWN && NETK.L.nwait == 0 && NETED.st.tx_drop == 3 && NETK.st.own == 1);
+    queue_hit(0xD9, 40, 0, 1), snprintf(g_fq[g_nfq - 1].name, sizeof g_fq[0].name, "Animal_Boar_A");  // (an animal: not kept)
+    net_edmg_pump(T + 1);
+    CHECK(NETK.L.n == 1 && ks_find(&NETK.L, 0xD9) < 0 && NETED.st.tx_drop == 4);
+    // a peer slot appears: asked at once (to his address only), the next ask only KS_REASK_MS later
+    kills_slot(0, lo, 47982, 77, "Zed", T);
+    net_kills_tick(g_kfeet, T + 10);
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].op == NKO_ASK && m[0].tag == 0 && m[0].have == 0 && m[0].nonce == NETK.ask[0].nonce && m[0].nonce);
+    uint32_t nonce = m[0].nonce;
+    net_kills_tick(g_kfeet, T + 10 + KS_REASK_MS - 1);
+    CHECK(kills_rx(&rx, m, 4) == 0);
+    net_kills_tick(g_kfeet, T + 10 + KS_REASK_MS);
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].nonce == nonce && NETK.st.ask_tx == 2);
+    CHECK(m[0].moon == NET_KILLS_MOON_NONE);  // (s197: no Blood Moon seen in this session = "send everything")
+    // his answer: 111 kills in 2 parts, part 1 first (reordered), part 1 again (a dup); then part 0: done
+    uint32_t h[NET_KILLS_CHUNK];
+    uint16_t ag[NET_KILLS_CHUNK];
+    for (int i = 0; i < NET_KILLS_CHUNK; i++) h[i] = 0xB001u + (uint32_t)i, ag[i] = 30;
+    uint32_t h2[5] = {0xB0A1, 0xB0A2, 0xB0A3, 0xB0A4, 0xD1};  // (0xD1: ours too)
+    kills_from(&rx, lo, pk, net_pack_kills_part(77, 5, nonce, 0x0707, 1, 2, h2, ag, 5, pk, sizeof pk), T + 2000);
+    kills_from(&rx, lo, pk, net_pack_kills_part(77, 6, nonce, 0x0707, 1, 2, h2, ag, 5, pk, sizeof pk), T + 2001);
+    CHECK(NETK.L.n == 5 && NETK.st.part_dup == 1 && !NETK.ask[0].done);
+    kills_from(&rx, lo, pk, net_pack_kills_part(77, 7, nonce, 0x0707, 0, 2, h, ag, NET_KILLS_CHUNK, pk, sizeof pk), T + 2002);
+    CHECK(NETK.ask[0].done && NETK.L.n == 111 && NETK.L.nwait == 110 && NETK.st.ask_done == 1 && NETK.st.hid_rx == 111 && NETK.st.hid_new == 110);
+    CHECK(strstr(g_log, "catch-up from peer 1 \"Zed\": 111 kill(s) in 2 part(s), 110 new to us, 0 from before our last Blood Moon"));
+    int ib = ks_find(&NETK.L, 0xB001);
+    CHECK(ib >= 0 && NETK.L.kt[ib] == (int64_t)(T + 2002) - 30999 && NETK.L.kt[ks_find(&NETK.L, 0xD1)] == (int64_t)T);  // (his age; ours stays newest)
+    net_kills_tick(g_kfeet, T + 2500);
+    CHECK(kills_rx(&rx, m, 4) == 0 && NETK.st.ask_tx == 2);  // (done: no more asks, also when the next one would have been due)
+    // the apply scan: two of them loaded and alive here (+ one not on the list): kill applied, dealt 0; not while not driven
+    g_kl_n = 3, g_kl_hids[0] = 0xB001, g_kl_hids[1] = 0xC000, g_kl_hids[2] = 0xB0A4;
+    g_nap = 0, g_ap_ret = 1, g_kl_calls = 0;
+    net_kills_tick(NULL, T + 3000);
+    CHECK(g_kl_calls == 0 && g_nap == 0);
+    net_kills_tick(g_kfeet, T + 3001);
+    CHECK(g_kl_calls == 1 && g_nap == 2 && g_ap[0].hid == 0xB001 && g_ap[0].dealt == 0 && g_ap[0].kill == 1 && g_ap[1].hid == 0xB0A4 && g_ap[1].kill == 1);
+    CHECK(NETK.st.applied == 2 && NETK.st.ap_queued == 2 && NETK.L.nwait == 108 && strstr(g_log, "hid=0000b001 (catch-up) is loaded here and alive: kill applied -> queued"));
+    net_kills_tick(g_kfeet, T + 3001 + KS_SCAN_MS - 1);
+    CHECK(g_kl_calls == 1);
+    net_kills_tick(g_kfeet, T + 3001 + KS_SCAN_MS);
+    CHECK(g_kl_calls == 2 && g_nap == 2);  // (scanned, but inside KS_REAPPLY_MS)
+    CHECK(!strstr(g_log, "(again"));
+    CHECK(net_live_set("killslog", 1) && g_net_kills_log);  // (a repeat apply is logged only with killslog 1)
+    net_kills_tick(g_kfeet, T + 3001 + KS_REAPPLY_MS);
+    CHECK(g_nap == 4 && NETK.st.applied == 4 && strstr(g_log, "(again: it was still alive)"));
+    net_live_set("killslog", 0);
+    // an EDMG kill from Zed: applied by EDMG as ever; pending there = waiting here, queued = done here; a hit (no kill) is not a kill
+    NetEdEnt ed[3] = {{0xE1, 50, 0, 15, 1, NEDF_KILL}, {0xE2, 5, 20, 15, 1, 0}, {0xE3, 50, 0, 15, 1, NEDF_KILL}};
+    g_ap_ret = 2;
+    kills_from(&rx, lo, pk, net_pack_edmg(77, 20, ed, 1, pk, sizeof pk), T + 9000);
+    g_ap_ret = 1;
+    kills_from(&rx, lo, pk, net_pack_edmg(77, 21, ed + 1, 2, pk, sizeof pk), T + 9001);
+    int ie1 = ks_find(&NETK.L, 0xE1), ie3 = ks_find(&NETK.L, 0xE3);
+    CHECK(ie1 >= 0 && ie3 >= 0 && ks_find(&NETK.L, 0xE2) < 0 && NETK.L.applied[ie1] == 0 && NETK.L.applied[ie3] && NETK.st.edmg == 2 && NETK.L.n == 113);
+    CHECK(NETK.L.kt[ie1] == (int64_t)(T + 9000) && NETK.L.kt[ie3] == (int64_t)(T + 9001));  // (a live EDMG kill: killed now)
+    // his ask: our 113 kills in 2 parts, in our list's order, with their ages; his re-ask with part 0 in: only part 1 again
+    kills_from(&rx, lo, pk, net_pack_kills_ask(77, 30, 0x5555, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk), T + 9100);
+    CHECK(NETK.st.ask_rx == 1 && NETK.st.ans_new == 1 && strstr(g_log, "peer 1 \"Zed\" asks for our kill list (he saw no Blood Moon): 113 of our 113 kill(s) are after it, in 2 part(s)"));
+    net_kills_tick(g_kfeet, T + 9101);
+    int c = kills_rx(&rx, m, 8);
+    CHECK(c == 2 && m[0].op == NKO_PART && m[0].nonce == 0x5555 && m[0].i == 0 && m[0].n == 2 && m[0].k == NET_KILLS_CHUNK && m[1].i == 1 && m[1].k == 7);
+    CHECK(m[0].hid[0] == 0xD1 && m[0].hid[1] == 0xB0A1 && m[1].hid[6] == 0xE3 && m[0].tag && m[0].tag == m[1].tag && NETK.st.part_tx == 2);
+    CHECK(m[0].age[0] == 9 && m[0].age[1] == 38 && m[1].age[6] == 0);  // (D1: ours, 9.1 s; B0A1: his 30 s + 7.1 s + the rounding; E3: just now)
+    uint16_t tag = m[0].tag;
+    kills_from(&rx, lo, pk, net_pack_kills_ask(77, 31, 0x5555, tag, 1, NET_KILLS_MOON_NONE, pk, sizeof pk), T + 9200);
+    net_kills_tick(g_kfeet, T + 9201);
+    CHECK(kills_rx(&rx, m, 8) == 1 && m[0].i == 1 && m[0].tag == tag && NETK.st.ans_new == 1 && NETK.st.part_tx == 3);
+    // our save is loaded: the list goes, every peer is asked again with a NEW nonce; a part of the old ask is stale
+    net_kills_on_load(2);
+    CHECK(NETK.L.n == 0 && NETK.st.clr_load == 1 && strstr(g_log, "[kills] save loaded (slot 2): forgot 113 kill(s)"));
+    net_kills_tick(g_kfeet, T + 9300);
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].op == NKO_ASK && m[0].nonce != nonce && m[0].have == 0 && strstr(g_log, "(our save was loaded, nonce"));
+    CHECK(m[0].moon == NET_KILLS_MOON_NONE && g_reset_calls == 0);  // (a load is not a Blood Moon; the exe reset at a load is sora_levels.h's)
+    uint32_t nonce2 = m[0].nonce;
+    kills_from(&rx, lo, pk, net_pack_kills_part(77, 40, nonce, 0x0707, 0, 2, h, ag, NET_KILLS_CHUNK, pk, sizeof pk), T + 9301);
+    CHECK(NETK.L.n == 0 && NETK.st.part_stale == 1);
+    kills_from(&rx, lo, pk, net_pack_kills_part(77, 41, nonce2, 0x0708, 0, 1, h2, ag, 5, pk, sizeof pk), T + 9302);
+    CHECK(NETK.L.n == 5 && NETK.ask[0].done && NETK.st.ask_done == 2);
+    // a Blood Moon in this game: the count went up = the list goes (the first count was adopted: no clear for it); (s197 S1) the
+    // exe's pending map goes with it; (M1) "my last moon" = this tick
+    CHECK(NETK.moons_known && NETK.moons == 2 && NETK.st.clr_moon == 0 && !NETK.moon_seen);
+    g_moons_v = 3;
+    net_kills_tick(g_kfeet, T + 9302 + KS_MOON_MS);
+    CHECK(NETK.L.n == 0 && NETK.st.clr_moon == 1 && strstr(g_log, "Blood Moon in this game (count 2 -> 3): forgot 5 kill(s)"));
+    CHECK(NETK.moon_seen && NETK.moon_t == T + 9302 + KS_MOON_MS && g_reset_calls == 1 && NETK.st.exe_reset == 1);
+    CHECK(strstr(g_log, "[kills] Blood Moon in this game (count 2 -> 3): the exe's waiting remote hits were dropped too (3, 2 of them kills"));
+    g_moons_v = -1;  // (no world: nothing)
+    net_kills_tick(g_kfeet, T + 9302 + 2 * KS_MOON_MS);
+    CHECK(NETK.moons == 3 && NETK.st.clr_moon == 1 && g_reset_calls == 1);
+    // killsclear (one-shot): the list and the catch-up in flight go; (s197 S1) the exe reset too. (His ask comes 2.3 s after
+    // the last snapshot for him: s197 S3 lets a new one be taken.)
+    uint64_t Tk = T + 9100 + KS_ANS_NEW_MS + 200;
+    kills_from(&rx, lo, pk, net_pack_kills_ask(77, 50, 0x6666, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk), Tk);
+    CHECK(NETK.st.ans_new == 2 && NETK.ans[0].active);
+    queue_hit(0xD7, 40, 0, 1);
+    net_edmg_pump(Tk + 1);
+    CHECK(NETK.L.n == 1);
+    CHECK(net_live_set("killsclear", 1) && NETK.L.n == 0 && NETK.st.clr_key == 1 && strstr(g_log, "set killsclear: forgot 1 kill(s)") && g_reset_calls == 2);
+    CHECK(net_live_set("killsclear", 0) && NETK.st.clr_key == 1 && g_reset_calls == 2);
+    net_kills_tick(g_kfeet, Tk + 2);
+    CHECK(kills_rx(&rx, m, 4) == 0);  // (the answer in flight was dropped with the list: he asks again)
+    // the exe has shared HP off: apply -1 = logged once, idle (no more applies / asks); the diag says so
+    queue_hit(0xD8, 40, 0, 1);
+    net_edmg_pump(T + 9500);
+    int ix = ks_find(&NETK.L, 0xD8);
+    CHECK(ix >= 0);
+    NETK.L.applied[ix] = 0, NETK.L.nwait++;  // (as if it were a catch-up)
+    g_kl_n = 1, g_kl_hids[0] = 0xD8, g_ap_ret = -1, g_nap = 0;
+    net_kills_tick(g_kfeet, T + 20000);
+    net_kills_tick(g_kfeet, T + 30000);
+    CHECK(NETK.idle && g_nap == 1 && kills_count(g_log, "the exe has shared HP off") == 1);
+    g_log[0] = 0;
+    net_diag_log();
+    CHECK(strstr(g_log, "[kills] (on, IDLE: exe shared HP off): list 1 (own 1, EDMG 0, catch-up 0; full refused 0, crowded 0), waiting 1"));
+    // loopback: no asks / answers
+    g_ap_ret = 1, NETK.idle = false;
+    g_net_loop = true;
+    memset(NETK.joined, 0, sizeof NETK.joined);
+    net_kills_tick(g_kfeet, T + 40000);
+    CHECK(kills_rx(&rx, m, 4) == 0);
+    g_net_loop = false;
+    // killsync 0: the list goes, his ask is not answered
+    CHECK(net_live_set("killsync", 0) && !g_net_kills && NETK.L.n == 0 && strstr(g_log, "kill sync off"));
+    kills_from(&rx, lo, pk, net_pack_kills_ask(77, 60, 0x7777, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk), T + 41000);
+    net_kills_tick(g_kfeet, T + 41001);
+    CHECK(kills_rx(&rx, m, 4) == 0 && NETK.st.rx_off == 1);
+    net_set_on(false);
+    nsock_close(&rx);
+    g_ap_ret = 1;
+}
+
+// (point 7) a DLL hot reload wipes every static: the new copy turns net on (killsync on by default since s197, no key), Zed's next HELLO makes
+// his slot again = a new slot = we ask him, and his answer brings the list back
+static void test_kills_hot_reload(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47985;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47984, false));
+    net_set_on(true);  // (the new copy: NET and NETK all zero, g_net_kills back at its compiled default ON: s197, no live key)
+    NET.me = 5;
+    CHECK(g_net_kills && kills_count(g_log, "[kills] kill sync on (the compiled default since s197") == 1);
+    NETK.loaded = fake_loaded, NETK.moons_fn = fake_moons, g_moons_v = 4;
+    uint64_t T = 5000000;
+    net_kills_tick(g_kfeet, T);
+    NetKillsMsg m[8];
+    CHECK(kills_rx(&rx, m, 4) == 0 && netslot_count(NET.slot, NET_MAX_PEERS) == 0);
+    uint8_t pk[NET_KILLS_PKT];
+    kills_from(&rx, lo, pk, net_pack_hello(77, 900, "Zed", pk, sizeof pk), T + 10);  // (his HELLO: his slot is made)
+    CHECK(netslot_count(NET.slot, NET_MAX_PEERS) == 1 && NET.slot[0].port == 47984);
+    kills_from(&rx, lo, pk, net_pack_kills_ask(77, 902, 0x3131, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk), T + 11);  // (his ask right behind it, before our tick)
+    net_kills_tick(g_kfeet, T + 20);
+    int c = kills_rx(&rx, m, 4), ia = -1, ip = -1;
+    for (int i = 0; i < c; i++) { if (m[i].op == NKO_ASK) ia = i; else ip = i; }
+    CHECK(c == 2 && ia >= 0 && ip >= 0 && strstr(g_log, "asking peer 1 \"Zed\""));  // (we ask him, and his ask is answered: not wiped by the join)
+    CHECK(ip >= 0 && m[ip].nonce == 0x3131 && m[ip].n == 1 && m[ip].k == 0);
+    // (s197 M1) the reload wiped "my last Blood Moon": the ask says none seen = he sends everything, also kills of not-known age
+    CHECK(ia >= 0 && m[ia].moon == NET_KILLS_MOON_NONE && !NETK.moon_seen);
+    uint32_t h[3] = {0xF1, 0xF2, 0xF3};
+    kills_from(&rx, lo, pk, net_pack_kills_part(77, 901, ia >= 0 ? m[ia].nonce : 0, 0x0101, 0, 1, h, NULL, 3, pk, sizeof pk), T + 30);
+    CHECK(NETK.L.n == 3 && NETK.ask[0].done && NETK.moons == 4 && NETK.st.clr_moon == 0);  // (the env-kept count is adopted, no clear)
+    CHECK(NETK.L.kt[0] == KS_KT_OLD && NETK.st.hid_old == 0);
+    net_set_on(false);
+    nsock_close(&rx);
+}
+
+// (s197 review M1 + S1) the Blood Moon in THIS game sets "my last moon"; my asks carry its age; a catch-up drops kills from before
+// it (also ones a slow / buggy answerer still sends), my answer to a peer holds back kills older than HIS moon; the exe reset runs
+// at the moon (and at killsclear); an exe without the export is logged once; a moon while killsync was off is seen when it is on again
+static void test_kills_moon_glue(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47991;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47990, false));
+    net_set_on(true);
+    NET.me = 5;
+    NETK.loaded = fake_loaded, NETK.moons_fn = fake_moons, g_moons_v = 5, g_kl_n = 0, g_kl_calls = 0;
+    uint64_t T = 7000000;
+    NetKillsMsg m[8];
+    uint8_t pk[NET_KILLS_PKT];
+    net_kills_tick(g_kfeet, T);  // (count 5 adopted)
+    queue_hit(0xA1, 40, 0, 1), queue_hit(0xA2, 40, 0, 1);
+    net_edmg_pump(T + 100);
+    CHECK(NETK.L.n == 2 && !NETK.moon_seen);
+    // the Blood Moon: list gone, moon time = this tick, the exe reset
+    g_moons_v = 6;
+    net_kills_tick(g_kfeet, T + 1000);
+    CHECK(NETK.L.n == 0 && NETK.moon_seen && NETK.moon_t == T + 1000 && g_reset_calls == 1 && NETK.st.clr_moon == 1);
+    queue_hit(0xA3, 40, 0, 1);
+    net_edmg_pump(T + 5000);  // (after it: kept)
+    // Zed appears 59 s after our moon: our ask says so
+    kills_slot(0, lo, 47990, 77, "Zed", T + 60000);
+    net_kills_tick(g_kfeet, T + 60010);
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].op == NKO_ASK && m[0].moon == 59);
+    uint32_t nonce = m[0].nonce;
+    // his answer: 70 s old (before our moon), 30 s, not known, 58 s (inside the slack after our moon), 56 s (just after it)
+    uint32_t h[5] = {0xC1, 0xC2, 0xC3, 0xC4, 0xC5};
+    uint16_t ag[5] = {70, 30, NET_KILLS_AGE_OLD, 58, 56};
+    kills_from(&rx, lo, pk, net_pack_kills_part(77, 9, nonce, 0x0303, 0, 1, h, ag, 5, pk, sizeof pk), T + 60020);
+    CHECK(NETK.ask[0].done && NETK.L.n == 3 && ks_find(&NETK.L, 0xA3) >= 0 && ks_find(&NETK.L, 0xC2) >= 0 && ks_find(&NETK.L, 0xC5) >= 0);
+    CHECK(ks_find(&NETK.L, 0xC1) < 0 && ks_find(&NETK.L, 0xC3) < 0 && ks_find(&NETK.L, 0xC4) < 0 && NETK.st.hid_old == 3);
+    CHECK(strstr(g_log, "catch-up from peer 1 \"Zed\": 5 kill(s) in 1 part(s), 2 new to us, 3 from before our last Blood Moon (dropped)"));
+    // his ask: his last moon 40 s ago: of our 3 only 0xC2 (killed ~32 s ago) goes, with its age
+    kills_from(&rx, lo, pk, net_pack_kills_ask(77, 10, 0x4444, 0, 0, 40, pk, sizeof pk), T + 61000);
+    CHECK(strstr(g_log, "peer 1 \"Zed\" asks for our kill list (his last Blood Moon 40 s ago): 1 of our 3 kill(s) are after it, in 1 part(s)"));
+    net_kills_tick(g_kfeet, T + 61001);
+    int c = kills_rx(&rx, m, 4), got = -1;
+    for (int i = 0; i < c; i++) if (m[i].op == NKO_PART) got = i;
+    CHECK(got >= 0 && m[got].nonce == 0x4444 && m[got].k == 1 && m[got].hid[0] == 0xC2 && m[got].age[0] == 31);
+    // a peer with no moon gets all 3
+    kills_from(&rx, lo, pk, net_pack_kills_ask(77, 11, 0x4445, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk), T + 61000 + KS_ANS_NEW_MS);
+    net_kills_tick(g_kfeet, T + 61001 + KS_ANS_NEW_MS);
+    c = kills_rx(&rx, m, 4), got = -1;
+    for (int i = 0; i < c; i++) if (m[i].op == NKO_PART) got = i;
+    CHECK(got >= 0 && m[got].nonce == 0x4445 && m[got].k == 3);
+    // moon then reload: the load's ask still carries the moon's age (a load is not a moon)
+    net_kills_on_load(1);
+    net_kills_tick(g_kfeet, T + 70000);
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].op == NKO_ASK && m[0].moon == 69 && m[0].nonce != nonce);
+    // killsclear: the exe reset too; an exe without linkpos_edmg_reset: said once, nothing else breaks
+    CHECK(net_live_set("killsclear", 1) && g_reset_calls == 2 && NETK.st.exe_reset == 2);
+    NETED.reset = NULL;
+    g_log[0] = 0;
+    g_moons_v = 7;
+    net_kills_tick(g_kfeet, T + 80000);
+    CHECK(NETK.st.clr_moon == 2 && NETK.moon_t == T + 80000 && kills_count(g_log, "has no linkpos_edmg_reset") == 1 && g_reset_calls == 2);
+    CHECK(net_live_set("killsclear", 1) && kills_count(g_log, "has no linkpos_edmg_reset") == 1);
+    // a Blood Moon while killsync is off: seen at the first count read after `set killsync 1` (late = the safe side)
+    NETED.reset = fake_reset;
+    CHECK(net_live_set("killsync", 0) && !g_net_kills);
+    g_moons_v = 8;
+    net_kills_tick(g_kfeet, T + 90000);  // (off: nothing read)
+    CHECK(NETK.moons == 7 && NETK.moon_t == T + 80000);
+    CHECK(net_live_set("killsync", 1) && g_net_kills);
+    net_kills_tick(g_kfeet, T + 95000);
+    CHECK(NETK.moons == 8 && NETK.st.clr_moon == 3 && NETK.moon_t == T + 95000 && g_reset_calls == 3);
+    g_log[0] = 0;
+    net_diag_log();
+    CHECK(strstr(g_log, "last Blood Moon 0 s ago") && strstr(g_log, "before our Blood Moon 3") && strstr(g_log, "(exe reset 3)"));
+    net_set_on(false);
+    nsock_close(&rx);
+}
+
+// (s197 review S2) kills are recorded and applied only in the open world (sora_world_open() == 1; 0 / -1 / no hook = not), never a
+// Stal (`_Bone`), never an EDMG kill from a peer on another map; a catch-up is still taken in a shrine (it is about the open world)
+static void test_kills_open_world(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47993;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47992, false));
+    net_set_on(true);
+    NET.me = 5;
+    NETK.loaded = fake_loaded, NETK.moons_fn = fake_moons, g_moons_v = 1, g_kl_n = 0, g_kl_calls = 0;
+    uint64_t T = 8000000;
+    uint8_t pk[NET_KILLS_PKT];
+    kills_slot(0, lo, 47992, 77, "Zed", T);
+    net_kills_tick(g_kfeet, T);
+    NetKillsMsg m[4];
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].op == NKO_ASK);
+    // in a shrine (0), no world (-1), no hook: own kills and Zed's EDMG kills are not kept
+    int vs[3] = {0, -1, 1};
+    for (int v = 0; v < 3; v++) {
+        g_open_v = vs[v];
+        if (v == 2) NETK.open_fn = NULL;
+        queue_hit(0xA0 + (uint32_t)v, 40, 0, 1);
+        net_edmg_pump(T + 10 + (uint64_t)v);
+        NetEdEnt ed = {0xB0 + (uint32_t)v, 50, 0, 15, 1, NEDF_KILL};
+        kills_from(&rx, lo, pk, net_pack_edmg(77, (uint16_t)(30 + v), &ed, 1, pk, sizeof pk), T + 20 + (uint64_t)v);
+    }
+    CHECK(NETK.L.n == 0 && NETK.st.not_open == 6 && g_nap == 3);  // (the EDMG applies themselves as ever)
+    NETK.open_fn = fake_open, g_open_v = 1;
+    // a Stal: not kept (the name rule); any other Enemy_*: kept
+    queue_hit(0xA5, 40, 0, 1), snprintf(g_fq[g_nfq - 1].name, sizeof g_fq[0].name, "Enemy_Bokoblin_Bone_Junior");
+    queue_hit(0xA6, 40, 0, 1), snprintf(g_fq[g_nfq - 1].name, sizeof g_fq[0].name, "Enemy_Lizalfos_Junior");
+    net_edmg_pump(T + 100);
+    CHECK(NETK.L.n == 1 && ks_find(&NETK.L, 0xA6) == 0 && ks_find(&NETK.L, 0xA5) < 0);
+    // Zed on another map (AREA hidden): his EDMG kill is not kept; on ours: kept
+    NET.slot[0].hidden = true;
+    NetEdEnt ed2 = {0xB7, 50, 0, 15, 1, NEDF_KILL};
+    kills_from(&rx, lo, pk, net_pack_edmg(77, 40, &ed2, 1, pk, sizeof pk), T + 200);
+    CHECK(ks_find(&NETK.L, 0xB7) < 0 && NETK.st.not_open == 7);
+    NET.slot[0].hidden = false;
+    ed2.hid = 0xB8;
+    kills_from(&rx, lo, pk, net_pack_edmg(77, 41, &ed2, 1, pk, sizeof pk), T + 201);
+    CHECK(ks_find(&NETK.L, 0xB8) >= 0 && NETK.L.n == 2);
+    // a catch-up while in a shrine: taken (the list is about the open world); the apply scan waits for the open world
+    g_open_v = 0;
+    uint32_t h[2] = {0xC1, 0xC2};
+    uint16_t ag[2] = {3, 4};
+    kills_from(&rx, lo, pk, net_pack_kills_part(77, 50, m[0].nonce, 0x0909, 0, 1, h, ag, 2, pk, sizeof pk), T + 300);
+    CHECK(NETK.ask[0].done && NETK.L.n == 4);
+    g_kl_n = 2, g_kl_hids[0] = 0xC1, g_kl_hids[1] = 0xA6, g_nap = 0, g_kl_calls = 0;
+    for (int i = 0; i < 5; i++) net_kills_tick(g_kfeet, T + 400 + 200 * (uint64_t)i);
+    CHECK(g_kl_calls == 0 && g_nap == 0);
+    g_open_v = -1;
+    net_kills_tick(g_kfeet, T + 2000);
+    CHECK(g_kl_calls == 0 && g_nap == 0);
+    g_open_v = 1;
+    net_kills_tick(g_kfeet, T + 2200);
+    CHECK(g_kl_calls == 1 && g_nap == 1 && g_ap[0].hid == 0xC1);  // (0xA6: ours, seen dead here = inside KS_REAPPLY_MS)
+    net_set_on(false);
+    nsock_close(&rx);
+}
+
+// (s197 review S3 / S4) a flood of asks from one peer: one new snapshot per KS_ANS_NEW_MS, one line; asks from many peers: the line
+// is rate limited; a crafted answer: one snapshot restart followed, the second ends the ask (logged once); one answer adds at most
+// KS_ASK_NEW_MAX new kills (logged once; list full = new kills refused, the enemies stay alive)
+static void test_kills_flood_caps(void) {
+    reset_all();
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    NET.port = 47995;
+    NetSock rx;
+    CHECK(nsock_open(&rx, 47994, false));
+    net_set_on(true);
+    NET.me = 5;
+    uint64_t T = 9000000;
+    uint8_t pk[NET_KILLS_PKT];
+    queue_hit(0xA1, 40, 0, 1);
+    net_edmg_pump(T);
+    kills_slot(0, lo, 47994, 77, "Zed", T);
+    net_kills_tick(g_kfeet, T);
+    NetKillsMsg m[64];
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].op == NKO_ASK);
+    uint32_t ours = m[0].nonce;
+    g_log[0] = 0;
+    // S3: 30 asks with new nonces in 1 s: one snapshot, one line, the rest counted "too soon"
+    for (int i = 0; i < 30; i++) {
+        int n = net_pack_kills_ask(77, (uint16_t)(100 + i), 0x7000u + (uint32_t)i, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk);
+        net_kills_recv(0, pk, n, T + 10 + 33 * (uint64_t)i);
+    }
+    CHECK(NETK.st.ans_new == 1 && NETK.st.ans_later == 29 && kills_count(g_log, "asks for our kill list") == 1 && NETK.ans[0].nonce == 0x7000);
+    // its re-ask (the same nonce, part 0 in) is served at once; a new nonce after KS_ANS_NEW_MS is a new snapshot
+    int n = net_pack_kills_ask(77, 200, 0x7000, NETK.ans[0].tag, 0, NET_KILLS_MOON_NONE, pk, sizeof pk);
+    net_kills_recv(0, pk, n, T + 1100);
+    CHECK(NETK.st.ans_later == 29 && NETK.ans[0].active);
+    n = net_pack_kills_ask(77, 201, 0x7100, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk);
+    net_kills_recv(0, pk, n, T + 10 + KS_ANS_NEW_MS);
+    CHECK(NETK.st.ans_new == 2 && NETK.ans[0].nonce == 0x7100);
+    // the line itself (belt and braces: with NET_MAX_PEERS 3 the snapshot limit alone keeps it to 3 lines per 2 s): 12 new snapshots
+    // in the same 2 s (the snapshot timer wound back by hand) = 8 lines + one "not logged" line
+    g_log[0] = 0;
+    for (int k = 0; k < 12; k++) {
+        NETK.ans[0].t_new = 0;
+        n = net_pack_kills_ask(77, (uint16_t)(210 + k), 0x8000u + (uint32_t)k, 0, 0, NET_KILLS_MOON_NONE, pk, sizeof pk);
+        net_kills_recv(0, pk, n, T + 4100 + (uint64_t)k);  // (a fresh log window: the last line was at T + 2010)
+    }
+    CHECK(kills_count(g_log, "asks for our kill list") == NET_LOGRATE_BURST && kills_count(g_log, "more kill-list asks in the next") == 1);
+    CHECK(NETK.st.ans_new == 14 && NETK.ask_log.quiet == 12 - NET_LOGRATE_BURST);
+    net_kills_tick(g_kfeet, T + 4200);
+    while (kills_rx(&rx, m, 64) > 0) {}
+    // S4: our ask to Zed (nonce `ours`): tag 1 parts, then tag 2 (one restart: followed), then tag 3 = capped, logged once
+    g_log[0] = 0;
+    uint32_t h[NET_KILLS_CHUNK];
+    uint16_t ag[NET_KILLS_CHUNK];
+    for (int i = 0; i < NET_KILLS_CHUNK; i++) h[i] = 0x01000000u + (uint32_t)i, ag[i] = 1;
+    n = net_pack_kills_part(77, 300, ours, 1, 0, 3, h, ag, 2, pk, sizeof pk);
+    net_kills_recv(0, pk, n, T + 4000);
+    n = net_pack_kills_part(77, 301, ours, 2, 0, 3, h + 2, ag, 2, pk, sizeof pk);
+    net_kills_recv(0, pk, n, T + 4001);
+    CHECK(NETK.ask[0].restarts == 1 && NETK.ask[0].active && NETK.L.n == 5);
+    for (int t = 3; t < 10; t++) {
+        n = net_pack_kills_part(77, (uint16_t)(300 + t), ours, (uint16_t)t, 0, 3, h + 10, ag, 5, pk, sizeof pk);
+        net_kills_recv(0, pk, n, T + 4000 + (uint64_t)t);
+    }
+    CHECK(!NETK.ask[0].active && NETK.ask[0].capped && NETK.st.part_cap == 1 && NETK.st.part_stale == 6 && NETK.L.n == 5);
+    CHECK(kills_count(g_log, "his answer changed / grew past what one answer can be") == 1);
+    // S4: one answer with more than KS_ASK_NEW_MAX new kills: the rest refused, one line; the list keeps working
+    net_kills_on_load(3);
+    net_kills_tick(g_kfeet, T + 5000);
+    CHECK(kills_rx(&rx, m, 4) == 1 && m[0].op == NKO_ASK);
+    uint32_t nn = m[0].nonce;
+    g_log[0] = 0;
+    for (int p = 0; p < 64; p++) {
+        for (int i = 0; i < NET_KILLS_CHUNK; i++) h[i] = 0x02000000u + (uint32_t)(p * NET_KILLS_CHUNK + i);
+        n = net_pack_kills_part(77, (uint16_t)(400 + p), nn, 7, p, 64, h, ag, NET_KILLS_CHUNK, pk, sizeof pk);
+        net_kills_recv(0, pk, n, T + 5100 + (uint64_t)p);
+    }
+    CHECK(NETK.ask[0].done && NETK.L.n == KS_ASK_NEW_MAX && NETK.ask[0].refused == (uint32_t)(64 * NET_KILLS_CHUNK - KS_ASK_NEW_MAX));
+    CHECK(kills_count(g_log, "new kills in one answer: the rest is not taken") == 1);
+    queue_hit(0xA9, 40, 0, 1);
+    net_edmg_pump(T + 6000);
+    CHECK(NETK.L.n == KS_ASK_NEW_MAX + 1);  // (own kills still kept)
+    net_set_on(false);
+    nsock_close(&rx);
+}
+
+// (s197 review S5) the NET_REACT receive lines a peer can drive are rate limited (8 per 2 s each, then one "not logged" line),
+// counted in `net diag`; a fresh window logs again
+static void test_react_log_rate(void) {
+    reset_all();
+    g_net_react = true;
+    uint32_t lo;
+    CHECK(nsock_parse_ip("127.0.0.1", &lo));
+    kills_slot(0, lo, 47996, 77, "Zed", 1000);
+    float f[3] = {1, 2, 3};
+    NetReactEnt e[NET_REACT_MAX];
+    for (int i = 0; i < NET_REACT_MAX; i++) e[i] = nr_ent_make(0x100 + (uint32_t)i, 3, 125, 0, 7, "blade", f, false);
+    uint8_t pk[NET_PKT_MAX];
+    int n = net_pack_react(77, 9, e, 1, pk, sizeof pk);
+    net_react_recv(0, pk, n, 2000);
+    g_log[0] = 0;
+    for (int i = 0; i < 40; i++) net_react_recv(0, pk, n, 2001 + (uint64_t)i);  // (40 repeat copies)
+    CHECK(NETR.st.rx_dup == 40 && kills_count(g_log, "-> dup (a repeat copy)") == NET_LOGRATE_BURST && kills_count(g_log, "more repeat copies") == 1);
+    // bad packets (every entry bad)
+    uint8_t bad[NET_PKT_MAX];
+    memcpy(bad, pk, (size_t)n), memset(bad + NET_HDR, 0, 4);
+    g_log[0] = 0;
+    for (int i = 0; i < 30; i++) net_react_recv(0, bad, n, 2100 + (uint64_t)i);
+    CHECK(NETR.st.rx_bad == 30 && kills_count(g_log, "-> bad (") == NET_LOGRATE_BURST && kills_count(g_log, "more bad packets") == 1);
+    // he is on another map: 3 packets of 8 entries = 24 dropped entries, 8 lines
+    NET.slot[0].hidden = true;
+    g_log[0] = 0;
+    for (int i = 0; i < 3; i++) {
+        int m = net_pack_react(77, (uint16_t)(20 + i), e, NET_REACT_MAX, pk, sizeof pk);
+        net_react_recv(0, pk, m, 2200 + (uint64_t)i);
+    }
+    CHECK(NETR.st.rx_hidden == 24 && kills_count(g_log, "hidden (he is on another map)") == NET_LOGRATE_BURST && kills_count(g_log, "more dropped entries") == 1);
+    // a new window: logged again
+    g_log[0] = 0;
+    net_react_recv(0, bad, n, 2100 + NET_LOGRATE_MS);
+    CHECK(kills_count(g_log, "-> bad (") == 1);
+    // the played / dropped lines of the frame body: 16 queued, 8 lines (none of them ours: not owner)
+    NET.slot[0].hidden = false;
+    for (int i = 0; i < 2; i++) {
+        int m = net_pack_react(77, (uint16_t)(40 + i), e, NET_REACT_MAX, pk, sizeof pk);
+        net_react_recv(0, pk, m, 9000);
+    }
+    g_log[0] = 0;
+    CHECK(net_react_pending() == 16 && net_react_play(9001, NULL, NULL, NULL) == 0);
+    CHECK(kills_count(g_log, "-> not owner") == NET_LOGRATE_BURST && kills_count(g_log, "more received reactions") == 1);
+    g_log[0] = 0;
+    net_react_diag();
+    uint32_t q = NETR.log_bad.quiet + NETR.log_dup.quiet + NETR.log_rx.quiet + NETR.log_play.quiet;
+    CHECK(q == (40 - 8) + (30 - 8) + (24 - 8) + (16 - 8));
+    char want[64];
+    snprintf(want, sizeof want, "log lines not written (rate limit) %u", q);
+    CHECK(strstr(g_log, want) != NULL);
+    g_net_react = false;
+}
+
 int main(void) {
     test_inq_64();
     test_rfx_seq_wrap();
@@ -1029,6 +2138,21 @@ int main(void) {
     test_fire_send();
     test_fire_receive();
     test_esync_glue();
+    test_esync_players_area();
+    test_area_filters();
+    test_area_send();
+    test_react_attacker();
+    test_react_owner();
+    test_eshit_glue();
+    test_eshit_react();
+    test_kills_off();
+    test_kills_default_on();
+    test_kills_glue();
+    test_kills_hot_reload();
+    test_kills_moon_glue();
+    test_kills_open_world();
+    test_kills_flood_caps();
+    test_react_log_rate();
     printf("net_glue_test: %d/%d passed\n", runs - fails, runs);
     return fails ? 1 : 0;
 }

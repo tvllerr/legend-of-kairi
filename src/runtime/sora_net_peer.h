@@ -238,11 +238,15 @@ typedef struct {
     NetPeer p;                      // ring, event seqs seen, name, player id
     NetEdSeen fi;                   // (s176 v10) NET_FIRE packet seqs already applied
     NetEdSeen ed;                   // (s166 v6) NET_EDMG packet seqs already applied
+    NetEdSeen rc;                   // (s194) NET_REACT packet seqs already taken
     NetEsSeen es; NetEvSeen esev;   // (s168 v7) NET_ESYNC: newest packet seq, sensor-event seqs already applied
+    // (s191, Melty spec 4.1) NET_AREA: the map he says he is on (area_ms 0 = he never said: an old build = one world), its newest
+    // seq; hidden = we are both in known, different areas (avatar / party / fx / FIRE / enemy election skip him); the last logged state
+    char area[NET_AREA_MAX + 1]; uint64_t area_ms; NetEsSeen ars; bool hidden, area_said; char area_said_txt[NET_AREA_MAX + 1];
     NetInEvent inq[NET_INQ]; int ninq;
     NetRemoteFx rfx[NET_RFX_N];
-    uint64_t joined_ms, last_recv_ms;
-    struct { uint32_t recv, stale, ev_fresh, ev_played, lost_in; } st;
+    uint64_t joined_ms, last_recv_ms, last_snap_ms;  // (s187: last_snap_ms + st.snap = the "net diag" slot line)
+    struct { uint32_t recv, stale, ev_fresh, ev_played, lost_in, snap; } st;
 } NetPeerSlot;
 
 // slot of (ip, port), else (same ip, same player id: his port changed), else -1

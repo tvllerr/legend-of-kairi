@@ -444,11 +444,14 @@ void Model(string outPath) {
             groups.Add((g.Header.TextureIndex + (uint)texBase, g.Header.AttributesBitfield | attrOr, fi, idx.Count - fi));
         }
     }
-    // (s85) Keyblade alt ids in group attr bits 24..31 (= sora_kb.h KB_TAB index + 1; 0 = an old bake, always drawn):
+    // (s85) Keyblade alt ids in group attr bits 24..29 (= sora_kb.h KB_TAB index + 1; 0 = an old bake, always drawn;
+    // s215: bit 30 = NoLight, so ids are 1..63):
     // SORABAKE_KB_ID / SORABAKE_KB2_ID = the default blade of each chain (1 Kingdom Key / 2 Star Seeker), and
     // SORABAKE_KB_ALT / SORABAKE_KB2_ALT = "id=mdlx,..." more blades skinned to the SAME chain bones (same 12-bone
     // skeleton, so pose + motion stay the same); the exe's sora_draw_actor_blade picks which id draws per chain.
+    // (s214/s215) a value "ours:<file>.skkb" = our own Keyblade file in the folder SORABAKE_OURS_KB.
     int kbId = int.Parse(Env("SORABAKE_KB_ID", "0")), kb2Id = int.Parse(Env("SORABAKE_KB2_ID", "0"));
+    if (kbId < 0 || kbId > 63 || kb2Id < 0 || kb2Id > 63) throw new Exception($"SORABAKE_KB_ID {kbId} / SORABAKE_KB2_ID {kb2Id}: not 0..63");
     Add(model, 0, 0, 0);
     // (s89 anti) SORABAKE_KB_NOMESH=1: the weapon chain's BONES stay (240 = the runtime's ragdoll / puppet / swap-blend
     // paths want Sora's 228 + 12) but its mesh + textures are left out (Anti Form has no Keyblade)
@@ -456,10 +459,49 @@ void Model(string outPath) {
     if (!kbNoMesh) Add(kb, model.Bones.Count, tex.Images.Count, 0x100 | kbId << 24);
     var images = kbNoMesh ? tex.Images.ToList() : tex.Images.Concat(kbTex.Images).ToList();
     int nBones = model.Bones.Count + kb.Bones.Count;
+    var ownTex = new Dictionary<int, OwnKb>();  // (s214) images[] slots (null there) whose pixels are one of our own Keyblades' PNGs
     void AddAlts(string env, int boneBase, int nChain) {
         foreach (var item in Env(env, "").Split(',', StringSplitOptions.RemoveEmptyEntries)) {
-            var kv = item.Split('='); int id = int.Parse(kv[0]);
-            if (id < 1 || id > 255) throw new Exception($"{env}: alt id {id} not 1..255");
+            var kv = item.Split('=', 2);
+            if (kv.Length != 2 || kv[1].Length == 0 || !int.TryParse(kv[0], out int id))
+                throw new Exception($"{env}: entry \"{item}\" is not <id>=<mdlx name or ours:<file>.skkb>");
+            // (s215) 1..63: the group attr's top byte is the alt id in bits 24..29, bit 30 = NoLight (sora_draw.c ATTR_ALT
+            // masks it off), bit 31 kept free
+            if (id < 1 || id > 63) throw new Exception($"{env}: alt id {id} not 1..63 (bit 30 of the group attr is NoLight)");
+            if (kv[1].StartsWith("ours:", StringComparison.Ordinal)) {
+                // (s215 review 2) "ours:<file>.skkb" = a file in SORABAKE_OURS_KB (the folder is never in the comma list: a
+                // comma in the install path would split the entry)
+                string od = Env("SORABAKE_OURS_KB", "");
+                if (od.Length == 0) throw new Exception($"{env}: \"{item}\" needs SORABAKE_OURS_KB (the folder of our own Keyblade files)");
+                string fn = kv[1].Substring(5);
+                if (fn.Length == 0 || fn.Contains('/') || fn.Contains('\\') || !fn.EndsWith(".skkb", StringComparison.OrdinalIgnoreCase))
+                    throw new Exception($"{env}: \"{item}\": ours: takes a plain <file>.skkb name");
+                kv[1] = Path.Combine(od, fn);
+            }
+            if (kv[1].EndsWith(".skkb", StringComparison.OrdinalIgnoreCase)) {  // (s214) our own Keyblade file, no KH2 data
+                var own = OwnKb.Read(kv[1], nChain);
+                int tbo = images.Count;
+                ownTex[tbo] = own;
+                images.Add(null);  // (a slot: its pixels come from ownTex)
+                foreach (var g in own.Groups) {
+                    int fi = idx.Count;
+                    // the group's own vertex copies (a vertex used by two groups is written twice: groups never share in sora_model.bin)
+                    var map = new Dictionary<int, int>();
+                    for (int k = g.first; k < g.first + g.n; k++) {
+                        int v = own.Idx[k];
+                        if (!map.TryGetValue(v, out int nvx)) {
+                            nvx = verts.Count; map[v] = nvx;
+                            var ov = own.Verts[v];
+                            verts.Add((infl.Count, 1, ov.u, ov.v));
+                            infl.Add((boneBase + ov.bone, new System.Numerics.Vector4(ov.x, ov.y, ov.z, 1)));
+                        }
+                        idx.Add(nvx);
+                    }
+                    groups.Add(((uint)tbo, (int)(g.attr & 0x40000001u) | 0x100 | id << 24, fi, idx.Count - fi));
+                }
+                Console.WriteLine($"alt {id} = {kv[1]} (ours): {own.Groups.Count} groups, {own.Verts.Count} verts, {own.Idx.Length / 3} tris on bones {boneBase}.., texture {tbo} ({own.W}x{own.H})");
+                continue;
+            }
             var aBar = Bar.Read(new MemoryStream(File.ReadAllBytes(ObjFile(kv[1], "mdlx"))));
             var a = OpenKh.Kh2.Models.ModelSkeletal.Read(aBar.First(e => e.Type == Bar.EntryType.Model).Stream);
             if (a.Bones.Count != nChain) throw new Exception($"{kv[1]}: {a.Bones.Count} bones, the chain has {nChain}");
@@ -484,6 +526,13 @@ void Model(string outPath) {
     }
     var texData = new List<byte[]>();
     foreach (var im in images) {
+        if (im == null) {  // (s214) our own texture: straight RGBA8 (alpha 0..255 already) -> BGRA8 as ToBgra32 gives
+            var ok = ownTex[texData.Count]; var bg = new byte[ok.Tex.Length];
+            for (int i = 0; i < bg.Length; i += 4) { bg[i] = ok.Tex[i + 2]; bg[i + 1] = ok.Tex[i + 1]; bg[i + 2] = ok.Tex[i]; bg[i + 3] = ok.Tex[i + 3]; }
+            texData.Add(bg);
+            Console.WriteLine($"tex {texData.Count - 1}: {ok.W}x{ok.H} ours ({Path.GetFileName(ok.Path)})");
+            continue;
+        }
         var px = OpenKh.Imaging.ImageExtensions.ToBgra32(im);
         int amax = 0;
         for (int i = 3; i < px.Length; i += 4) amax = Math.Max(amax, px[i]);
@@ -500,6 +549,8 @@ void Model(string outPath) {
         var mg = new List<(uint tex, int attr, int fi, int ni)>();
         foreach (var g in groups) {
             var l = mg.Count > 0 ? mg[^1] : default;
+            // (the top byte also holds bit 30 NoLight of our own Keyblades' groups (s214/s215): 0xFF000101 already keeps a lit
+            // and an unlit group apart)
             if (mg.Count > 0 && l.tex == g.tex && (l.attr & unchecked((int)0xFF000101)) == (g.attr & unchecked((int)0xFF000101)) && l.fi + l.ni == g.fi)
                 mg[^1] = (l.tex, l.attr, l.fi, l.ni + g.ni);
             else mg.Add(g);
@@ -515,6 +566,7 @@ void Model(string outPath) {
     int o = dOff;
     for (int i = 0; i < texData.Count; i++) {
         var im = images[i];
+        if (im == null) { var ok = ownTex[i]; w.Write((uint)ok.W); w.Write((uint)ok.H); w.Write((uint)o); w.Write(0u); o += texData[i].Length; continue; }  // (s214 ours: addr 0, the runtime samples with REPEAT anyway)
         w.Write((uint)im.Size.Width); w.Write((uint)im.Size.Height); w.Write((uint)o); w.Write((uint)im.TextureAddressMode.GetHashCode());
         o += texData[i].Length;
     }
@@ -1569,4 +1621,89 @@ class Slot {
         return (2 * s3 - 3 * s2 + 1) * a.v + (s3 - 2 * s2 + s) * dt * a.r + (-2 * s3 + 3 * s2) * b.v + (s3 - s2) * dt * b.l;
     }
     public float EvalLinear(int c, float f) => Eval(c, f, true);
+}
+
+// (s214) our own Keyblade model ('SKKB' v1, written by the Blender export of tools/sorabuild/ours/kb; no KH2 data in it),
+// for AddAlts: a value "<id>=ours:<file>.skkb" (in SORABAKE_OURS_KB) or "<id>=<path>.skkb". Little-endian:
+//   header  u32 magic 'SKKB', u32 version 1, u32 n_bones (= the chain's 12), u32 n_groups, u32 n_verts, u32 n_idx, u32 tex_w, u32 tex_h
+//   group[] u32 attr (bit 0 = KH2 alpha pass, bit 30 = no light; other bits must be 0), u32 first_idx, u32 n_idx
+//   vert[]  u32 bone (0 .. n_bones-1), f32 x, y, z (cm, in that bone's rest frame = W_EX010's), f32 u, v (0..1, v from the top row)
+//   idx[]   u32 vertex index (triangle list, inside its group's range)
+// Texture = <same name>.png: 8-bit RGBA (or RGB), non-interlaced, tex_w x tex_h, straight alpha. Rigid skin: one bone per vertex.
+class OwnKb {
+    public string Path; public int W, H; public byte[] Tex;
+    public List<(uint attr, int first, int n)> Groups = new();
+    public List<(int bone, float x, float y, float z, float u, float v)> Verts = new();
+    public int[] Idx;
+    public static OwnKb Read(string path, int nChain) {
+        var d = File.ReadAllBytes(path);
+        var k = new OwnKb { Path = path };
+        uint U(int o) => BitConverter.ToUInt32(d, o);
+        float F(int o) => BitConverter.ToSingle(d, o);
+        if (d.Length < 32 || U(0) != 0x424B4B53u || U(4) != 1) throw new Exception($"{path}: not an SKKB v1 file");
+        int nb = (int)U(8), ng = (int)U(12), nv = (int)U(16), ni = (int)U(20);
+        k.W = (int)U(24); k.H = (int)U(28);
+        if (nb != nChain) throw new Exception($"{path}: {nb} bones, the chain has {nChain}");
+        if (ng < 1 || ng > 8 || nv < 3 || ni < 3 || ni % 3 != 0 || 32L + 12L * ng + 24L * nv + 4L * ni != d.Length) throw new Exception($"{path}: bad sizes");
+        int o = 32;
+        for (int i = 0; i < ng; i++, o += 12) {
+            uint a = U(o); int f = (int)U(o + 4), n = (int)U(o + 8);
+            if ((a & ~0x40000001u) != 0 || n % 3 != 0 || f < 0 || n <= 0 || (long)f + n > ni) throw new Exception($"{path}: bad group {i}");
+            k.Groups.Add((a, f, n));
+        }
+        for (int i = 0; i < nv; i++, o += 24) {
+            int b = (int)U(o);
+            if (b < 0 || b >= nb) throw new Exception($"{path}: vertex {i} on bone {b}");
+            k.Verts.Add((b, F(o + 4), F(o + 8), F(o + 12), F(o + 16), F(o + 20)));
+        }
+        k.Idx = new int[ni];
+        for (int i = 0; i < ni; i++, o += 4) { k.Idx[i] = (int)U(o); if (k.Idx[i] < 0 || k.Idx[i] >= nv) throw new Exception($"{path}: index {i} out of range"); }
+        var png = System.IO.Path.ChangeExtension(path, ".png");
+        k.Tex = ReadPng(png, out int pw, out int ph);
+        if (pw != k.W || ph != k.H) throw new Exception($"{png}: {pw}x{ph}, the model says {k.W}x{k.H}");
+        return k;
+    }
+    // minimal PNG reader (8-bit RGBA / RGB, non-interlaced) -> RGBA8 (as tools/sorabuild/hud/hudbake's Png.Read)
+    static byte[] ReadPng(string path, out int w, out int h) {
+        var d = File.ReadAllBytes(path);
+        if (d.Length < 8 || d[0] != 137 || d[1] != 80 || d[2] != 78 || d[3] != 71) throw new Exception($"{path}: not a PNG");
+        int p = 8, bpp = 4; w = h = 0;
+        var idat = new MemoryStream();
+        while (p + 8 <= d.Length) {
+            int len = (d[p] << 24) | (d[p + 1] << 16) | (d[p + 2] << 8) | d[p + 3];
+            string type = Encoding.ASCII.GetString(d, p + 4, 4);
+            if (type == "IHDR") {
+                w = (d[p + 8] << 24) | (d[p + 9] << 16) | (d[p + 10] << 8) | d[p + 11]; h = (d[p + 12] << 24) | (d[p + 13] << 16) | (d[p + 14] << 8) | d[p + 15];
+                byte ct = d[p + 17];
+                if (d[p + 16] != 8 || d[p + 20] != 0) throw new Exception($"{path}: not 8-bit / interlaced");
+                bpp = ct == 6 ? 4 : ct == 2 ? 3 : throw new Exception($"{path}: colour type {ct}");
+                if (w < 1 || h < 1 || w > 4096 || h > 4096) throw new Exception($"{path}: size {w}x{h}");
+            } else if (type == "IDAT") idat.Write(d, p + 8, len);
+            else if (type == "IEND") break;
+            p += 12 + len;
+        }
+        idat.Position = 0;
+        int stride = w * bpp;
+        var raw = new byte[(stride + 1) * h];
+        using (var z = new System.IO.Compression.ZLibStream(idat, System.IO.Compression.CompressionMode.Decompress)) {
+            int got = 0; while (got < raw.Length) { int n = z.Read(raw, got, raw.Length - got); if (n <= 0) break; got += n; }
+            if (got != raw.Length) throw new Exception($"{path}: short image data");
+        }
+        var px = new byte[stride * h];
+        for (int y = 0; y < h; y++) {
+            int ft = raw[y * (stride + 1)];
+            for (int x = 0; x < stride; x++) {
+                int a = x >= bpp ? px[y * stride + x - bpp] : 0, b = y > 0 ? px[(y - 1) * stride + x] : 0, c = (x >= bpp && y > 0) ? px[(y - 1) * stride + x - bpp] : 0;
+                int v = raw[y * (stride + 1) + 1 + x];
+                switch (ft) { case 0: break; case 1: v += a; break; case 2: v += b; break; case 3: v += (a + b) / 2; break;
+                    case 4: { int pp = a + b - c, pa = Math.Abs(pp - a), pb = Math.Abs(pp - b), pc = Math.Abs(pp - c); v += (pa <= pb && pa <= pc) ? a : pb <= pc ? b : c; break; }
+                    default: throw new Exception($"{path}: filter {ft}"); }
+                px[y * stride + x] = (byte)v;
+            }
+        }
+        if (bpp == 4) return px;
+        var o4 = new byte[w * h * 4];
+        for (int i = 0; i < w * h; i++) { o4[i * 4] = px[i * 3]; o4[i * 4 + 1] = px[i * 3 + 1]; o4[i * 4 + 2] = px[i * 3 + 2]; o4[i * 4 + 3] = 255; }
+        return o4;
+    }
 }

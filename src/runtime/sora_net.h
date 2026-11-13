@@ -6,13 +6,29 @@
 //   env:   SAVAGEWIND_SORA_NET=1 (on at start), SAVAGEWIND_SORA_NET_NAME=<name> (default "Sora"), SAVAGEWIND_SORA_NET_PORT=<n>,
 //          SAVAGEWIND_SORA_NET_PEERS=ip[:port],ip[:port],... (pins at start)
 //   live:  set net 0|1, set netloop 0|1, set netbone 0|1 (bone-pose sync, default 1), set netskate 0|1 (skate rider sync, default 1), set netplate 0|1, set netparty 0|1, set netport <n>, set edmg 0|1 (shared enemy HP, default 1), set esync 0|1 (enemy sync, default 0), set esynclog 0|1,
-//          set edmglog 0|1 (log each edmg tx / rx; the glue is sora_net_edmg.h),
+//          set edmglog 0|1 (log each edmg tx / rx; the glue is sora_net_edmg.h), set netreact 0|1 (s194: hit reactions on enemies another game owns, default 1 since s196; sora_net_react.h),
+//          set eshit 0|1 (s195: my hit takes over an enemy another game runs, default 1 since s196), set eshitms <ms> (s195: the owner's hits keep
+//          "closer" hand-overs off this long, default 4000), set esdead 0|1 (s195: a dead player is nobody's nearest, default 1 since s196; sora_net_esync.h),
+//          set killsync 0|1 (s196: kills stay dead after a reload / for a joining game, default 1 since s197), set killsclear 1 (one-shot), set killslog 0|1 (sora_net_kills.h),
 //          set netfire 0|1 (fire sync, default 1), set netfireen 0|1 (also ignite enemies on the receiver, default 0), set netfirespk 0|1 (sparks at enemies on the receiver, default 1),set netfirelog 0|1 (default 1; sora_net_fire.h);
 //          lines "net peer <ip>[:port]" (adds a pin) | "net peer off" (clears the pins) | "net peer" (logs the table), "net name <s>", "net diag"
 // Net off (default): no socket, net_tick returns at once, net_note_* return at once (no sfx / fx name lookups).
+// (s187) MELTY NET: when Melty started this copy (sora_melty_start() == 1, sora_net_sock.h) the packets go through Melty's room
+// and not the UDP socket: NET.melty. No socket / port / HELLO / BYE / pins / LAN discovery then; a room player = a peer slot
+// under the fake address nmelty_ip(room peer id):1, made when the room says he joined and freed at once when it says he left;
+// a packet "to every peer" is ONE send to the room (net_send_all). Outside Melty NET.melty is false and nothing changes.
+// (s191, spec 4.4) THE ROOM'S STORY is drained in ONE place (net_story_pump) and each key handed to its owner: so far only
+// botw.clock:world -> the room clock (sora_clock.h: time of day, weather, Blood Moon). Live "set mclock 0|1" (default on when
+// Melty started the game), "set mclockfake <hour>" (dev: the guest path with a fake clock, also outside a room; -1 = off),
+// "set mclocktake 0|1" (s198, default 1: a new leader takes the room's clock first and writes nothing off the world).
+// (s207) THE SOLO BUILD: env SAVAGEWIND_SORA_SOLO=1 (melty-setup/play.py, COOP = False) = no co-op at all in this copy:
+// Melty's room is never asked, no UDP socket is ever opened (net_set_on refuses: also "set net 1", a pin list, Sora mode
+// coming back), so no peers, no SNAPs, no enemy sync. Unset / 0 = everything as before.
 #pragma once
 #include "sora_net_sock.h"
 #include "sora_net_peer.h"
+#include "sora_net_note.h"  // (s209: Melty's lab notes, HELLO + FRAME: the counts and the HELLO's version)
+#include "sora_clock.h"
 
 #define NET_SNAP_MS 50      // 20 Hz
 #define NET_HELLO_MS 1000   // while a peer / target has not answered
@@ -36,6 +52,12 @@ typedef struct { uint32_t ip; uint16_t port; bool pinned; uint64_t born; } NetTa
 
 static struct {
     bool on, inited, fail_logged, driven, loading;
+    bool melty;                                               // (s187) in a Melty Net room: no socket, see the top of this file
+    uint16_t melty_self;                                      // (s187) our room peer id as last seen (0 = not in the room yet)
+    uint64_t melty_since;                                     // (s187) when sora_melty_start said yes (the "still connecting" log)
+    bool melty_slow_logged;
+    char area[32];                                            // (s190, Melty spec 4.1) the map we are on (net_set_area; "" = not known)
+    struct { uint16_t id; char name[NET_NAME_MAX + 1]; bool said; } mroom[16]; int nmroom;  // (s187) who the room says is here (kept while net is off too), in join order (s198); said = his "no slot" line went
     NetSock sock;
     uint16_t port, seq;
     uint8_t me, evseq;
@@ -53,7 +75,8 @@ static struct {
     bool parked;                                              // (mp2) Sora mode off while net was on: BYE sent, socket closed, resumes with Sora
     bool wet, dead;                                           // set by the frame body (ghost / Game Over)
     struct { uint32_t sent, recv, bad, stale, other, echo, ev_sent, ev_fresh, ev_played, lost_out, lost_in, err;
-        uint32_t mv_sent, mv_skip, anc_ev[4], anc_ev_in[4], anc_mv_in[4], anc_guess; } st;  // (slice 3: moves sent / skipped as unchanged, fx events by anchor, received moves by anchor, party anchors played at Sora; mp4: lost_out = our queue full, lost_in = a peer's inq full)
+        uint32_t mv_sent, mv_skip, anc_ev[4], anc_ev_in[4], anc_mv_in[4], anc_guess;
+        uint32_t melty_wait; } st;  // (s187: melty_wait = packets not sent because the room was not connected yet)  // (slice 3: moves sent / skipped as unchanged, fx events by anchor, received moves by anchor, party anchors played at Sora; mp4: lost_out = our queue full, lost_in = a peer's inq full)
 } NET;
 
 static void avatar_diag(void);     // (sora_net_avatar.h: "net diag" logs the avatar too)
@@ -106,6 +129,13 @@ static void net_name_set(const char *s) {
 
 static void net_send_to(uint32_t ip, uint16_t port, const uint8_t *buf, int n) {
     if (n <= 0) return;
+    if (NET.melty) {  // (s187: one room player; the callers that mean "everyone" use net_send_all)
+        if (!nmelty_is(ip, port)) return;
+        if (!sora_melty_connected()) { NET.st.melty_wait++; return; }
+        if (sora_melty_send(nmelty_peer(ip), buf, n) == n) NET.st.sent++;
+        else NET.st.err++;
+        return;
+    }
     if (nsock_send(&NET.sock, ip, port, buf, n) == n) NET.st.sent++;
     else NET.st.err++;
 }
@@ -157,12 +187,29 @@ static int net_dests(NetAddr *out, bool with_learned) {
     return n;
 }
 #define NET_DESTS_MAX (NET_MAX_PEERS + NET_TG_MAX)
+// (s187) one packet to every peer: the UDP mesh sends it to each address of d[]; a Melty room takes it ONCE and hands it to
+// the others (a SNAP / ESYNC as a snapshot, anything else as a reliable event: runtime/melty/sora_melty.h)
+static void net_send_all(const NetAddr *d, int nd, const uint8_t *buf, int n) {
+    if (n <= 0) return;
+    if (NET.melty) {
+        if (!sora_melty_connected()) { NET.st.melty_wait++; return; }
+        if (sora_melty_send(SORA_MELTY_EVERYONE, buf, n) == n) NET.st.sent++;
+        else NET.st.err++;
+        return;
+    }
+    for (int i = 0; i < nd; i++) net_send_to(d[i].ip, d[i].port, buf, n);
+}
+#include "sora_net_area.h"  // (s191, Melty spec 4.1: NET_AREA, who is on which map; needs NET, net_dests, net_send_all)
 #include "sora_net_edmg.h"  // (s166 v6: shared enemy HP; needs NET, net_dests, net_send_to)
 #include "sora_net_fire.h"  // (s176 v10: fire sync; needs NET, net_dests, net_send_to, NetEdOut)
 #define NET_ESYNC_GLUE
 #include "sora_net_esync.h"  // (s168 v7: enemies act the same on every game; default OFF)
 #include "sora_esa.h"  // (s175: the R2 attack runner in the DLL, `set esyncatk 2`)
 #include "sora_esa_probe.h"  // (s176 R2 diag: `set esaprobe 1` = does the club hit turn on?)
+#define NET_REACT_GLUE
+#include "sora_net_react.h"  // (s194: the KH2 hit reaction on an enemy another game owns, `set netreact 1`; needs NETES)
+#define NET_KILLS_GLUE
+#include "sora_net_kills.h"  // (s196: kills stay dead after a reload / for a joining game, `set killsync 0|1`, default 1 since s197; needs NETED)
 
 static inline uint8_t net_oct0(uint32_t ip_be) { return *(const uint8_t *)&ip_be; }
 // an address worth HELLOing from a list sent by `from_ip`: not 0.x, 255.255.255.255, multicast 224-239.x, port 0; 127.x only from a 127.x sender
@@ -213,6 +260,7 @@ static int net_pack_hello_for(const NetAddr *to, uint8_t *b, int cap) {
 }
 
 static void net_send_hellos(void) {
+    if (NET.melty) return;  // (s187: the room says who is here)
     uint8_t b[NET_PKT_MAX];
     NetAddr d[NET_DESTS_MAX];
     int n = net_dests(d, true);
@@ -223,6 +271,7 @@ static void net_send_hellos(void) {
 }
 
 static void net_send_bye_all(void) {
+    if (NET.melty) return;  // (s187: the room says who left)
     uint8_t b[NET_PKT_MAX];
     NetAddr d[NET_DESTS_MAX];
     int n = net_dests(d, false);
@@ -250,12 +299,23 @@ static void net_slot_free(int k) {
 }
 static void net_slots_free_all(void) { for (int k = 0; k < NET_MAX_PEERS; k++) net_slot_free(k); }
 
+// (s207) the solo build (see the top of this file)
+static bool net_solo(void) {
+    const char *s = getenv("SAVAGEWIND_SORA_SOLO");
+    return s && atoi(s) != 0;
+}
+static bool g_net_solo_said;  // ("net stays off" said once per DLL copy)
+
 static void net_set_on(bool on) {
     if (on == NET.on) return;
     if (on) {
+        if (net_solo()) {  // (s207: nothing turns co-op on in the solo build)
+            if (!g_net_solo_said) g_net_solo_said = true, LOG("[net] solo build: co-op is off, net stays off (no room, no socket)\n");
+            return;
+        }
         if (!NET.port) NET.port = NET_PORT;
         if (!NET.name[0]) net_name_set(NULL);
-        if (!nsock_open(&NET.sock, NET.port, true)) {
+        if (!NET.melty && !nsock_open(&NET.sock, NET.port, true)) {  // (s187: in a Melty room there is no socket and no port)
             if (!NET.fail_logged)
                 LOG("[net] socket open failed on UDP port %u: net stays off (another copy on this PC? its port is exclusive:"
                     " SAVAGEWIND_SORA_NET_PORT / \"set netport N\")\n", NET.port);
@@ -263,29 +323,42 @@ static void net_set_on(bool on) {
             return;
         }
         NET.on = true, NET.me = net_roll_id(0);
+        if (NET.melty && (uint8_t)NET.melty_self) NET.me = (uint8_t)NET.melty_self;  // (s188: back on in the same seat = our room id again; net_melty_pump sets it only when the seat changes)
         NET.next_snap = NET.next_hello = 0, NET.nevq = 0;
         memset(NET.fxo, 0, sizeof NET.fxo), NET.fxrr = 0;  // (mp2: no old-seq moves / kills after a net 0 -> 1)
         memset(&NET.st, 0, sizeof NET.st);
         net_edmg_reset(GetTickCount64());
         net_fire_reset(GetTickCount64());
+        net_area_reset(GetTickCount64());  // (s191)
+        net_react_reset(GetTickCount64());  // (s194)
+        net_kills_reset(GetTickCount64());  // (s196: asks / answers of an earlier session go; the kill list stays)
         for (int i = 0; i < NET.ntg; i++) if (!NET.tg[i].pinned) net_tg_del(i--);  // (learned addresses are stale)
         NET.nalias = 0, NET.learn_hello_at = 0;
-        LOG("[net] on: UDP port %u, player %u, name \"%s\", %d pin(s)%s, up to %d peers%s\n", NET.port, NET.me, NET.name,
+        if (NET.melty) LOG("[net] on: Melty Net room (no UDP port), player %u, name \"%s\", up to %d peers%s\n", NET.me, NET.name, NET_MAX_PEERS, g_net_loop ? ", loopback" : "");
+        else LOG("[net] on: UDP port %u, player %u, name \"%s\", %d pin(s)%s, up to %d peers%s\n", NET.port, NET.me, NET.name,
             net_npins(), net_npins() ? "" : " (discovery)", NET_MAX_PEERS, g_net_loop ? ", loopback" : "");
+        net_kills_on_log();  // (s197: killsync default 1 = one line per net on)
     } else {
         net_send_bye_all();
         nsock_close(&NET.sock);
         NET.on = false;
         net_slots_free_all();
         NET.nevq = 0, NETED.nq = 0;
+        net_react_clear();  // (s194)
+        net_kills_stop_asks();  // (s196)
         net_esync_stop();  // (s168: every enemy brain we stopped runs again)
-        LOG("[net] off: BYE sent, socket closed (sent %u, recv %u)\n", NET.st.sent, NET.st.recv);
+        if (NET.melty) LOG("[net] off: still in the Melty room, sending nothing (sent %u, recv %u)\n", NET.st.sent, NET.st.recv);
+        else LOG("[net] off: BYE sent, socket closed (sent %u, recv %u)\n", NET.st.sent, NET.st.recv);
     }
 }
 
 // (mp2) Sora mode off (!g_on) while net is on: the net steps stop, so say BYE, drop his fx copies (they would freeze) and
 // close the socket exactly like net 0; net_frame (Sora back on) resumes it. Called every frame while Sora is off: cheap.
+static void net_melty_pump(uint64_t now);
+static void net_clock_frame(void);
 static void net_sora_off(void) {
+    if (NET.melty) net_melty_pump(GetTickCount64());  // (s187: the room client is polled every frame, also while we send nothing)
+    net_clock_frame();  // (s191: the room's clock also while Sora mode is off)
     if (!NET.on) return;
     LOG("[net] Sora mode off: leaving the session (resumes with Sora)\n");
     net_set_on(false);
@@ -312,6 +385,39 @@ static int net_pin_list(const char *txt, uint64_t now) {
     return added;
 }
 
+// (s209) The HELLO note's who-am-I, given to the connector before sora_melty_start (sora_net_note.h top): the version is
+// the release id in the game folder's .melty-ready.json (Melty's setup writes it: SORA_ROOT is that folder), else "dev".
+static void net_note_setup(void) {
+    char text[1024] = "", ver[64], pay[32], path[600];
+    const char *root = getenv("SORA_ROOT");
+    if (root && *root) {
+        size_t n = strlen(root);
+        bool sep = n && (root[n - 1] == '/' || root[n - 1] == 0x5c);  // (0x5c: a backslash)
+        snprintf(path, sizeof path, "%s%s.melty-ready.json", root, sep ? "" : "/");
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            size_t got = fread(text, 1, sizeof text - 1, f);
+            text[got] = 0;
+            fclose(f);
+        }
+    }
+    nnote_version(ver, (int)sizeof ver, text, NET_VERSION);
+    snprintf(pay, sizeof pay, "kairi-sn%d", NET_VERSION);
+    sora_melty_addon_setup(NNOTE_ADDON, ver, pay, 1.0f);  // (1 m a unit: BotW's world units are metres, sora_melty.h)
+}
+
+// (s188 G1) Melty Net is asked ONLY when Melty launched this copy: MELTY_NET_DIR is set (Melty's launcher sets it), or
+// SAVAGEWIND_SORA_MELTY=1; SAVAGEWIND_SORA_MELTY=0 = never. sora_melty_start alone would also say yes for a leftover
+// %LOCALAPPDATA%/LegendOfKairi/melty.properties: an install from GitHub must never go online because of an old file.
+
+static bool net_melty_wanted(void) {
+    const char *m = getenv("SAVAGEWIND_SORA_MELTY"), *d = getenv("MELTY_NET_DIR");
+    if (m && !strcmp(m, "0")) return false;
+    if (m && !strcmp(m, "1")) return true;
+    while (d && (*d == ' ' || *d == '\t')) d++;
+    return d && *d;
+}
+
 static void net_init_from_env(void) {
     if (NET.inited) return;
     NET.inited = true;
@@ -319,9 +425,38 @@ static void net_init_from_env(void) {
     const char *pe = getenv("SAVAGEWIND_SORA_NET_PORT");  // (mp2 review: a 2nd copy on one PC, the port is exclusive)
     if (pe && atoi(pe) >= 1024 && atoi(pe) <= 65535) NET.port = (uint16_t)atoi(pe);
     net_name_set(getenv("SAVAGEWIND_SORA_NET_NAME"));
-    net_pin_list(getenv("SAVAGEWIND_SORA_NET_PEERS"), GetTickCount64());  // (mp4: launcher / friends)
+    if (net_solo()) {  // (s207: no Melty room, no pins, no UDP)
+        g_net_solo_said = true;
+        LOG("[net] solo build: co-op is off (SAVAGEWIND_SORA_SOLO=1: no Melty room, no UDP port, no peers)\n");
+        return;
+    }
     const char *on = getenv("SAVAGEWIND_SORA_NET");
-    if (on && atoi(on) == 1) net_set_on(true);
+    bool melty_failed = false;  // (s189 review S2)
+    // (s187) Melty Net: asked once per DLL copy, and only when Melty launched us (net_melty_wanted). 1 = its contract folder
+    // has melty.properties and the client started; then multiplayer is on without any switch (SAVAGEWIND_SORA_NET=0 alone
+    // keeps this copy out of the room: solo).
+    if (!(on && atoi(on) == 0) && net_melty_wanted()) {
+        net_note_setup();  // (s209: the HELLO note's add-on, version, payload format, metres a unit)
+        if (sora_melty_start("LegendOfKairi", "legend-of-kairi", NET.name) == 1) {
+            NET.melty = true, NET.melty_since = GetTickCount64();
+            LOG("[net] melty: started by Melty: the room carries the packets (no UDP port, no IP list)\n");
+            net_set_on(true);
+            return;
+        }
+        char line[512];
+        while (sora_melty_log_next(line, (int)sizeof line)) LOG("%s\n", line);
+        sora_melty_stop();  // (nothing of the client stays behind)
+        melty_failed = true;
+    }
+    net_pin_list(getenv("SAVAGEWIND_SORA_NET_PEERS"), GetTickCount64());  // (mp4: launcher / friends)
+    // (s189 review S2) A Melty launch whose client did not start follows net_melty_drop's rule: UDP only with a pin list.
+    // Under Melty SAVAGEWIND_SORA_NET=1 is a default of the exe's (main.c), not the player's wish for LAN discovery: no
+    // UDP port (and no firewall prompt) behind a Melty player's back. "set net 1" still turns LAN play on by hand.
+    bool udp = on && atoi(on) == 1 && (!melty_failed || net_npins() > 0);
+    if (melty_failed)
+        LOG("[net] melty: launched by Melty, but Melty Net did not start (no melty.properties in its folder, or see above): %s\n",
+            udp ? "UDP with your peer list" : "playing solo (no UDP port opened)");
+    if (udp) net_set_on(true);
 }
 
 static int net_push_ev(int kind, int id, const float pos[3], float yaw, float scale, int anchor) {  // -> the event seq
@@ -425,9 +560,105 @@ static int net_slot_join(uint32_t ip, uint16_t port, int player, const char *nam
     }
     int tg = net_tg_find(ip, port);
     if (tg >= 0 && !NET.tg[tg].pinned) net_tg_del(tg);  // (the slot covers a learned address)
-    LOG("[net] peer %d joined: %s %s:%u\n", k + 1, type == NET_HELLO && name[0] ? name : "(snapshot)", net_ip_txt(ip, t), port);
+    if (NET.melty) LOG("[net] peer %d joined: %s (Melty room peer %u)\n", k + 1, name[0] ? name : "(no name)", (unsigned)nmelty_peer(ip));
+    else LOG("[net] peer %d joined: %s %s:%u\n", k + 1, type == NET_HELLO && name[0] ? name : "(snapshot)", net_ip_txt(ip, t), port);
     NET.next_hello = now;  // (answer at once: it learns our name + list)
     return k;
+}
+
+// ---- (s187) Melty Net room: polled once a frame, before anything is received or sent ----
+// The room's joins / leaves make and free the peer slots (HELLO / BYE / the 10 s timeout do that on UDP), its log lines
+// go to ours as "[net] melty: ...". While net is off (set net 0, Sora mode off) the client is still polled and what
+// came is thrown away, so nothing piles up.
+#define NET_MELTY_WAIT_MS 60000  // (s188 G2) no seat in the room this long after the start: give up on Melty Net
+// (s188 G2) The room refused us, closed for good, or never answered: the client is stopped and this copy is back on the
+// mod's own UDP path, so multiplayer is never silently dead. UDP comes on only with a pin list (SAVAGEWIND_SORA_NET_PEERS:
+// a player who also has a Tailscale / LAN setup); a plain Melty player just plays solo then (no UDP port is opened behind
+// his back: "set net 1" still turns LAN discovery on by hand).
+static void net_melty_drop(const char *why) {
+    char line[512];
+    while (sora_melty_log_next(line, (int)sizeof line)) LOG("%s\n", line);
+    bool parked = NET.parked, was = NET.on || parked;  // (s189 review S1: parked = Sora mode off, net resumes with Sora)
+    if (NET.on) net_set_on(false);  // (frees every slot, stops the enemy sync; no BYE: still NET.melty)
+    sora_melty_stop();
+    NET.melty = false, NET.melty_self = 0, NET.nmroom = 0;
+    net_pin_list(getenv("SAVAGEWIND_SORA_NET_PEERS"), GetTickCount64());
+    bool udp = was && net_npins() > 0;
+    LOG("[net] melty: %s: Melty Net is off for this run, %s\n", why,
+        udp ? "back to the UDP path (your peer list)" : "playing solo (start the game from Melty again to rejoin)");
+    if (!udp) NET.parked = false;  // (s189 S1: or Sora coming back would open the UDP port with LAN discovery)
+    else if (!parked) net_set_on(true);  // (parked + a pin list: net_frame turns UDP on when Sora is back)
+}
+// (s188 G9) this DLL copy is going (sora_mod_unload: hot reload): leave the room now, the client's threads end before the
+// new copy starts its own. A host's new copy makes a NEW room (dev only: players run with SAVAGEWIND_SORA_RELOAD=0).
+static void net_melty_unload(void) {
+    ck_unload();  // (s191: a hold / weather force of the room clock's goes first)
+    if (!NET.melty) return;
+    sora_melty_stop();
+    NET.melty = false, NET.melty_self = 0, NET.nmroom = 0;
+    LOG("[net] melty: left the room (this copy of the mod is going)\n");
+}
+
+static void net_melty_pump(uint64_t now) {
+    sora_melty_frame();
+    char line[512];
+    while (sora_melty_log_next(line, (int)sizeof line)) LOG("%s\n", line);
+    if (sora_melty_state() < 0) { net_melty_drop("the room refused us or closed"); return; }
+    int self = sora_melty_self();
+    if (!self && !NET.melty_self && now > NET.melty_since + NET_MELTY_WAIT_MS) { net_melty_drop("no seat in the room after 60 s"); return; }
+    if (self && self != NET.melty_self) {  // a new seat in the room (the first welcome, or a new room after the old one closed)
+        if (NET.melty_self) {
+            LOG("[net] melty: new seat in the room (peer %u -> %d): every slot starts over\n", (unsigned)NET.melty_self, self);
+            net_slots_free_all();
+            NET.nmroom = 0;  // (the room names everyone again after a welcome)
+        }
+        NET.melty_self = (uint16_t)self;
+        NET.me = (uint8_t)self;  // (room ids are unique: no two copies roll the same player byte; a clash past 255 re-rolls as on UDP)
+        if (!NET.me) NET.me = net_roll_free(0);
+    }
+    if (!self && !NET.melty_slow_logged && now > NET.melty_since + 20000) {
+        NET.melty_slow_logged = true;
+        LOG("[net] melty: not in the room after 20 s (still trying for 40 s more; see the lines above)\n");
+    }
+    sora_melty_peer_event ev;
+    while (sora_melty_peer(&ev)) {  // the roster: joins and leaves, kept also while net is off
+        int r = -1;
+        for (int i = 0; i < NET.nmroom; i++) if (NET.mroom[i].id == ev.peer) r = i;
+        if (!ev.joined) {
+            if (r >= 0) memmove(&NET.mroom[r], &NET.mroom[r + 1], sizeof NET.mroom[0] * (size_t)(NET.nmroom - r - 1)), NET.nmroom--;  // (s198: join order kept)
+            int k = net_slot_at(nmelty_ip(ev.peer), NMELTY_PORT);
+            if (k >= 0) {
+                LOG("[net] peer %d \"%s\" left (Melty room)\n", k + 1, NET.slot[k].p.name);
+                net_slot_free(k);
+            }
+            continue;
+        }
+        if (ev.peer == self || !ev.peer) continue;
+        if (r < 0 && NET.nmroom < 16) r = NET.nmroom++, NET.mroom[r].said = false;
+        if (r < 0) continue;  // (more players than the roster holds: no slot for him either)
+        NET.mroom[r].id = ev.peer;
+        nmelty_name(NET.mroom[r].name, (int)sizeof NET.mroom[r].name, ev.name, ev.peer);
+    }
+    // every room player has a slot while net is on. (s198) A full table: he waits, said ONCE per roster entry (not through
+    // net_slot_join's 8-address list, which a crowd of more than 8 waiting players went round every frame); a free slot goes
+    // to the one who has waited longest (the roster is in join order). Waiting = no slot: not drawn, every packet of his dropped.
+    for (int i = 0; i < NET.nmroom && NET.on && !g_net_loop; i++) {
+        uint32_t ip = nmelty_ip(NET.mroom[i].id);
+        if (net_slot_at(ip, NMELTY_PORT) >= 0) continue;
+        if (netslot_count(NET.slot, NET_MAX_PEERS) >= NET_MAX_PEERS) {
+            if (!NET.mroom[i].said)
+                NET.mroom[i].said = true, LOG("[net] %d players already: %s (Melty room peer %u) refused: not shown, his packets dropped until a slot is free\n",
+                                              NET_MAX_PEERS + 1, NET.mroom[i].name, (unsigned)NET.mroom[i].id);
+            continue;
+        }
+        int k = net_slot_join(ip, NMELTY_PORT, (uint8_t)NET.mroom[i].id, NET.mroom[i].name, NET_HELLO, now);
+        if (k >= 0) peer_on_hello(&NET.slot[k].p, (uint8_t)NET.mroom[i].id, NET.mroom[i].name, now);
+    }
+    if (!NET.on) {  // (off: what the others sent is not ours to play)
+        uint8_t buf[NET_PKT_MAX + 64];
+        uint16_t from;
+        for (int i = 0; i < 256 && sora_melty_recv(&from, buf, (int)sizeof buf) > 0; i++) {}
+    }
 }
 
 // a HELLO's listed address we do not know yet becomes a learned target (HELLOed until it answers = becomes a slot)
@@ -444,9 +675,14 @@ static void net_learn(const NetAddr *a, uint32_t from_ip, uint16_t from_port, ui
 
 static void net_recv_all(uint64_t now) {
     uint8_t buf[NET_PKT_MAX + 64];
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < (NET.melty ? 512 : 64); i++) {  // (s188: a room hands over a stall's backlog at once: read it all, old ones are skipped by seq)
         uint32_t ip = 0; uint16_t port = 0;
-        int n = nsock_recv(&NET.sock, buf, sizeof buf, &ip, &port);
+        int n;
+        uint16_t mfrom = 0;
+        if (NET.melty) {  // (s187: the room's packets, byte for byte as the sender's code made them, under his room peer id)
+            n = sora_melty_recv(&mfrom, buf, (int)sizeof buf);
+            ip = nmelty_ip(mfrom), port = NMELTY_PORT;
+        } else n = nsock_recv(&NET.sock, buf, sizeof buf, &ip, &port);
         if (n < 0) { NET.st.err++; break; }
         if (n == 0) break;
         NET.st.recv++;
@@ -459,12 +695,23 @@ static void net_recv_all(uint64_t now) {
             static NetVerSeen vseen;
             if (ov >= 0 && net_ver_first(&vseen, ip)) {  // (mp2: once per peer address, not only counted in "bad")
                 char t[16];
-                LOG("[net] packet from %s:%u has protocol version %d, ours is %d: update both copies to the same build\n", net_ip_txt(ip, t), port, ov, NET_VERSION);
+                if (NET.melty) LOG("[net] packet from Melty room peer %u has protocol version %d, ours is %d: update both copies to the same build\n", (unsigned)mfrom, ov, NET_VERSION);
+                else LOG("[net] packet from %s:%u has protocol version %d, ours is %d: update both copies to the same build\n", net_ip_txt(ip, t), port, ov, NET_VERSION);
             }
             continue;
         }
-        if (player == NET.me && (type == NET_EDMG || type == NET_ESYNC || type == NET_FIRE)) { NET.st.echo++; continue; }  // (s166: its seq is a different counter than the SNAP seq below)
-        if (player == NET.me) {
+        if (NET.melty) {
+            // (s187) the room never hands us our own packets back, and only its joins make slots: HELLO / BYE (an old build's)
+            // and anything from a player the room has not announced (or who left) are dropped
+            if (type == NET_HELLO || type == NET_BYE || mfrom == NET.melty_self) { NET.st.other++; continue; }
+            int mk = net_slot_at(ip, port);
+            if (mk < 0) { NET.st.other++; continue; }
+            if (player == NET.me) {  // (two room ids with the same low byte: we re-roll, as on UDP)
+                NET.me = net_roll_free(player);
+                LOG("[net] player id clash with %s: now %u\n", NET.slot[mk].p.name[0] ? NET.slot[mk].p.name : "the peer", NET.me);
+            }
+        } else if (player == NET.me && (type == NET_EDMG || type == NET_ESYNC || type == NET_FIRE || type == NET_AREA || type == NET_REACT || type == NET_KILLS)) { NET.st.echo++; continue; }  // (s166: its seq is a different counter than the SNAP seq below)
+        else if (player == NET.me) {
             // our own broadcast coming back (seq one we just used), or a peer that rolled our id: we re-roll
             if ((uint16_t)(NET.seq - seq) < 256) {
                 NET.st.echo++;
@@ -497,7 +744,7 @@ static void net_recv_all(uint64_t now) {
             }
         }
         if (k < 0) {
-            if (type == NET_BYE || type == NET_EDMG || type == NET_ESYNC || type == NET_FIRE) continue;  // (a stranger leaving / a hit from nobody we know)
+            if (type == NET_BYE || type == NET_EDMG || type == NET_ESYNC || type == NET_FIRE || type == NET_AREA || type == NET_REACT || type == NET_KILLS) continue;  // (a stranger leaving / a hit from nobody we know)
             k = net_slot_join(ip, port, player, name, type, now);
             if (k < 0) { NET.st.other++; continue; }
         } else if (NET.slot[k].ip == ip && NET.slot[k].port != port) {
@@ -512,24 +759,41 @@ static void net_recv_all(uint64_t now) {
             bool fresh = sl->p.st == PEER_NONE, had = sl->p.name[0] != 0;
             peer_on_hello_seq(&sl->p, player, name, seq, now);
             if (fresh || (!had && sl->p.name[0])) LOG("[net] hello from \"%s\" (player %u, peer %d)\n", sl->p.name, player, k + 1);
-            if (fresh) NET.next_hello = now, memset(&sl->ed, 0, sizeof sl->ed), memset(&sl->fi, 0, sizeof sl->fi), memset(&sl->es, 0, sizeof sl->es), memset(&sl->esev, 0, sizeof sl->esev);  // (a restarted peer counts its packet seqs anew)
+            if (fresh) NET.next_hello = now, memset(&sl->ed, 0, sizeof sl->ed), memset(&sl->rc, 0, sizeof sl->rc), memset(&sl->fi, 0, sizeof sl->fi), memset(&sl->es, 0, sizeof sl->es), memset(&sl->esev, 0, sizeof sl->esev);  // (a restarted peer counts its packet seqs anew)
             for (int j = 0; j < npa; j++) net_learn(&pa[j], ip, port, now);
         } else if (type == NET_SNAP) {
             bool cur = peer_on_snap(&sl->p, &s, now);
+            sl->st.snap++, sl->last_snap_ms = now;
             if (!cur) NET.st.stale++, sl->st.stale++;
             net_take_snap_events(k, &s, now);
             if (cur) net_take_snap_moves(k, &s, now);  // (a stale SNAP's places are older than the track's)
         } else if (type == NET_EDMG) {
-            net_edmg_recv(k, buf, n);
+            net_edmg_recv(k, buf, n, now);
         } else if (type == NET_FIRE) {
             net_fire_recv(k, buf, n);
         } else if (type == NET_ESYNC) {
             net_esync_recv(k, buf, n);
+        } else if (type == NET_AREA) {
+            net_area_recv(k, buf, n, now);  // (s191)
+        } else if (type == NET_REACT) {
+            net_react_recv(k, buf, n, now);  // (s194)
+        } else if (type == NET_KILLS) {
+            net_kills_recv(k, buf, n, now);  // (s196)
         } else if (type == NET_BYE) {
             LOG("[net] peer %d \"%s\" left (BYE)\n", k + 1, sl->p.name);
             net_slot_free(k);
         }
     }
+}
+
+// (s190, Melty spec 4.1) the map we are on, the same text in every copy (sora_area.h area_now; NULL / "" = not known).
+// (s191) It goes to the other games as NET_AREA (sora_net_area.h), over UDP and in a room; no other packet changes.
+// (s209 step 2) In a Melty room a change to a known area is Melty's BEAT note "level" (detail = the area).
+static void net_set_area(const char *a) {
+    char was[sizeof NET.area];
+    memcpy(was, NET.area, sizeof was);
+    snprintf(NET.area, sizeof NET.area, "%s", a ? a : "");
+    if (NET.melty && NET.area[0] && strcmp(was, NET.area)) sora_melty_addon_beat("level", 0, NET.area);
 }
 
 static void net_send_snap(uint64_t now, bool loading) {
@@ -567,7 +831,11 @@ static void net_send_snap(uint64_t now, bool loading) {
     }
     NetAddr d[NET_DESTS_MAX];  // every known peer (no peer yet: HELLOs only)
     int nd = net_dests(d, false);
-    for (int i = 0; i < nd; i++) net_send_to(d[i].ip, d[i].port, b, n);
+    // (s187) the room places us by this (who sees whom); the heading is S.face as it is (0 faces +z, turning towards +x).
+    // (s190, spec 4.1) NET.area = the map we are on (sora_area.h: "MainField", a shrine's or Divine Beast's name; "" = not
+    // known = one world): the room shows a player only to players in the same area.
+    if (NET.melty) sora_melty_where(s.feet[0], s.feet[1], s.feet[2], s.yaw, NET.area);
+    net_send_all(d, nd, b, n);  // (in a Melty room also with nobody here yet: our SNAP is how the room knows where we are)
 }
 
 // once per frame; link_pos NULL = no world / loading / menu (SNAPs carry NF_LOADING and the last feet)
@@ -575,12 +843,16 @@ static void net_tick(const float link_pos[3], uint64_t now) {
     if (!NET.on) return;
     bool loading = !link_pos || NET.loading;
     if (link_pos) NET.feet[0] = link_pos[0], NET.feet[1] = link_pos[1], NET.feet[2] = link_pos[2], NET.have_feet = true;
+    net_area_tick(now);  // (s191: our map out when due, who is hidden; before the receive, so this frame's FIRE is judged by it)
     net_recv_all(now);
     int live = 0;
     for (int k = 0; k < NET_MAX_PEERS; k++) {
         NetPeerSlot *sl = &NET.slot[k];
         if (!sl->used) continue;
         PeerState was = sl->p.st;
+        // (s187) a Melty room player keeps his slot until the room says he left (on UDP his HELLOs every 5 s do that): quiet
+        // for long = held faded out (no SNAP for 2 s fades him as ever), never the 10 s drop
+        if (NET.melty && was != PEER_NONE && now > sl->p.last_ms + NET_DROP_MS - 1000) sl->p.last_ms = now - (NET_FADE_MS + NET_FADE_OUT_MS + 1);
         peer_tick(&sl->p, now);
         if (was != PEER_NONE && sl->p.st == PEER_NONE) {  // (peer_tick reset it: 10 s quiet)
             LOG("[net] peer %d \"%s\" timed out (10 s quiet)\n", k + 1, sl->p.name);
@@ -602,6 +874,8 @@ static void net_tick(const float link_pos[3], uint64_t now) {
     }
     net_fire_pump(now);  // (s176 v10: fire sync out)
     net_edmg_pump(now);  // (s166 v6: shared enemy HP out; every tick, also while loading)
+    net_react_pump(now);  // (s194: hit reactions on enemies another game owns)
+    net_kills_tick(loading ? NULL : link_pos, now);  // (s196 killsync: Blood Moon clear, asks / answers, the apply scan on driven frames)
     g_esa.log = g_net_esynclog;
     esa_tick(&g_esa);  // (s175: re-apply `set esyncatk 2` after a hot reload)
     esp_tick(now);     // (s176 R2 diag lines; s178 club ON / OFF sync hooks + counters)
@@ -624,14 +898,54 @@ static void net_frame(const float link_pos[3], uint64_t now) {
         }
     }
     if (NET.parked) NET.parked = false, net_set_on(true);  // (mp2: Sora is back on)
+    if (NET.melty) net_melty_pump(now);  // (s187: the room first: its joins / leaves, then net_tick receives and sends)
     if (NET.driven) net_tick(link_pos, now);
     else net_tick_idle(now);
     NET.driven = false;
+    net_clock_frame();  // (s191: the room's story, then the room clock)
+}
+
+// (s209) Once a mod frame (sora.c, after the puppets are drawn, also with Sora mode off): this frame's puppet counts
+// (g_nnote, from sora_net_avatar.h) and FRAME's flags to the connector, which sends a FRAME note once a second while in the
+// room. dt = the time since the last call (QueryPerformanceCounter). The counts are cleared every frame, in a room or not.
+static void net_note_frame(int flags) {
+    static LARGE_INTEGER f, last;
+    NetNoteCount c = g_nnote;
+    memset(&g_nnote, 0, sizeof g_nnote);
+    if (!NET.melty) { last.QuadPart = 0; return; }
+    LARGE_INTEGER t;
+    if (!f.QuadPart) QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    double dt = last.QuadPart && f.QuadPart ? (double)(t.QuadPart - last.QuadPart) / (double)f.QuadPart : 0;
+    last = t;
+    if (!(dt > 0) || dt > 5) return;  // (the first frame, or a stall: no frame time to give; the counts of this one go)
+    sora_melty_addon_frame((float)dt, flags, c.on_screen, c.drawn, c.animated, 0);
+}
+
+// (s191) The room's story, drained in ONE place: each change once, in order (a late join's whole story first). Every key goes
+// to its owner here (4.3 adds botw.dead: / botw.flag: / botw.taken:); a key nobody owns yet is skipped. The leader's story
+// events from guests (sora_melty_trigger_next) are drained here too and skipped until 4.3 owns them.
+static void net_story_pump(void) {
+    static char key[256];
+    static uint8_t val[32768 + 64];  // (a story value is 32 KB at most)
+    int len = 0, del = 0;
+    for (int i = 0; i < 256 && sora_melty_story_next(key, (int)sizeof key, val, (int)sizeof val, &len, &del); i++) {
+        if (!strcmp(key, CLOCK_KEY)) ck_value(val, len, del);
+    }
+    uint16_t from = 0;
+    for (int i = 0; i < 256 && sora_melty_trigger_next(&from, key, (int)sizeof key, val, (int)sizeof val, &len); i++) {}
+}
+// once a frame (net_frame, net_sora_off): in a Melty room the story, then the clock; outside one ck_frame returns at once
+// unless it still holds something (released then) or the fake clock is on
+static void net_clock_frame(void) {
+    if (NET.melty) net_story_pump();
+    ck_frame(NET.melty && sora_melty_connected());
 }
 
 static void net_table_log(void) {
     char t[16];
     uint64_t now = GetTickCount64();
+    if (NET.melty) LOG("[net] melty: %s, our room peer id %d, %u packet(s) not sent while connecting\n", sora_melty_connected() ? "in the room" : "NOT connected", sora_melty_self(), NET.st.melty_wait);
     LOG("[net] table: %d pin(s), %d target(s), %d of %d peer slots used\n", net_npins(), NET.ntg, netslot_count(NET.slot, NET_MAX_PEERS), NET_MAX_PEERS);
     for (int i = 0; i < NET.ntg; i++)
         LOG("[net]   %s %s:%u%s\n", NET.tg[i].pinned ? "pin    " : "learned", net_ip_txt(NET.tg[i].ip, t), NET.tg[i].port,
@@ -657,6 +971,8 @@ static void net_diag_log(void) {
         if (!s->used) continue;
         LOG("[net] slot %d \"%s\": st %d n %d, recv %u stale %u, events fresh %u played %u lost_in %u, queued in %d\n", k + 1, s->p.name,
             (int)s->p.st, s->p.n, s->st.recv, s->st.stale, s->st.ev_fresh, s->st.ev_played, s->st.lost_in, s->ninq);
+        // (s187) one fixed line per slot for Melty's two-copy test (keep its words): is this slot receiving SNAPs?
+        LOG("[net] diag slot %d \"%s\" snap rx %u last %lld ms ago\n", k + 1, s->p.name, s->st.snap, s->last_snap_ms ? (long long)(now - s->last_snap_ms) : -1LL);
     }
     LOG("[net] anchors (%s): fx events sent by anchor world %u sora %u donald %u goofy %u; moves sent %u skipped (unchanged) %u; "
         "received events %u/%u/%u/%u, moves %u/%u/%u/%u, party anchor shown at Sora %u\n", g_net_anchor ? "on" : "OFF (set netanchor 1)",
@@ -668,15 +984,21 @@ static void net_diag_log(void) {
     LOG("[net] skate: sent %u, drawn %u, fallback %u (%s; drawn / fallback count draw frames)\n", g_net_skate_sent, g_net_skate_drawn, g_net_skate_fb,
         g_net_skate ? "on" : "OFF (set netskate 1)");
     net_edmg_diag();
+    net_area_diag();
     net_fire_diag();
     net_esync_diag();
+    net_react_diag();  // (s194)
+    net_kills_diag();  // (s196)
     avatar_diag();
     net_party_diag();
 }
 
 // live "set <key> <int>": true = a net key
 static bool net_live_set(const char *key, int v) {
-    if (!strcmp(key, "net")) { net_init_from_env(); NET.parked = false; net_set_on(v != 0); if (v && !NET.on) LOG("[net] still off (socket)\n"); }
+    if (!strcmp(key, "net")) { net_init_from_env(); NET.parked = false; net_set_on(v != 0); if (v && !NET.on) LOG(net_solo() ? "[net] still off (solo build)\n" : "[net] still off (socket)\n"); }
+    else if (ck_live_set(key, v)) {}  // (s191: mclock)
+    else if (net_kills_live_set(key, v)) {}  // (s196: killsync / killsclear / killslog)
+    else if (!strcmp(key, "mclockfake")) ck_fake((float)v);  // (s191: whole hours; sora.c reads "set mclockfake 21.5" as a float first)
     else if (!strcmp(key, "netloop")) {
         if (g_net_loop == (v != 0)) return true;  // (a live rewrite re-applies every line: only a change resets the peers)
         g_net_loop = v != 0;
@@ -699,6 +1021,27 @@ static bool net_live_set(const char *key, int v) {
         g_net_esync = v != 0;
         LOG("[esync] enemy sync %s\n", g_net_esync ? "on (needs the exe linkpos_esync_* exports; same build on every copy)" : "off (every enemy brain back on)");
         if (!g_net_esync) net_esync_stop();
+    } else if (!strcmp(key, "netreact")) {  // (s194) the KH2 hit reaction on an enemy another game owns (sora_net_react.h)
+        if (g_net_react == (v != 0)) return true;
+        g_net_react = v != 0;
+        if (!g_net_react) net_react_clear();
+        LOG("[react] %s\n", g_net_react ? "on: a hit on a puppet sends the reaction to its owner, the owner plays it (set netreact 0 = the old way)"
+                                         : "off: hits on puppets react locally as before, nothing sent, received reactions dropped");
+    } else if (!strcmp(key, "eshit")) {  // (s195) the hit claim (sora_net_esync.h)
+        if (g_net_eshit == (v != 0)) return true;
+        g_net_eshit = v != 0;
+        LOG("[esync] hit claim %s\n", g_net_eshit ? "on: my hit on an enemy another game runs takes it over (unless he keeps hitting it); his hits keep it his"
+                                                 : "off: only the nearest player runs an enemy, as before (set eshit 1)");
+    } else if (!strcmp(key, "eshitms")) {  // (s195) how long the owner's hits keep "closer" hand-overs off
+        int ms = v < ES_HIT_HOLD_MIN ? ES_HIT_HOLD_MIN : v > ES_HIT_HOLD_MAX ? ES_HIT_HOLD_MAX : v;
+        if (g_net_eshitms == ms) return true;
+        g_net_eshitms = ms;
+        LOG("[esync] hit hold %d ms%s\n", ms, ms != v ? " (clamped)" : "");
+    } else if (!strcmp(key, "esdead")) {  // (s195) a dead player is nobody's nearest (his loaded enemies go to a living player)
+        if (g_net_esdead == (v != 0)) return true;
+        g_net_esdead = v != 0;
+        LOG("[esync] dead players %s\n", g_net_esdead ? "away: a dead player is nobody's nearest, a living one takes his enemies (set esdead 0 = as before)"
+                                                     : "count as before (set esdead 1)");
     } else if (!strcmp(key, "esaprobe")) {
         esp_set(v != 0);
     } else if (!strcmp(key, "esacalc")) {  // s180 R2: the copy's attack calc_ only every N game frames (1 = every tap)

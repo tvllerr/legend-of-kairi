@@ -29,6 +29,10 @@ void sora_hud_face_id(int who);  // (s116 mkface) 0 Sora, 1 Roxas (roxface.bin),
 // (s139 sumplate) the summon's orb plate (KH2 anim groups 154 / 155 / 156 in drive.bin) + its face portrait (data/hud/sumface.bin): 0 none (fades out),
 // 1 Chicken Little, 2 Stitch, 3 Genie, 4 Peter Pan. Game thread, on change; the mod DLL looks it up by name (exes before s139 lack it).
 void sora_hud_summon_face(int id);
+// (s220 riku2) who stands in party slot 0 / 1: the KH2 character id (2 Donald, 3 Goofy, 5 Auron, 6 Mulan, 7 Aladdin, 8 Jack Sparrow,
+// 13 Riku, 15 Ping; 0 = the slot's own) -> his face from data/hud/party.bin's face table. Game thread, on change; the mod DLL looks it
+// up by name (exes before s220 lack it: their plates keep Donald's / Goofy's faces).
+void sora_hud_party_face(int slot, int kh2_char);
 // (s67 drive) KH2's Drive gauge beside Sora's orb (data/hud/drive.bin = hudbake `drive`): state 0 hidden / 1 shown,
 // bars 0..max_bars full bars, fill 0..100 the next one (100 with bars = max_bars = full). Game thread, every frame with
 // sora_hud_set (sora_drive.h dg_hud, by GetProcAddress); 30 presents without a call = hidden; drawn only while Sora's

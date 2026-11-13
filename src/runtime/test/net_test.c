@@ -1257,7 +1257,43 @@ static void test_skate_wire(void) {
     CHECK(NET_VERSION == 11 && NF_SKATE == 256 && !(NF_SKATE & (NF_BONEPOSE | NF_BONES)));
 }
 
+// (s191) NET_AREA: a new type, NET_VERSION unchanged; exact size, only the area letters; "" is valid (= not known)
+static void test_area_codec(void) {
+    CHECK(NET_VERSION == 11 && NET_AREA == 7 && NET_AREA_MAX == 31 && NET_AREA_PKT == 39 && NET_AREA_PKT <= NET_PKT_MAX);
+    uint8_t buf[NET_PKT_MAX], pl = 0;
+    uint16_t sq = 0;
+    char a[NET_AREA_MAX + 1], name[NET_NAME_MAX + 1];
+    int type = 0, n = net_pack_area(9, 0xBEEF, "Dungeon012", buf, sizeof buf);
+    CHECK(n == NET_HDR + 1 + 10 && buf[0] == 'S' && buf[1] == 'N' && buf[2] == 11 && buf[3] == NET_AREA && buf[4] == 9 && buf[7] == 10 && !memcmp(buf + 8, "Dungeon012", 10));
+    CHECK(net_unpack_area(buf, n, &pl, &sq, a) && pl == 9 && sq == 0xBEEF && !strcmp(a, "Dungeon012"));
+    CHECK(net_unpack(buf, n, &type, &pl, &sq, NULL, name) && type == NET_AREA);
+    CHECK(!net_unpack(buf, n - 1, &type, &pl, &sq, NULL, name) && !net_unpack(buf, n + 1, &type, &pl, &sq, NULL, name) && !net_unpack_area(buf, n - 1, NULL, NULL, a));
+    n = net_pack_area(9, 1, "", buf, sizeof buf);  // "" = not known
+    CHECK(n == NET_HDR + 1 && net_unpack_area(buf, n, NULL, NULL, a) && a[0] == 0);
+    CHECK(net_pack_area(9, 1, NULL, buf, sizeof buf) == NET_HDR + 1);
+    const char *max = "MainField_MainField_MainField_1";  // 31 letters
+    CHECK(net_pack_area(9, 1, "MainField_MainField_MainField_12", buf, sizeof buf) < 0);  // 32: one too many
+    CHECK(strlen(max) == 31 && net_pack_area(9, 1, max, buf, sizeof buf) == 39 && net_unpack_area(buf, 39, NULL, NULL, a) && !strcmp(a, max));
+    CHECK(net_pack_area(9, 1, "MainField_MainField_MainField_123", buf, sizeof buf) < 0);  // 33: too long
+    CHECK(net_pack_area(9, 1, "Dun geon", buf, sizeof buf) < 0 && net_pack_area(9, 1, "A-1/x", buf, sizeof buf) < 0 && net_pack_area(9, 1, "F-6", buf, 10) < 0);
+    n = net_pack_area(9, 1, "F-6_x", buf, sizeof buf);
+    CHECK(n == 13 && net_unpack_area(buf, n, NULL, NULL, a) && !strcmp(a, "F-6_x"));
+    buf[9] = '%';
+    CHECK(!net_unpack_area(buf, n, NULL, NULL, a) && !net_unpack(buf, n, &type, &pl, &sq, NULL, name));  // (a bad letter on the wire)
+    buf[9] = 0;
+    CHECK(!net_unpack(buf, n, &type, &pl, &sq, NULL, name));  // (no 0 inside)
+    buf[9] = '6', buf[7] = 32;
+    CHECK(!net_unpack(buf, n, &type, &pl, &sq, NULL, name));  // (a count over NET_AREA_MAX)
+    NetFireEnt fe = {{1, 2, 3}, 1, 1, 0};
+    n = net_pack_fire(7, 1, &fe, 1, buf, sizeof buf);
+    CHECK(!net_unpack_area(buf, n, NULL, NULL, a));  // (another type is not an AREA)
+    // apart only when both are known and differ
+    CHECK(net_area_apart_txt("MainField", "Dungeon012") && net_area_apart_txt("Dungeon012", "Dungeon013") && !net_area_apart_txt("Dungeon012", "Dungeon012"));
+    CHECK(!net_area_apart_txt("", "Dungeon012") && !net_area_apart_txt("MainField", "") && !net_area_apart_txt("", "") && !net_area_apart_txt(NULL, "MainField"));
+}
+
 int main(void) {
+    test_area_codec();
     test_edmg_codec();
     test_edmg_seq_dedupe();
     test_edmg_out_queue();

@@ -54,6 +54,7 @@ static bool smn_page2(void) { return SMN.page2 && smn_menu_ok(); }
 static int smn_state(void) {
     if (SM.st != SM_OFF) return 5;
     if (DG.bars < 3 || !sm_member_ok(0) || !sm_member_ok(1) || ACT_AIR(S.act) || SKT.riding || pl_hold_party()) return 5;
+    if (!pchar_need_ok(g_pchar, PNEED_SUMMON)) return 5;  // (s217 riku: Donald + Goofy both, as KH2's member check: greyed)
     return 0;
 }
 static int smn_dismiss_state(void) { return SM.st == SM_ACTIVE && !pl_hold_party() && !sm_fps_busy() ? 0 : 5; }  // (s137 review S1: greyed while FPS Mode runs)  // cmd 316: state 2 (out) and no Limit object

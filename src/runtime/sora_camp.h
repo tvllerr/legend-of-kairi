@@ -61,6 +61,8 @@ static void camp_vals(CpVals *v) {
     v->hp[0] = (int)g_hud_last[0], v->hp_max[0] = (int)g_hud_last[1];
     v->mp[0] = (int)fmaxf(g_hud_last[2], 0), v->mp_max[0] = (int)g_hud_last[3];
     for (int i = 0; i < PARTY_N; i++) {
+        g_cp_name[i + 1] = pchar_menu_name(g_pchar, i);  // (s220 riku2: a stand-in's own name in the member rows)
+        if (g_cp_name[i + 1]) LOG("[sora] camp: member %d = %s (stands in for %s)\n", i + 1, g_cp_name[i + 1], PCH_TAB[PCH_HOME[i]].name);
         v->hp[i + 1] = (int)P.m[i].hp, v->hp_max[i + 1] = (int)P.m[i].hp_max;
         v->mp[i + 1] = (int)P.m[i].mp, v->mp_max[i + 1] = (int)PARTY[i].mp_max;
     }
@@ -90,6 +92,7 @@ static void camp_vals(CpVals *v) {
     if (g_mfkb) kb_forms_sync(v->kb_forms, "menu open");  // (s118: no Keyblade hides in a locked form's slot)
     memcpy(v->kb, KB.kb, sizeof v->kb);  // (s85 slice 5 Equipment page)
     v->db_real_lv = SL.lv;
+    v->db_party_have = party_have_mask();  // (s220 members: who the Party 1 / 2 rows may offer)
     for (int r = 0; r < CP_DB_ROWS; r++) v->db_v[r] = dbm_state(r);  // (s146: by backend row)  // (s140 dbgmenu: the Debug page)
     v->kb_own = ul_kb_own_mask();  // (s89 kb: the picker lists the owned ones)
     v->arm_n = armor_worn(v->arm_name, v->arm_def);  // (s120 eqlook: the Armor rows; 0 = old exe / nothing named worn)

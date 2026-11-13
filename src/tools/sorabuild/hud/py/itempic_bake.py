@@ -8,6 +8,9 @@ import os
 KH2 = os.environ['SORABUILD_KH2'].rstrip('/')  # (sorabuild) the KH2 extract root, was D:/KH2Extract
 from PIL import Image, ImageDraw
 PICS = [43, 46, 44, 45] + list(range(47, 65)) + [300, 301]   # KB_TAB order (runtime/sora_kb.h)
+# (s214 kb) our own two Keyblades (rows 25 / 26): our own renders, tools/sorabuild/ours/kb/<name>_pic.png (512x512 RGBA, straight alpha)
+PICS += ['sealing_blade_pic.png', 'guardian_core_pic.png']
+OURS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'ours', 'kb')
 COLS, CELL, LOGICAL = 6, 256, 128    # PS2 IMGD is 128x128 (HD = 512x512); KH2 draws it ~128 virtual px
 R = KH2 + '/kh2_fifth/remastered/itempic/'
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -27,7 +30,7 @@ atlas = Image.new('RGBA', (W, H), (0, 0, 0, 0))
 sheet = Image.new('RGBA', (COLS * 200, rows * 215), (60, 60, 80, 255)); d = ImageDraw.Draw(sheet)
 ents = b''
 for i, p in enumerate(PICS):
-    im = Image.open(R + 'item-%03d.imd/-0.dds' % p).convert('RGBA')
+    im = Image.open(os.path.join(OURS, p) if isinstance(p, str) else R + 'item-%03d.imd/-0.dds' % p).convert('RGBA')
     assert im.size == (512, 512)
     a = im.getchannel('A'); pm = Image.merge('RGBA', [Image.composite(c, Image.new('L', im.size, 0), a) for c in im.split()[:3]] + [a])
     pm = pm.resize((CELL, CELL), Image.LANCZOS)
@@ -40,7 +43,7 @@ for i, p in enumerate(PICS):
     atlas.paste(pm, (x0, y0))
     ents += struct.pack('<6H', x0, y0, CELL, CELL, LOGICAL, LOGICAL)
     sheet.alpha_composite(im.resize((200, 200), Image.LANCZOS), ((i % COLS) * 200, (i // COLS) * 215 + 15))
-    d.text(((i % COLS) * 200 + 2, (i // COLS) * 215 + 1), '%d %s item-%03d' % (i, names[i], p), fill='white')
+    d.text(((i % COLS) * 200 + 2, (i // COLS) * 215 + 1), '%d %s %s' % (i, names[i], p if isinstance(p, str) else 'item-%03d' % p), fill='white')
 off = 24 + len(ents)
 open(sys.argv[1], 'wb').write(  # (sorabuild) out path = argv[1]
     struct.pack('<6I', 0x50494B53, 1, W, H, n, off) + ents + atlas.tobytes())

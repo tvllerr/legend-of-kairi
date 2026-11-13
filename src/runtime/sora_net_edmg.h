@@ -8,6 +8,11 @@
 //   live: `set edmg 0|1` (nothing sent / received hits ignored; the exe ring is still drained), `set edmglog 0|1`.
 #pragma once
 
+// (s196 killsync, sora_net_kills.h, included after this file) every kill seen here goes on the kill list (killsync 0 = nothing):
+// our own (name = the exe's actor name: Enemy_* only), and peer slot k's EDMG kill with what its apply returned (-1 / no exe fn = waiting)
+static void net_kills_own(uint32_t hid, const char *name, uint64_t now);
+static void net_kills_edmg(int k, uint32_t hid, int apply_ret, uint64_t now);
+
 typedef struct { uint64_t actor, frame; uint32_t hid; int32_t dealt, before, after, f54, f40, kill; char name[48]; } NetExEdmg;  // = linkpos.c LinkposEdmg
 _Static_assert(sizeof(NetExEdmg) == 96, "linkpos.c LinkposEdmg is 96 bytes");
 
@@ -16,6 +21,7 @@ static struct {
     int (*take)(NetExEdmg *, int, int);                    // linkpos_edmg_take(out, max, sizeof)
     int (*apply)(uint32_t, int, int, int, int, int);       // linkpos_edmg_apply(hid, dealt, after, f54, f40, kill) -> 1 queued, 2 pending, 0 ignored, -1 off
     int (*stats)(uint64_t *, int);                         // linkpos_edmg_stats(out, n)
+    int (*reset)(int *);                                   // (s197 S1, kill sync's Blood Moon clear) linkpos_edmg_reset(&kills): the pending map, queue, echoes go
     NetEdOut q[NET_EDMG_OUTQ]; int nq; uint16_t seq;
     struct { uint32_t tx_pkt, tx_ent, tx_send, tx_drop, tx_lost, rx_pkt, rx_dup, rx_bad, rx_ent, rx_queued, rx_pending, rx_ignored, rx_off, rx_nofn; } st;
 } NETED;
@@ -28,6 +34,7 @@ static void net_edmg_bind(void) {
     NETED.take = (int (*)(NetExEdmg *, int, int))(void *)GetProcAddress(exe, "linkpos_edmg_take");
     NETED.apply = (int (*)(uint32_t, int, int, int, int, int))(void *)GetProcAddress(exe, "linkpos_edmg_apply");
     NETED.stats = (int (*)(uint64_t *, int))(void *)GetProcAddress(exe, "linkpos_edmg_stats");
+    NETED.reset = (int (*)(int *))(void *)GetProcAddress(exe, "linkpos_edmg_reset");  // (s180 export, exe 22:21+; sora_levels.h calls it on a load)
 #endif
     if (NETED.take && NETED.apply) LOG("[net] edmg: exe exports found (take, apply%s): shared enemy HP %s (the exe also needs SAVAGEWIND_LINK_EDMG=1)\n",
                                        NETED.stats ? ", stats" : "", g_net_edmg ? "on" : "off (set edmg 1)");
@@ -58,6 +65,8 @@ static void net_edmg_pump(uint64_t now) {
             return;
         }
         if (n == 0) break;
+        for (int i = 0; i < n && g_net_edmg; i++)  // (s196 killsync: our own kills, also while alone = not sent)
+            if (buf[i].kill && buf[i].hid) net_kills_own(buf[i].hid, buf[i].name, now);
         if (!nd) { NETED.st.tx_drop += (uint32_t)n; continue; }  // (off, loopback or alone: these hits are not shared)
         NetEdEnt e[NET_EDMG_MAX];
         int k = 0;
@@ -78,18 +87,20 @@ static void net_edmg_pump(uint64_t now) {
         int len = net_pack_edmg(NET.me, ++NETED.seq, e, k, b, (int)sizeof b);
         if (len <= 0) { NET.st.err++; continue; }
         NETED.st.tx_lost += (uint32_t)net_edout_push(NETED.q, &NETED.nq, b, len, now);
+        if (NET.melty && NETED.nq) NETED.q[NETED.nq - 1].rep = 1;  // (s187: a Melty room event is reliable: sent once, no repeats)
         NETED.st.tx_pkt++, NETED.st.tx_ent += (uint32_t)k;
     }
     NetEdOut o;
     if (!nd) { NETED.nq = 0; return; }
+    if (NET.melty && !sora_melty_connected()) return;  // (s189 review N1: sent once in a room, so wait for the connection)
     while (net_edout_due(NETED.q, &NETED.nq, now, &o)) {
-        for (int i = 0; i < nd; i++) net_send_to(d[i].ip, d[i].port, o.b, o.len);
+        net_send_all(d, nd, o.b, o.len);
         NETED.st.tx_send++;
     }
 }
 
 // a NET_EDMG packet from slot k (header already checked by net_unpack_ex)
-static void net_edmg_recv(int k, const uint8_t *buf, int n) {
+static void net_edmg_recv(int k, const uint8_t *buf, int n, uint64_t now) {
     NetPeerSlot *sl = &NET.slot[k];
     NetEdEnt e[NET_EDMG_MAX];
     uint8_t pl = 0;
@@ -102,8 +113,13 @@ static void net_edmg_recv(int k, const uint8_t *buf, int n) {
     for (int i = 0; i < cnt; i++) {
         NETED.st.rx_ent++;
         if (!g_net_edmg) { NETED.st.rx_off++; continue; }
-        if (!NETED.apply) { NETED.st.rx_nofn++; continue; }
+        if (!NETED.apply) {
+            NETED.st.rx_nofn++;
+            if (e[i].flags & NEDF_KILL) net_kills_edmg(k, e[i].hid, -1, now);  // (s196: waiting)
+            continue;
+        }
         int r = NETED.apply(e[i].hid, e[i].dealt, e[i].after, e[i].f54, e[i].f40, e[i].flags & NEDF_KILL ? 1 : 0);
+        if (e[i].flags & NEDF_KILL) net_kills_edmg(k, e[i].hid, r, now);  // (s196 killsync)
         if (r == 1) NETED.st.rx_queued++;
         else if (r == 2) NETED.st.rx_pending++;
         else NETED.st.rx_ignored++;

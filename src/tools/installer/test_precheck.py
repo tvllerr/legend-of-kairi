@@ -14,8 +14,8 @@ def make_sw(d, version):
     """a fake Savage Wind folder; version None = no Version.txt"""
     with open(os.path.join(d, "savagewind.exe"), "wb") as f:
         f.write(b"x")
-    with open(os.path.join(d, "README.md"), "w") as f:
-        f.write("SavageWind-%s" % installer.SW_VERSION)
+    with open(os.path.join(d, "sw-manifest.txt"), "w") as f:    # (s223) 0.5.3 names its version here
+        f.write("savagewind-update-manifest 1\nversion %s\n" % installer.SW_VERSION)
     pack = os.path.join(d, "extracted", "romfs", "Pack")
     os.makedirs(pack)
     open(os.path.join(pack, "Bootup.pack"), "wb").close()

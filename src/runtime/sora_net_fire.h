@@ -17,7 +17,7 @@ static struct {
     NetFireEnt q[NET_FIRE_QMAX]; int nq;          // entries waiting for the next pump
     NetEdOut out[NET_EDMG_OUTQ]; int nout; uint16_t seq;
     int rx_left;  // (this frame's receive budget, refilled by net_fire_pump after net_recv_all)
-    struct { uint32_t tx_ent, tx_pkt, tx_send, tx_drop, tx_lost, rx_pkt, rx_dup, rx_bad, rx_ent, rx_lit, rx_spk, rx_bst, rx_off, rx_noworld, rx_nofn, rx_cap; } st;
+    struct { uint32_t tx_ent, tx_pkt, tx_send, tx_drop, tx_lost, rx_pkt, rx_dup, rx_bad, rx_ent, rx_lit, rx_spk, rx_bst, rx_off, rx_noworld, rx_nofn, rx_cap, rx_area; } st;  // (s191: rx_area = from a player on another map)
 } NETF = {.rx_left = NET_FIRE_RX_FRAME};
 
 static void net_fire_reset(uint64_t now) {
@@ -47,12 +47,14 @@ static void net_fire_pump(uint64_t now) {
         int len = net_pack_fire(NET.me, ++NETF.seq, NETF.q + off, k, b, (int)sizeof b);
         if (len <= 0) { NET.st.err++; continue; }
         NETF.st.tx_lost += (uint32_t)net_edout_push(NETF.out, &NETF.nout, b, len, now);
+        if (NET.melty && NETF.nout) NETF.out[NETF.nout - 1].rep = 1;  // (s187: a Melty room event is reliable: sent once, no repeats)
         NETF.st.tx_pkt++, NETF.st.tx_ent += (uint32_t)k;
     }
     NETF.nq = 0;
     NetEdOut o;
+    if (NET.melty && !sora_melty_connected()) return;  // (s189 review N1: sent once in a room, so wait for the connection)
     while (net_edout_due(NETF.out, &NETF.nout, now, &o)) {
-        for (int i = 0; i < nd; i++) net_send_to(d[i].ip, d[i].port, o.b, o.len);
+        net_send_all(d, nd, o.b, o.len);
         NETF.st.tx_send++;
     }
 }
@@ -67,6 +69,7 @@ static void net_fire_recv(int k, const uint8_t *buf, int n) {
     if (cnt <= 0) { NETF.st.rx_bad++; return; }
     if (!net_edseq_fresh(&sl->fi, sq)) { NETF.st.rx_dup++; return; }  // (one of the NET_EVENT_REPEAT copies)
     NETF.st.rx_pkt++;
+    if (sl->hidden) { NETF.st.rx_ent += (uint32_t)cnt, NETF.st.rx_area += (uint32_t)cnt; return; }  // (s191: cast on another map: its place is not ours)
     for (int i = 0; i < cnt; i++) {
         NETF.st.rx_ent++;
         if (!g_net_fire) { NETF.st.rx_off++; continue; }
@@ -91,8 +94,8 @@ static void net_fire_recv(int k, const uint8_t *buf, int n) {
 
 static void net_fire_diag(void) {
     LOG("[net] fire (%s, enemies on the receiver %s): tx %u entries / %u packets (sent %u, dropped %u: off / alone / loopback, lost %u: queue full); "
-        "rx %u packets / %u entries (repeats skipped %u, bad %u): lit %u, sparks %u, bursts %u, off %u, no world %u, no exe fn %u, over the per-frame cap %u\n",
+        "rx %u packets / %u entries (repeats skipped %u, bad %u): lit %u, sparks %u, bursts %u, off %u, no world %u, no exe fn %u, over the per-frame cap %u, other map %u\n",
         g_net_fire ? "on" : "OFF", g_net_fire_en ? "ignited" : g_net_fire_espk ? "sparks only" : "left alone", NETF.st.tx_ent, NETF.st.tx_pkt, NETF.st.tx_send, NETF.st.tx_drop,
         NETF.st.tx_lost, NETF.st.rx_pkt, NETF.st.rx_ent, NETF.st.rx_dup, NETF.st.rx_bad, NETF.st.rx_lit, NETF.st.rx_spk, NETF.st.rx_bst,
-        NETF.st.rx_off, NETF.st.rx_noworld, NETF.st.rx_nofn, NETF.st.rx_cap);
+        NETF.st.rx_off, NETF.st.rx_noworld, NETF.st.rx_nofn, NETF.st.rx_cap, NETF.st.rx_area);
 }

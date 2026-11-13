@@ -39,8 +39,14 @@ def exe(ctx, t):
     return os.path.join(ctx.work, "cs", t, t + ".exe")
 
 
+OURS_KB = os.path.join(sb.HERE, "ours", "kb")
+
+
 def kenv(ctx, env=None):
-    e = {"SORABAKE_KH2": ctx.kh2}
+    # (s215 review 2) SORABAKE_OURS_KB = where an alt entry "ours:<file>.skkb" lives: its own var (never inside the
+    # comma-separated alt list: a comma in the install path would split it). Every tool run gets it (sb.run drops
+    # SORABAKE_* of the shell, so only this step env carries it).
+    e = {"SORABAKE_KH2": ctx.kh2, "SORABAKE_OURS_KB": OURS_KB.replace("\\", "/")}
     e.update(env or {})
     return e
 
@@ -58,10 +64,22 @@ def run_tool(ctx, tool, cmd, outs, env=None, extra=(), cwd=None):
 
 
 def alts(ctx):
+    """(s214) an entry "<id>=ours:<file>.skkb" = OUR OWN Keyblade model in tools/sorabuild/ours/kb (+ its .png). (s215) The
+    list goes to sorabake as written; sorabake finds the file in SORABAKE_OURS_KB (kenv). Checked here: every ours: file and
+    its .png exist, ids 1..63. sorabake reads a .skkb value as our own format (no KH2 data), any other value as a KH2 mdlx name."""
     r = {}
     for k, f in (("A1", "alt_main.txt"), ("A2", "alt_valor_left.txt")):
-        with open(os.path.join(sb.HERE, "ours", "kb", f), encoding="utf-8") as fh:
-            r[k] = fh.read().strip()
+        with open(os.path.join(OURS_KB, f), encoding="utf-8") as fh:
+            lst = fh.read().strip()
+        for it in lst.split(","):
+            aid, _, val = it.partition("=")
+            if not aid.isdigit() or not 1 <= int(aid) <= 63 or not val:
+                raise SystemExit("sorabuild: %s: entry %r is not <id 1..63>=<name>" % (f, it))
+            if val.startswith("ours:"):
+                pth = os.path.join(OURS_KB, val[5:])
+                if not pth.lower().endswith(".skkb") or not os.path.isfile(pth) or not os.path.isfile(pth[:-5] + ".png"):
+                    raise SystemExit("sorabuild: %s names %s, which is missing in %s (or its .png)" % (f, val, OURS_KB))
+        r[k] = lst
     return r
 
 
@@ -153,12 +171,40 @@ def _sora_mp(ctx):
 
 
 # ---------------------------------------------------------------- Donald / Goofy (party)
-PARTY = {"donald": ("P_EX020", "W_EX020", "131", "17"), "goofy": ("P_EX030", "W_EX030", "101", "20")}
+PARTY = {"donald": ("P_EX020", "W_EX020", "131", "17"), "goofy": ("P_EX030", "W_EX030", "101", "20"),
+         # (s217 / s220 stand-ins, Debug Menu "Party 1 / 2"; recon/s217/S217_HELPER_RIKU.md, recon/s220/S220_HELPER_MEMBERS.md):
+         # body, weapon, the hand bone the weapon hangs on (found geometrically + by render), prty row = objentry moveset
+         "riku": ("P_EH000", "W_EH000", "53", "35"),
+         # (s220) objentry rows 70 / 68 / 67 / 736: P_HE000 moveset 24, P_MU000 25, P_AL000 23, P_CA000_HUMAN 36 (its mset = P_CA000)
+         "auron": ("P_HE000", "W_HE000", "146", "24"), "mulan": ("P_MU000", "W_MU000", "112", "25"),
+         "aladdin": ("P_AL000", "W_AL000", "165", "23"), "sparrow": ("P_CA000_HUMAN", "W_CA000_HUMAN", "205", "36"),
+         # (s223) Cloud: no W_ object (the sword = bone 239's subtree of his body model), no prty row (objentry moveset 0)
+         "cloud": ("N_HB550_BTL", "-", "239", "0")}
+# (s220) a member whose body / weapon mset is not <model>.mset / <weapon>.mset (kh2_sixth obj names)
+PARTY_MSETS = {"sparrow": ("P_CA000", "W_CA000")}
+# (s223 cloud, recon/s223/S223_HELPER_CLOUD.md) an N_ object with the weapon inside the body model (PARTY weapon "-", the 3rd field =
+# the weapon's root bone): its obj folder, the collision groups of the hit windows it keeps, and the slot map that copies its motions
+# to the player-layout slots the party driver plays (bakes/remap_mset.py; source k:slot = file k of the list, 0 = <model>.mset).
+# Cloud = N_HB550_BTL (objentry row 1095, the 1000 Heartless helper of hb16 spawn groups b_43 / b_48), kh2_fifth only. His battle
+# mset has no walk / run; his town mset N_HB550_RTN (the same model, byte-identical) has the walk R10A (slot 1, 168 cm / 72 frames).
+#   0 battle idle = BTL 00A, 2 field idle = RTN R00A, 4 / 7 walk = RTN R10A, 8 / 11 run = R10A too (GUESS: KH2 has no run of his),
+#   604 attack1 (A300) = BTL 50A (3 hits), 608 attack2 (A301) = BTL 51A (lunge slash). Hit groups 5 6 7 10 11 = his 16xx atkp rows
+#   (the four HB helpers' one block 1641-1689; groups 1 / 2 = the 11xx Hades Cup rows, left out).
+PARTY_NOBJ = {"cloud": dict(objdir="kh2_fifth", hitgroups="5,6,7,10,11", msets=("N_HB550_BTL", "N_HB550_RTN"),
+                            remap="0=0,2=1:0,4=1:1,7=1:1,8=1:1,11=1:1,604=201,608=202")}
 
 
-def party_env(who):
+def party_env(who, ctx=None):
     m, w, j, p = PARTY[who]
-    return {"PARTYBAKE_MODEL": m, "PARTYBAKE_WEAPON": w, "PARTYBAKE_WJOINT": j, "PARTYBAKE_PRTY": p}
+    e = {"PARTYBAKE_MODEL": m, "PARTYBAKE_WEAPON": w, "PARTYBAKE_WJOINT": j, "PARTYBAKE_PRTY": p}
+    if who in PARTY_MSETS and ctx is not None:
+        O = os.path.join(ctx.kh2, "kh2_sixth", "original", "obj")
+        body, weapon = PARTY_MSETS[who]
+        if body:
+            e["PARTYBAKE_MSET"] = os.path.join(O, body + ".mset").replace("\\", "/")
+        if weapon:
+            e["PARTYBAKE_KBMSET"] = os.path.join(O, weapon + ".mset").replace("\\", "/")
+    return e
 
 
 def _party(who, adds):
@@ -176,6 +222,30 @@ def _party(who, adds):
         if who == "goofy":   # the thrown shield: W_EX030 mset slot 804
             run_tool(ctx, "partybake", "wpose", [ctx.outp("party/goofy_weapon_flight.bin")], env, extra=["804"])
     return run
+
+
+def _member(who):
+    """(s220) a stand-in member (no Limit merges, no thrown weapon): model, hits, motion, pose straight from partybake (the s220
+    tool: 60 fps motions at their real length, Params() bounds-checked, so its run exits clean)"""
+    def run(ctx):
+        d = wd(ctx, "party_" + who)
+        env = party_env(who, ctx)
+        if who in PARTY_NOBJ:   # (s223) an N_ object: its own obj folder, in-model weapon, remapped mset
+            n = PARTY_NOBJ[who]
+            O = os.path.join(ctx.kh2, n["objdir"], "original", "obj")
+            ms = os.path.join(d, who + ".mset")
+            ctx.py(os.path.join(BK, "remap_mset.py"), ms + ".tmp", n["remap"], *[os.path.join(O, m + ".mset") for m in n["msets"]])
+            ctx.commit(ms + ".tmp", ms)
+            env.update({"PARTYBAKE_OBJDIR": O.replace("\\", "/"), "PARTYBAKE_MSET": ms.replace("\\", "/"),
+                        "PARTYBAKE_WROOT": PARTY[who][2], "PARTYBAKE_HITGROUPS": n["hitgroups"]})
+        run_tool(ctx, "partybake", "model", [ctx.outp("party/%s_model.bin" % who)], env)
+        run_tool(ctx, "partybake", "hitbake", [ctx.outp("party/%s_hits.bin" % who)], env)
+        run_tool(ctx, "partybake", "bake", [ctx.outp("party/%s_motion.bin" % who), os.path.join(d, "params.h")], env)
+        run_tool(ctx, "partybake", "pose", [ctx.outp("party/%s_pose.bin" % who)], env)
+    return run
+
+
+MEMBERS = ["riku", "auron", "mulan", "aladdin", "sparrow", "cloud"]
 
 
 # ---------------------------------------------------------------- Drive Forms (valor wisdom limit master final anti)
@@ -387,6 +457,8 @@ STEPS = [
          outputs=["party/donald_%s.bin" % k for k in ("model", "hits", "motion", "pose")], deps=["cs_build", "lim133", "duck150"]),
     Step("party_goofy", _party("goofy", ["s133", "s149"]),
          outputs=["party/goofy_%s.bin" % k for k in ("model", "hits", "motion", "pose", "weapon_flight")], deps=["cs_build", "lim133", "knock149"]),
+] + [Step("party_" + n, _member(n), outputs=["party/%s_%s.bin" % (n, k) for k in ("model", "hits", "motion", "pose")], deps=["cs_build"])
+     for n in MEMBERS] + [
     Step("form_valor", _form("valor", "lr"), outputs=form_outputs("valor", "lr"), deps=["cs_build"]),
     Step("form_wisdom", _form("wisdom", None), outputs=form_outputs("wisdom", None), deps=["cs_build"]),
     Step("form_limit", _form("limit", "single"), outputs=form_outputs("limit", "single"), deps=["cs_build"]),

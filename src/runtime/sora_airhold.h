@@ -161,15 +161,9 @@ static void ah_thunder_dmg(uint64_t actor, int *f54, int *f40) {
     if (lf > 0) *f54 = cc || lf >= 0x14 ? lf : 0x14;
 }
 
-// re:0x3CE980 (VERIFIED decompile, airhold_kh2a.c): atkp EnemyReaction -> reaction class
-static int ah_class(int r) {
-    switch (r & 0xff) {
-    case 1: case 0xc: return 1;
-    case 3: case 6: case 8: case 10: case 0xd: case 0x10: case 0x12: return 3;
-    case 4: case 7: case 9: case 0xb: case 0xf: case 0x11: return 4;
-    default: return r & 0xff;
-    }
-}
+// re:0x3CE980 (VERIFIED decompile, airhold_kh2a.c): atkp EnemyReaction -> reaction class (s194: the table moved to sora_net_proto.h
+// net_react_class, so a NET_REACT receiver checks a reaction with the very same rule)
+static int ah_class(int r) { return net_react_class(r); }
 
 // The KnockbackStrength pairs of Sora's atkp rows (file:kh2_first/00battle.bin, 0x30-byte rows from 0x158; the mined
 // sora_attacks.kh.json agrees). sora_hits.bin carries the EnemyReaction but not the strengths.
@@ -386,9 +380,10 @@ static void ah_start(uint64_t actor, int kind, const float epos[3], const float 
 
 // After every Sora hit on an enemy (blade_hits / spell_hit): KH2's reaction class on top of BotW's.
 //   from = the attacker point (Sora's feet / the spell), react / kb1 / kb2 = the atkp row's, f54 = what was sent
-//   (a BLOW only takes on an enemy BotW blows - f54 >= 0x14 - or one already in the air).
-static void ah_hit(uint64_t actor, const float epos[3], const float from[3], int react, int kb1, int kb2, int f54,
-                   float to_u, const char *what) {
+//   (a BLOW only takes on an enemy BotW blows - f54 >= 0x14 - or one already in the air). form = the ATTACKER is in a Drive form
+//   (s194: g_fmots_on for our own hits, the packet's bit for a NET_REACT another game sent; Valor's lower blow).
+static void ah_hit_ex(uint64_t actor, const float epos[3], const float from[3], int react, int kb1, int kb2, int f54,
+                      float to_u, const char *what, bool form) {
     if (!ah_enabled()) return;
     int cls = ah_class(react);
     float dx = epos[0] - from[0], dz = epos[2] - from[2], d = sqrtf(dx * dx + dz * dz), dir[2] = {0, 0};
@@ -399,7 +394,7 @@ static void ah_hit(uint64_t actor, const float epos[3], const float from[3], int
     } else if (cls == 4 && g_ah_blow && (air || f54 >= 0x14 || ah_cc_ok())) {  // re:0x3D2FE0 case 4 + re:0x3CEA00
         float rise = (float)kb1, sp = (float)kb2;
         if (!kb1 && !kb2) rise = AH_BLOW_UP, sp = AH_BLOW_SPEED;
-        if (g_fmots_on && strcmp(what, "thunder")) rise *= g_ah_form_rise / 100.0f;
+        if (form && strcmp(what, "thunder")) rise *= g_ah_form_rise / 100.0f;
         ah_start(actor, AH_BLOW, epos, dir, what);
         AhEnt *e = ah_find(actor);
         e->h = sp, e->vy = -rise, e->hmin = fabsf(sp) * AH_BLOW_MIN;  // (re:0x4228B0)
@@ -423,6 +418,58 @@ static void ah_hit(uint64_t actor, const float epos[3], const float from[3], int
         if (g_ah_log) LOG("[sora-ah] %llx %s: SLIDE %.1f cm/frame (react %d kb %d, f54 %#x) at %.2f %.2f %.2f\n",
                           (unsigned long long)actor, what, e->hv, react, kb1, f54, epos[0], epos[1], epos[2]);
     }
+}
+
+// (s194 netreact) the map HashId of a placed actor, as linkpos.c actor_hid: *(u32*)(*(u64*)(actor+0x7c8)+0x58); 0 = spawned /
+// none (0xFFFFFFFF) / unreadable. Only read while enemy sync runs (net_esync_hit_wanted, s195; net_react_wanted, s194).
+static uint32_t ah_actor_hid(uint64_t a) {
+    if (!a || !rd_ok(a + 0x7c8, 8)) return 0;
+    uint64_t mo = *(const uint64_t *)(uintptr_t)(a + 0x7c8);
+    if (!mo || !rd_ok(mo + 0x58, 4)) return 0;
+    uint32_t h = *(const uint32_t *)(uintptr_t)(mo + 0x58);
+    return h == 0xFFFFFFFFu ? 0 : h;
+}
+
+// Every Sora hit's reaction (all call sites: blade, spells, Wisdom, Limit, Magnet / Reflect, Master, summons). (s194 netreact,
+// sora_net_react.h) An enemy that is a PUPPET here (another game owns it, ESYNC) gets NO local reaction: ah_tick's servo fought the
+// puppet apply (the jitter). Its owner is sent what ah_hit_ex would have used and plays it there. `set netreact 0` = the old way.
+// (s195 eshit) Every Sora hit is also noted for the enemy sync's hit claim (net_esync_note_hit), before the airhold / netreact checks.
+// (s195b) ORDER MATTERS: a hit that qualifies claims the enemy inside the note, so the netreact question after it sees owner == me
+// (not a puppet: nr_puppet) and this claiming hit's reaction is played HERE (ah_hit_ex), no NET_REACT to the old owner. A hit that does
+// not qualify (owner HOT, banned, not loaded, eshit 0) goes the s194 way. The hid is read once for both.
+static void ah_hit(uint64_t actor, const float epos[3], const float from[3], int react, int kb1, int kb2, int f54,
+                   float to_u, const char *what) {
+    bool es = net_esync_hit_wanted(), nr = net_react_wanted();
+    uint32_t hid = es || nr ? ah_actor_hid(actor) : 0;
+    if (es) net_esync_note_hit(hid);
+    if (!ah_enabled()) return;
+    if (nr && net_react_hit(hid, from, react, kb1, kb2, f54, what, g_fmots_on)) return;
+    ah_hit_ex(actor, epos, from, react, kb1, kb2, f54, to_u, what, g_fmots_on);
+}
+
+// (s194 netreact) The owner's half: the reactions other games sent for OUR enemies, played with their values in the frame body right
+// before ah_tick (the same place and guest-call window as our own hits). The enemy list is read once, only when one is owned here.
+typedef struct { float to_u; int n; uint64_t actor[64]; float pos[64][3]; int32_t life[64]; } AhNetPlay;
+static bool ah_net_find(uint32_t hid, uint64_t *actor, float epos[3], int32_t *life, void *user) {
+    AhNetPlay *p = (AhNetPlay *)user;
+    if (p->n < 0) p->n = linkpos_enemies(p->actor, p->pos, p->life, 64);
+    for (int i = 0; i < p->n && i < 64; i++)
+        if (ah_actor_hid(p->actor[i]) == hid) {
+            *actor = p->actor[i], *life = p->life[i];
+            memcpy(epos, p->pos[i], sizeof p->pos[i]);
+            return true;
+        }
+    return false;
+}
+static void ah_net_one(uint64_t actor, const float epos[3], const NetReactEnt *e, void *user) {
+    const AhNetPlay *p = (const AhNetPlay *)user;
+    ah_hit_ex(actor, epos, e->from, e->react, e->kb1, e->kb2, e->f54, p->to_u, net_react_what(e->kind), (e->flags & NRF_FORM) != 0);
+}
+static int ah_net_play(float to_u) {  // (s195 reactidle: returns how many were played; the driving path ignores it)
+    if (!net_react_pending()) return 0;
+    static AhNetPlay p;
+    p.to_u = to_u, p.n = -1;
+    return net_react_play(GetTickCount64(), ah_net_find, ah_net_one, &p);
 }
 
 // One KH frame-span of the curve: advances e->t by kh and returns the offset (cm) in e->cx / e->cy.
@@ -573,8 +620,34 @@ static void ah_tick(float kh, float to_u) {
     }
 }
 
+// (s195 reactidle, sora_net_react.h nr_idle_decide) The frame body's NOT-driving branch (Link has the pad: our Sora dead / the Game
+// Over screen / the post-Continue hold, climb, swim, glide, an event, Slate mode, the bed / wake-up puppet) returned before ah_net_play
+// + ah_tick, so reactions other games sent expired "late" and a running servo stopped (its controller override kept its last
+// velocity). With live `set reactidle 1` that branch calls this instead, once a frame, right before its return (the driving path's
+// call at the end of the body is never reached on such a frame: never twice). Same game-thread window as the driving path
+// (sora_mod_frame runs inside linkpos_frame either way); every actor touched comes from this frame's linkpos_enemies. Not while
+// loading (g_loading), with no world frame / no Link body (those return earlier anyway), or BotW paused (ah_tick skips it too).
+// Default 0 = the old behaviour exactly (nothing runs there).
+static bool g_ah_react_idle = true;  // (s196: default 1, user verified)
+static NrIdleLog g_ah_idle_log;
+static void ah_idle_frame(bool world, bool loading, uint32_t sw, bool dead, float kh, float to_u) {
+    if (nr_idle_decide(g_ah_react_idle, world, loading, *(volatile uint32_t *)(uintptr_t)PAUSE_STATE != 0) != NRI_RUN) return;
+    int played = ah_net_play(to_u);
+    if (nr_idle_log_due(&g_ah_idle_log, true, played) && (g_ah_log || g_net_react))
+        LOG("[react] played %d reaction%s while not driving (Link state %#x%s): the reactidle path ran\n", played, played == 1 ? "" : "s", sw,
+            dead ? ", Sora dead" : "");
+    ah_tick(kh, to_u);
+}
+// the driving path, every frame: the not-driving stretch is over (the next one logs its first play again)
+static void ah_idle_end(void) { nr_idle_log_due(&g_ah_idle_log, false, 0); }
+
 static bool ah_live_set(const char *key, int v) {
     if (!strcmp(key, "ah")) g_ah_on = v != 0;
+    else if (!strcmp(key, "reactidle")) {  // (s195 reactidle)
+        if (g_ah_react_idle == (v != 0)) return true;
+        g_ah_react_idle = v != 0;
+        LOG("[react] play while not driving %s\n", g_ah_react_idle ? "on" : "off");
+    }
     else if (!strcmp(key, "ahlog")) g_ah_log = v;
     else if (!strcmp(key, "ahhop")) g_ah_hop = v != 0;
     else if (!strcmp(key, "ahblow")) g_ah_blow = v != 0;

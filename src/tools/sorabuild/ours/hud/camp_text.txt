@@ -161,6 +161,10 @@
 441 id 0x0460    # help: Change Sub-Weapon used in Master Form.
 442 id 0x0461    # Final row
 443 id 0x0462    # help: Change Sub-Weapon used in Final Form.
+450 lit "Sealing Blade"   # (s214 kb) our own Keyblade, KB_TAB row 25 (kb_text_key: KB_TEXT3 450 + 2 * (index - 24)); not KH2 text
+451 lit "A Keyblade shaped after the blade that seals the darkness."   # Sealing Blade desc (ours)
+452 lit "Guardian Core"   # (s214 kb) our own Keyblade, KB_TAB row 26
+453 lit "A Keyblade built around an ancient Sheikah core."   # Guardian Core desc (ours)
 
 # (s91 b5-abil) appended Abilities rows: key 500 + 2*(AB_TAB index - 25) name, +1 description (03system item names)
 500 id 0x066c    # ability 82 name

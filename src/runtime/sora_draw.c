@@ -87,6 +87,9 @@ void vk_frame_resume(void);
 #define VB_F 8
 #define LREC_F 48  // (s124 b) floats per instance record: light 16 + sun shadow 12 + cascade matrix 16 + shade colour 4
 #define ATTR_NOLIGHT (1u << 30)  // KH2 group attr NoLight (OpenKH): drawn unlit in every light style
+// (s215) a weapon group's alt-blade id = attr bits 24..31 WITHOUT the NoLight bit (bit 30 sits inside that byte: our own
+// Keyblades' glow groups carry both, and were skipped as "another blade"). Alt ids are 1..63 (sorabake checks it).
+#define ATTR_ALT(a) ((a) >> 24 & 0xBFu)
 
 // ------------------------------------------------------------------ the shadow (state; drawn by the render thread)
 // A KH2-style blob, a soft dark disc flat on the floor under each actor. KH2 itself has no shadow texture: its mdlx
@@ -498,8 +501,10 @@ static bool bake_load(DrawActor *a, int id, const char *mp, const char *pp) {
     if (!a->local || !a->snap.vb) { why = "out of memory"; goto bad; }
     if (!weld_build(a)) { why = "out of memory (weld table)"; goto bad; }
     a->mpath = strdup(mp), a->ppath = strdup(pp);
-    LOG("[sora-draw] model %s (actor %d): %u bones, %u groups, %u verts, %u tris, %u textures; poses %s: %u slots\n", mp,
-        id, a->nbones, a->ngroups, a->nverts, a->nidx / 3, a->ntex, pp, a->nslots);
+    // (s203) the log names the file that was really read (read_all maps D:/SoraBotW -> SORA_ROOT; the s202 Melty test log
+    // said "D:/SoraBotW/data/sora_model.bin" for a copy that read its own folder). mpath / ppath keep the caller's strings.
+    LOG("[sora-draw] model %s (actor %d): %u bones, %u groups, %u verts, %u tris, %u textures; poses %s: %u slots\n", sora_path(mp),
+        id, a->nbones, a->ngroups, a->nverts, a->nidx / 3, a->ntex, sora_path(pp), a->nslots);
     return true;
 bad:
     if (!id) dg_bake_why = why;
@@ -1345,16 +1350,22 @@ void sora_draw_world(const float *bones, float face, float scale) { sora_draw_ac
 // (Vulkan's minimum; NVIDIA / RADV 256), and the old 240-byte block (all of the below in it) failed gpu_init there = no
 // body and no KH2 effects, the HUD fine. s0 s1 s2 t oa ob oc (112 bytes) are a per-draw uniform block instead (set 2,
 // one dynamic-offset slot per push in a per-pass transient span, PdRing), the same values the push had: pd.* = pc.* was.
+// (s217 depth) org c3: the bodies (z.w 0) are drawn relative to their actor: clip = mvp3 * (pos - org) + c3, org = the
+// actor's feet, c3 = mvp * (org, 1) made in double on the CPU (pd_set_org). mvp * (world pos, 1) in float32 cancels
+// terms of ~2000 to a clip z of ~3: with BotW's near 0.1 (shrines) our depth was off by up to ~1 cm at 2.5 m and inner
+// layers (Roxas' jacket lining, 0.3-10 mm behind) won the depth test. The same projection, only without that rounding.
 #define PC_DECL "layout(push_constant) uniform P { mat4 mvp; vec4 k; vec4 vp; vec4 duv; vec4 z; } pc;\n" \
-                "layout(set = 2, binding = 0) uniform D { vec4 s0; vec4 s1; vec4 s2; vec4 t; vec4 oa; vec4 ob; vec4 oc; } pd;\n"
+                "layout(set = 2, binding = 0) uniform D { vec4 s0; vec4 s1; vec4 s2; vec4 t; vec4 oa; vec4 ob; vec4 oc; vec4 org; vec4 c3; } pd;\n"
 typedef struct { float mvp[16], k[4], vp[4], duv[4], z[4]; } BodyPC;                   // = P (sora_fx_draw reads its 32 floats)
-typedef struct { float s0[4], s1[4], s2[4], t[4], oa[4], ob[4], oc[4]; } BodyPD;      // = D (std140: 7 vec4, no padding)
+typedef struct { float s0[4], s1[4], s2[4], t[4], oa[4], ob[4], oc[4], org[4], c3[4]; } BodyPD;  // = D (std140: 9 vec4, no padding)
 #define PC_BYTES 128
-#define PD_BYTES 112
+#define PD_BYTES 144
 #define PC_BYTES_S182 240  // (the old all-push block, for the log line only)
 _Static_assert(sizeof(BodyPC) == PC_BYTES, "BodyPC must match the GLSL push block");
 _Static_assert(PC_BYTES <= 128, "Sora's body pass must fit Vulkan's minimum maxPushConstantsSize (128): AMD Windows / Intel");
 _Static_assert(sizeof(BodyPD) == PD_BYTES, "BodyPD must match the GLSL uniform block D");
+_Static_assert(offsetof(BodyPD, oc) == 96 && offsetof(BodyPD, org) == 112 && offsetof(BodyPD, c3) == 128,
+               "BodyPD members must sit at the GLSL block D's std140 offsets (vec4 = 16 bytes each, in order)");
 static const char *VERT_SRC =
     "#version 450\n"
     "layout(location = 0) in vec3 pos;\n"
@@ -1405,7 +1416,11 @@ static const char *VERT_SRC =
     "        float r = (int(s0.x + 0.5) == 2 || int(s0.x + 0.5) == 4) ? s2.y : s0.z;\n"
     "        v_sq = vec4(r * 0.5 * length(m0.xyz), r * 0.5 * length(m1.xyz), s0.w * length(m2.xyz) * ((fl & 2) != 0 ? 1.0 : 0.5), s1.w);\n"
     "    }\n"
-    "    if (pc.z.w < 0.5) { gl_Position = pc.mvp * vec4(pos, 1.0); return; }\n"
+    "    if (pc.z.w < 0.5) {\n"  // (s217 depth) the bodies: relative to the actor (see PC_DECL)
+    "        vec3 d = pos - pd.org.xyz;\n"
+    "        gl_Position = pc.mvp[0] * d.x + pc.mvp[1] * d.y + pc.mvp[2] * d.z + pd.c3;\n"
+    "        return;\n"
+    "    }\n"
     "    if (pc.z.w > 1.5) { gl_Position = vec4(pos.xy, 0.5, 1.0); return; }\n"
     "    float fy = pd.s0.x;\n"
     "    float t = pd.s0.z > 0.0 ? clamp((pos.y - fy) / pd.s0.z, 0.0, 1.0) : 0.0;\n"
@@ -1962,6 +1977,13 @@ static void pd_begin(PdRing *r, uint32_t cap) {
     mod_update_set(&w);
     r->spans++;
 }
+// (s217 depth) a body draw's origin: org = its actor's feet (world), c3 = mvp * (org, 1) in double (exact products)
+static void pd_set_org(BodyPD *pd, const float m[16], const float o[3]) {
+    for (int k = 0; k < 3; k++) pd->org[k] = o[k];
+    pd->org[3] = 0;
+    for (int r = 0; r < 4; r++)
+        pd->c3[r] = (float)((double)m[r] * o[0] + (double)m[4 + r] * o[1] + (double)m[8 + r] * o[2] + (double)m[12 + r]);
+}
 static void pd_push(VkCommandBuffer cb, PdRing *r, const BodyPC *pc, const BodyPD *pd) {
     rec_CmdPushConstants(cb, G.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof *pc, pc);
     if (r->slots && !memcmp(&r->last, pd, sizeof *pd)) return;  // (set 2 still bound at that block: binds of sets 0 / 1 and pipelines keep it)
@@ -2327,6 +2349,7 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
             pc.k[0] = pass == 1 ? 0.02f : 0.5f, pc.k[1] = (float)(pass == 1), pc.k[2] = mode, pc.k[3] = dbg ? 1.0f : 0.0f;
             pd.s1[1] = pass >= 2 ? s[ai].ghost : 0;
             memcpy(pd.t, s[ai].tint, sizeof pd.t);
+            pd_set_org(&pd, pc.mvp, s[ai].feet);  // (s217 depth; pc.mvp = mvp_keep here, after the cam.shift edit)
             pd_push(cb, &pdr, &pc, &pd);
             VkDeviceSize vo = vb[ai].off;
             rec_CmdBindVertexBuffers(cb, 0, 1, &vb[ai].buf, &vo);
@@ -2335,9 +2358,9 @@ static bool draw_pass(VkImageView cv, VkFormat fmt, VkImageLayout lay, VkExtent2
                 const MGroup *gr = &a->groups[g];
                 if ((pass < 2 && (int)(gr->attr & 1) != pass) || gr->tex >= a->ntex || gr->first + gr->n > a->nidx) continue;
                 if (s[ai].hide_weapon && (gr->attr & ATTR_WEAPON)) continue;
-                if ((gr->attr & ATTR_WEAPON) && (gr->attr >> 24)) {  // (s85) an alt-blade bake: only the picked blade per chain
+                if ((gr->attr & ATTR_WEAPON) && ATTR_ALT(gr->attr)) {  // (s85) an alt-blade bake: only the picked blade per chain
                     uint32_t c = a->gchain[g], want = s[ai].blade[c] ? s[ai].blade[c] : c + 1;
-                    if (gr->attr >> 24 != want) continue;
+                    if (ATTR_ALT(gr->attr) != want) continue;
                 }
                 bind_draw_sets(cb, a, gr->tex, fset, dview, sdw_view);
                 rec_CmdDrawIndexed(cb, gr->n, 1, gr->first, 0, (uint32_t)(2 * ai + ((gr->attr & ATTR_NOLIGHT) ? 1 : 0)));
@@ -2581,9 +2604,9 @@ void sora_draw_cast(VkImage img, const VkImageView views[3], VkFormat fmt, uint3
                 const MGroup *gr = &a->groups[g];
                 if (gr->first + gr->n > a->nidx) continue;
                 if (hidew[ai] && (gr->attr & ATTR_WEAPON)) continue;
-                if ((gr->attr & ATTR_WEAPON) && (gr->attr >> 24)) {
+                if ((gr->attr & ATTR_WEAPON) && ATTR_ALT(gr->attr)) {
                     uint32_t c = a->gchain[g], wb = blade[ai][c] ? blade[ai][c] : c + 1;
-                    if (gr->attr >> 24 != wb) continue;
+                    if (ATTR_ALT(gr->attr) != wb) continue;
                 }
                 rec_CmdDrawIndexed(cb, gr->n, 1, gr->first, 0, 0);
                 tris += gr->n / 3;

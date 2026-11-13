@@ -12,6 +12,23 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
 // The same for the HUD's button textures (R8 masks, w x h texels, rows `row` bytes apart in lin): true when the texture
 // is one of them.
 bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, uint32_t row);
+// One of those textures (R8 texels, deswizzled)?
+bool glyphs_is_layout_icon(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row);
 
 // Changes whenever the icons to draw change (device, bindings, setting): sheets uploaded under another one go up again.
 uint32_t glyphs_generation(void);
+
+// (s194) BOTW's A glyph (0xE040) is drawn with this Switch input's binding (input_bind.h BIND_*; out of range = BIND_A).
+// BIND_A (the default) = stock. Any thread; folded into glyphs_generation, so prompts on screen change on the next frame.
+// Exported for sora_mod.dll (GetProcAddress "glyphs_set_a_slot"; an exe without it = no remap).
+void glyphs_set_a_slot(int slot);
+// The same without the menu pointer's state: what the overlay's fonts are made for (their icons are the face buttons).
+uint32_t glyphs_font_generation(void);
+
+// The diamond vertex (0: East, 1: South, 2: North, 3: West) for each Switch face button (A, B, X, Y) on the HUD.
+void glyphs_hud_positions(int pos[4]);
+
+// The device the Controls page and the tips draw instead of the Switch (runtime/nvn/hw_illust.c HW_DEVICE_*), -1 for
+// the Switch: Button icons' device, or on Automatic the controller connected. Decided when the game files are opened
+// (the layouts are patched then): another one shows from the next start.
+int glyphs_console(void);

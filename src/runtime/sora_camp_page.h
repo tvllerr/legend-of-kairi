@@ -7,16 +7,21 @@
 #include "sora_abil.h"
 #include "sora_cust.h"
 #include "sora_kb.h"
-#define CP_DB_ROWS 10             // (s140/s141/s146 dbgmenu) Debug page rows, shown top to bottom: Become Sora, Outfit, Auto Outfits, Sora Level, Keyblades, Drive Forms, Summons, All Abilities, God Mode, No Clip
-// (s146 outfit) the BACKEND row of each shown row (dbm_set / dbm_state in sora_dbgmenu.h: 0 level, 1 Keyblades, 2 Drive Forms, 3 Summons, 4 All Abilities, 5 God, 6 No Clip, 7 Become Sora, 8 Outfit, 9 Auto Outfits)
-static const int CP_DB_ORD[CP_DB_ROWS] = {7, 8, 9, 0, 1, 2, 3, 4, 5, 6};
+#define CP_DB_ROWS 12             // (s140/s141/s146 dbgmenu) Debug page rows, shown top to bottom: Become Sora, Outfit, Auto Outfits, Party 1, Party 2 (s217 / s220), Sora Level, Keyblades, Drive Forms, Summons, All Abilities, God Mode, No Clip
+// (s146 outfit) the BACKEND row of each shown row (dbm_set / dbm_state in sora_dbgmenu.h: 0 level, 1 Keyblades, 2 Drive Forms, 3 Summons, 4 All Abilities, 5 God, 6 No Clip, 7 Become Sora, 8 Outfit, 9 Auto Outfits,
+// 10 Party 1 = the character in Donald's place, 11 Party 2 = in Goofy's place (s220 members: the values = sora_pchar.h PCH_* ids))
+static const int CP_DB_ORD[CP_DB_ROWS] = {7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 6};  // (s217 riku / s220: Party 1 / 2 = backend 10 / 11, shown after Auto Outfits)
 
 // (s111 roxmenu) 1 = Roxas is the body (RX.on, set by camp_vals at open): the camp lists ONE member, "Roxas" (KH2's prologue
 // menu has no party; GUESS), no Donald / Goofy plates / rows. A literal text wins over msg_key, so his name is a text.
 static int g_cp_solo;
 static int cp_nm(void) { return g_cp_solo ? 1 : 3; }
+// (s220 riku2) a stand-in's name for member row i (1 Donald's slot, 2 Goofy's; set at open by camp_vals from sora_pchar.h
+// pchar_menu_name), NULL = KH2's own name text (msg key 30 + i)
+static const char *g_cp_name[3];
 static void cp_name_(CsDesc *d, int i) {
     if (g_cp_solo && i == 0) snprintf(d->text, sizeof d->text, "Roxas"), d->msg_key = 0;
+    else if (i > 0 && i < 3 && g_cp_name[i]) snprintf(d->text, sizeof d->text, "%s", g_cp_name[i]), d->msg_key = 0;
     else d->msg_key = 30 + i;
 }
 
@@ -27,6 +32,7 @@ typedef struct { int munny; int time_s; int lv[3]; int hp[3], hp_max[3], mp[3], 
                  int sp_hide;  // (s147) bit sp = a spell the player does not have yet: left out of the Customize picker (KH2 lists learned spells; 0 = all)
                  int arm_n; char arm_name[3][24]; int arm_def[3];  // (s120 eqlook) Link's worn armor (Head / Body / Legs) for the Armor rows
                  int db_v[CP_DB_ROWS], db_real_lv;  // (s140 dbgmenu; s146: by BACKEND row) the Debug page's values at open: test level (0 = Off), toggles 0/1, Outfit 0..4; the real level
+                 uint32_t db_party_have;  // (s220 members) bit c = character c may be offered on the Party rows (installed bake: sora_party.h party_have_mask)
                  int eq_base_str, eq_base_mag;  // eq_base_* = Sora's Str / Mag without the Keyblade (0 / 0 = use st[0])
                  int wpn_on, wpn_use, wpn_atk, wpn_life, wpn_life_max; char wpn_name[32]; } CpVals;  // (s128 wpnmenu) Link's BotW weapon: wpn_on = equipped + usable here (the picker's top entry), wpn_use = Sora swings it (g_wpn_use), wpn_atk = power + atk_up
 // ab_* = Sora's learned abilities (slice 3), sc = his shortcuts (slice 4), kb = his Keyblades (slice 5); 0 Sora 1 Donald 2 Goofy; munny / time_s < 0 = "--"

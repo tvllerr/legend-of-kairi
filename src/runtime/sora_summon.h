@@ -296,6 +296,7 @@ static const char *sm_gate(bool force, int st) {
     if (!force) {
         if (DG.bars < 3) return "needs 3 Drive bars (cast cmd Cost 3: Chicken Little 447, Stitch 88, Genie 89, Peter Pan 306)";
         if (!sm_member_ok(0) || !sm_member_ok(1)) return "needs Donald AND Goofy present and not KO'd";
+        if (!pchar_need_ok(g_pchar, PNEED_SUMMON)) return "needs Donald AND Goofy (a stand-in has a place: Debug Menu Party 1 / 2)";  // (s217 riku / s220)
     }
     return NULL;
 }

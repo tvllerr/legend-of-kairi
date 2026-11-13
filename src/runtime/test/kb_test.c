@@ -37,7 +37,10 @@ int main(void) {
     // alt ids = the bake's (sorabake SORABAKE_KB_ID / _ALT: 1 KK, 2 Star Seeker, 3 Oathkeeper, 4 Oblivion)
     CHECK(kb_alt(0x29) == 1 && kb_alt(0x1e0) == 2 && kb_alt(0x2a) == 3 && kb_alt(0x2b) == 4 && kb_alt(0x777) == 0);
     // (s89 kb) every KH2 FM Keyblade: 24 rows, 03system.bin stats / abilities, alt ids in table order, text keys
-    CHECK(KB_N == 24 && kb_alt(0x1e1) == 5 && kb_alt(0x220) == 24 && kb_index(0x1f3) == 20);
+    CHECK(KB_N == 26 && kb_alt(0x1e1) == 5 && kb_alt(0x220) == 24 && kb_index(0x1f3) == 20);
+    // (s214 kb) our own two: rows 25 / 26 (alt 25 / 26), GUESS stats, no ability, text keys 450..453
+    CHECK(kb_alt(0x7e01) == 25 && kb_alt(0x7e02) == 26 && kb_str(0x7e01) == 5 && kb_mag(0x7e02) == 3 && kb_ability(0x7e01) == 0 && kb_ability(0x7e02) == 0);
+    CHECK(kb_text_key(24) == 450 && kb_text_key(25) == 452 && kb_own_bit(0x7e02) == 1u << 25);
     CHECK(kb_str(0x1f3) == 7 && kb_mag(0x1f3) == 1 && kb_ability(0x1f3) == 394);   // Fenrir
     CHECK(kb_str(0x1f4) == 6 && kb_mag(0x1f4) == 4 && kb_ability(0x1f4) == 422);   // Ultima Weapon
     CHECK(kb_str(0x1ef) == 0 && kb_mag(0x1ef) == 4 && kb_ability(0x1ef) == 540);   // Sweet Memories
@@ -49,7 +52,7 @@ int main(void) {
     kb[KB_MAIN] = 0x1f4, kb[KB_VALOR] = 0x2b;
     CHECK(kb_own_fix(0, kb) == (0x3u | 1u << 21 | 1u << 3));
     CHECK(kb_owned(kb_own_fix(0, kb), 0x1f4) && !kb_owned(kb_own_fix(0, kb), 0x1f3) && kb_own_bit(0x777) == 0);
-    CHECK(kb_own_fix(0xffffffffu, kb) == 0xffffffu);
+    CHECK(kb_own_fix(0xffffffffu, kb) == 0x3ffffffu);
     int l[KB_N];
     CHECK(kb_own_list(kb_own_fix(1u << 10, kb), l) == 5 && l[0] == 0 && l[1] == 1 && l[2] == 3 && l[3] == 10 && l[4] == 21);
     // (s91 mfkb) Master / Final slots: 4 slots, one copy across all, sidecar "keyblade2", defaults, per-form slot

@@ -220,6 +220,9 @@ window.Feel = (function () {
     "King Mickey can swim, climb and take a hit, just like Sora.",
     "The menu sounds you hear in this installer come from your own copy of Kingdom Hearts II.",
   ];
+  // (s213) Melty's setup: the solo Melty release has no .bat files, no friends to play with and no installer sounds
+  const MELTY_SKIP = /\.bat|friend|multiplayer|installer/i;
+  const tipsFor = () => (S && S.melty ? TIPS.filter((t) => !MELTY_SKIP.test(t)) : TIPS);
   let tipI = Math.floor(Math.random() * TIPS.length), waitOn = false, tipTimer = 0, nowShown = "";
   const T = (s) => s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
   const who = (n) => {
@@ -240,6 +243,11 @@ window.Feel = (function () {
       case "other": return "Making the HUD and the sounds";
       case "verify": return "Checking every file";
       case "game": return "Setting up the game";
+      case "files": return "Copying your game files";       // (s213) Melty's setup stages
+      case "code": return "Building the game code";
+      case "shaders": return "Preparing the shaders";
+      case "sora": return n ? "Baking " + n : "Making Sora's data";
+      case "check": case "recheck": return "Checking Sora's data";
       default: return np.label;
     }
   }
@@ -259,12 +267,12 @@ window.Feel = (function () {
   }
   function setTip(i, fade) {
     const t = $("wtip");
-    const put = () => { t.textContent = TIPS[i]; t.classList.remove("fade"); };
+    const L = tipsFor(), put = () => { t.textContent = L[i % L.length]; t.classList.remove("fade"); };
     if (!fade || still) { put(); return; }
     t.classList.add("fade");
     setTimeout(put, 360);
   }
-  function nextTip(fade) { tipI = (tipI + 1) % TIPS.length; setTip(tipI, fade); }
+  function nextTip(fade) { tipI = (tipI + 1) % tipsFor().length; setTip(tipI, fade); }
   $("wait").addEventListener("click", () => nextTip(true));
   function updateWait() {
     const w = $("wait"), run = !!S && (S.status === "running" || S.status === "verifying");

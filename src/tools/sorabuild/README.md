@@ -55,6 +55,28 @@ fxrec/recordall.py: 82 files of fxrec/files82.txt, `--jobs` at once, loopend.py 
 With `"sounds": "recipe"` too, the PHH cache is not needed at all. Full run: `sorabuild.py --config <cfg> fxrec_record` (~1-2 h, resumable per file).
 Test filter `"fxrec_only": "<regex over file names>"` = subset recording; the fx chain refuses to use it.
 
+## The party stand-ins' own weapon effects (s223, steps fxrec_party + fx_party)
+`fxrec_party` records the stand-ins' weapon effect sets (`fxrec/files_party.txt`: W_EH000 / W_HE000 / W_MU000 / W_AL000 /
+W_CA000_HUMAN .a.us; 5 light files, under a minute, needs `"fx": "fxrec"`) into work/fxrec_party/out. `fx_party` (after fxsfx_kbown,
+before fx_final's dfblend) runs `fx/partyfx.py`: appends `pfx_<key>_hit<k>` (the element KH2's spark selector picks for EffectOnHit k,
+from each set's PAX categories), `pfx_<key>_trail` (element 10, the ribbon look) and the weapon msets' range-12 weapon_trail windows
+(trail keys 200000 + 1000 * PCH + slot; fx_trigjson now also writes trig_W_EH000 / W_HE000 / W_MU000 / W_AL000 / W_CA000.json). Old rows,
+pixels and trail windows stay byte-identical (the tool checks it); no generated floats (everything is copied from the recording). In
+"phh" mode nothing is recorded and fx_party appends nothing. Changes fx/fx.bin: regenerate manifest.thispc.json before a release.
+
+## Our own Keyblades' effects + sounds (s216, step fxsfx_kbown)
+The last step of the fx chain before fx_final / sfx_final: `fx/kbownfx.py` appends the Sealing Blade's ("s1") and Guardian Core's
+("g1") own sparks / ribbons / beam (`kbs1_*`, `kbg1_*`: shaped from the KH2 sets Fenrir `kbm0_*` / Photon Debugger `kb90_*` the
+chain already packed from the player's KH2 data, recoloured, their star shapes redrawn, + our procedural textures) to fx.bin and
+our synthesised sounds `ours/kb/*.wav` (made by `ours/kb/kbsynth.py`, numpy only, no game samples) to sfx.bin. Every old row
+stays byte-identical (the tool checks it). Changing it changes fx/fx.bin + sfx/sfx.bin: regenerate manifest.thispc.json.
+(s217) It also appends `kbs1_beam_r000..r165`: the beam crescent lying in the swing's plane, pre-rolled every 15 deg about its
+travel axis (sora_fx.c places an element with a yaw only); +23.6 MB fx.bin. sfx.bin changed too (09b16f3: `ours/kb/kbs1_hit.wav`
+is a new, remade sound). Both changed again: regenerate manifest.thispc.json before a release.
+(s217 review F2) Everything the step GENERATES (procedural positions / offsets / UVs, computed alphas / colours) is quantised through
+integers (`qz`: positions 1/1024 cm, UVs 1/65536, 0..255 values 2^-30) before it is written, so a last-bit difference of sin / cos / exp
+on another PC cannot change fx.bin's sha256 (the release pins it); KH2's copied elements stay byte-identical.
+
 ## Friend kit (s168): no SDK / clang / MSYS2 / Git bash / system Python
 `kit/mkkit.py` (dev PC only) builds one folder: the 6 C# tools (same `dotnet build -c Release` as the steps) + fxrec_boot.exe
 (same clang command, `sb.fxrec_cmd`) + kh2pick, the .NET 8 runtime only (from the SDK), OpenKH DLLs, busybox-w32 `sh.exe`,

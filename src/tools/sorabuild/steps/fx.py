@@ -19,6 +19,8 @@ FXD = "fx"  # tools dir below ctx.tools
 CHAIN_FX = "fxchain/fx.bin"
 CHAIN_SFX = "fxchain/sfx.bin"
 TRIG = ["W_EX010_RX", "W_EX200", "P_EX110", "P_EX200"]
+PARTY_TRIG = ["W_EH000", "W_HE000", "W_MU000", "W_AL000", "W_CA000"]  # (s223 rikufx: the stand-ins' weapon msets, fx_party's trail windows)
+TRIG = TRIG + PARTY_TRIG
 SUMMON_MOTIONS = ["peterpan", "tink", "genie"]
 CAP32 = (1 << 32) - 1
 
@@ -196,6 +198,37 @@ def fxsfx_duck(ctx):
     shutil.rmtree(d, ignore_errors=True)
 
 
+def fxsfx_kbown(ctx):
+    """(s216 kbfx) the mod's own two Keyblades: their sparks / ribbons / beam (shaped at install from the per-Keyblade KH2 sets this
+    chain already packed: Fenrir's + Photon Debugger's, recoloured and redrawn; our procedural textures) + our synthesised hit / beam
+    sounds (tools/sorabuild/ours/kb/*.wav, made by kbsynth.py). Appended LAST to both packs (old ids unchanged), before fx_final's
+    dfblend (it never touches lim_donald2_*)."""
+    d = tmpdir(ctx, "kbown")
+    ctx.py(T(ctx, "kbownfx.py"), "--fx-in", cur_fx(ctx), "--sfx-in", cur_sfx(ctx), "--out", d,
+           "--ours", os.path.join(ctx.tools, "ours", "kb"), env=envs(ctx))
+    swap(ctx, os.path.join(d, "fx.bin"), cur_fx(ctx))
+    swap(ctx, os.path.join(d, "sfx.bin"), cur_sfx(ctx))
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def fx_party(ctx):
+    """(s223 rikufx) the party stand-ins' own KH2 weapon effects (fx/partyfx.py): their hit sparks by EffectOnHit, their weapon's swing
+    ribbon (element 10) and its weapon_trail windows (range trigger 12 of the weapon msets), from step fxrec_party's recording of the
+    player's own KH2 files. Appended LAST (old ids, frames, textures and trail windows unchanged; checked by the tool), before fx_final's
+    dfblend (it never touches lim_donald2_*). No recording ("fx": "phh") = nothing appended: the stand-ins draw the base sparks."""
+    rec = ctx.workp("fxrec_party/out/x")[:-2]
+    if not os.path.isfile(os.path.join(rec, "kh2_fx.bin")):
+        if ctx.fx_mode != "phh":  # (s226 review F2) a recording build without the party recording must not pass as built
+            raise SystemExit("[sorabuild] %s: no party recording at %s (step fxrec_party left no kh2_fx.bin)" % (ctx.step, rec))
+        ctx.log("no party recording at %s (config fx = phh): fx.bin gets no stand-in rows (base sparks, no ribbon)" % rec)
+        return
+    d = tmpdir(ctx, "party")
+    ctx.py(T(ctx, "partyfx.py"), "--fx-in", cur_fx(ctx), "--rec", rec, "--trig", envs(ctx)["SB_TRIGDIR"], "--kh2", ctx.kh2, "--out", d,
+           env=envs(ctx))
+    swap(ctx, os.path.join(d, "fx.bin"), cur_fx(ctx))
+    shutil.rmtree(d, ignore_errors=True)
+
+
 def fx_final(ctx):
     """dfblend (last, re-run after anything that touches lim_donald2_*) on a copy, then the data file."""
     tmp = ctx.outp("fx/fx.bin") + ".tmp"
@@ -276,15 +309,18 @@ STEPS = [
     Step("fxsfx_sumdata", fxsfx_sumdata, deps=["fx_ohana"] + ["summon_" + k for k in SUMMON_MOTIONS]),  # (s154 merge) needs the bakes group's summon motions
     Step("fxsfx_knock", fxsfx_knock, deps=["fxsfx_sumdata"]),
     Step("fxsfx_duck", fxsfx_duck, deps=["fxsfx_knock"]),
-    Step("fx_final", fx_final, deps=["fxsfx_duck"], outputs=["fx/fx.bin"]),
-    Step("sfx_final", sfx_final, deps=["fxsfx_duck"], outputs=["sfx/sfx.bin"]),
+    Step("fxsfx_kbown", fxsfx_kbown, deps=["fxsfx_duck"]),  # (s216 kbfx: our Keyblades' own effects + sounds, both packs)
+    Step("sfx_party2", _sfx_tool("sfxparty2.py"), deps=["fxsfx_kbown"]),  # (s220 riku2: the party stand-ins' sounds, appended last)
+    Step("fx_party", fx_party, deps=["fxsfx_kbown", "fxrec_party", "fx_trigjson"]),  # (s223 rikufx: the stand-ins' own sparks + ribbons)
+    Step("fx_final", fx_final, deps=["fx_party"], outputs=["fx/fx.bin"]),
+    Step("sfx_final", sfx_final, deps=["sfx_party2"], outputs=["sfx/sfx.bin"]),
 ]
 
 # (s154 review M1/M2) the running packs make these steps ONE chain: if any of them has to run, sorabuild re-runs all of them
 # from fx_base / sfx_base (2 min). A half-done step or a lone re-run can then never leave a pack with missing or doubled elements.
 CHAIN = {"fx_base", "fx_prize", "fx_magic", "fx_limits", "sfx_base", "sfx_potion", "sfx_abil", "sfx_roxas", "sfx_mickey",
          "sfx_skate", "fxsfx_chick", "fx_fps", "fxsfx_stitch", "fx_ohana", "fxsfx_sumdata", "fxsfx_knock", "fxsfx_duck",
-         "fx_final", "sfx_final"}
+         "fxsfx_kbown", "sfx_party2", "fx_party", "fx_final", "sfx_final"}
 for _s in STEPS:
     if _s.name in CHAIN:
         _s.chain = "fxpacks"
