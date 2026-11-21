@@ -382,6 +382,8 @@ def build(out_dir, sets):
         if r["cut"] and not tail:
             e["period"] = r["period"]
         eff[r["name"]] = e
+    # kh_exe_sha1 = the build the fxrec RVA comments name (Steam), on purpose also for an Epic recording: both exes record
+    # the same effects, and this json must stay byte-identical across them
     doc = {"_meta": {"source": "tools/sorabuild/fxrec/phf2write.py", "kh_exe_sha1": "2548F1191FE6587A34947952763CE6BB4F3B5C1A",
                      "format": "PHF2 v4"}, "effects": eff, "report": {"elements": ne, "stats": {}}}
     tmpj = jsonp + ".new"

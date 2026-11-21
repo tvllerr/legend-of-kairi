@@ -26,7 +26,8 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXE_SHA1 = "2548F1191FE6587A34947952763CE6BB4F3B5C1A"
+# the KH2 FM exes fxrec has an address table for (fxrec_ldr.h KH2_RVAS)
+EXE_SHA1 = {"2548F1191FE6587A34947952763CE6BB4F3B5C1A": "Steam", "F9758C7782C4DD03C5BF8A4BCCE9D897CB21CD62": "Epic"}
 PKGS = ["kh2_first", "kh2_second", "kh2_third", "kh2_fourth", "kh2_fifth", "kh2_sixth"]
 # per-file signature = what makes a recording (s162 review: NOT phf2write.py - a writer fix must not force a re-record)
 CODE = ["runfile.sh", "loopend.py", "fxsolve.py", "fxvbin.py", "hdtab.py", "fxrec_boot.c", "fxrec_s2.c", "fxrec_ldr.c", "fxrec_ldr.h"]
@@ -162,8 +163,8 @@ def main():
     if not os.path.isfile(a.exe):
         raise SystemExit("recordall: KH2 exe not found: " + a.exe)
     got = sha(a.exe, "sha1")
-    if got != EXE_SHA1:
-        raise SystemExit("recordall: unsupported KH2 exe (sha1 %s, need %s: the Steam KH2 FM exe)" % (got, EXE_SHA1))
+    if got not in EXE_SHA1:
+        raise SystemExit("recordall: unsupported KH2 exe (sha1 %s; supported: the Steam or Epic KH2 FM exe, %s)" % (got, ", ".join(EXE_SHA1)))
     boot = a.build or os.path.join(HERE, "build", "fxrec_boot.exe")
     if not os.path.isfile(boot):
         raise SystemExit("recordall: %s missing (sh build.sh / the sorabuild step fxrec_build)" % boot)
@@ -251,7 +252,7 @@ def main():
         if name in ("obj/P_EX200.a.us", "obj/P_EX220.a.us"):
             x += ["--isotails", "1"]
         args = " ".join(x)
-        sig = "exe=%s file=%s %s args=%s code=%s" % (EXE_SHA1, name, pre, args, chash)
+        sig = "exe=%s file=%s %s args=%s code=%s" % (got, name, pre, args, chash)
         d = os.path.join(rec, pre)
         okf = os.path.join(rec, pre + ".ok")
         if os.path.isfile(okf) and open(okf).read().strip() == sig and os.path.isfile(os.path.join(d, pre + ".list")):

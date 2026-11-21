@@ -60,7 +60,7 @@ def mine(ctx):
         return
     exe = ctx.cfg.get("kh2exe")
     if not exe or not os.path.isfile(exe):
-        raise SystemExit("[sorabuild] sounds_mine needs config kh2exe = the Steam KH2 FM exe (hud icon widths), not %r" % (exe,))
+        raise SystemExit("[sorabuild] sounds_mine needs config kh2exe = the Steam or Epic KH2 FM exe (hud icon widths), not %r" % (exe,))
     trig = ctx.workp("fxtrig/x")[:-2]
     sumdata = ctx.workp("sounds_mine/sumdata/x")[:-2]
     shutil.rmtree(sumdata, ignore_errors=True)

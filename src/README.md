@@ -24,7 +24,7 @@ PC from their own copies of the games, by the installer's build tools below.
 
 ## Building
 
-You need your own Breath of the Wild 1.9.0 (Switch) dump and KINGDOM HEARTS HD 1.5+2.5 ReMIX (Steam).
+You need your own Breath of the Wild 1.9.0 (Switch) dump and KINGDOM HEARTS HD 1.5+2.5 ReMIX (Steam or Epic Games Store).
 
 1. **Toolchain (Windows):** [MSYS2](https://www.msys2.org/) UCRT64 with clang, make, SDL3, FFmpeg, Vulkan headers and
    shaderc. Set up Savage Wind's own build first: see [README-SavageWind.md](README-SavageWind.md) (it also covers Linux).

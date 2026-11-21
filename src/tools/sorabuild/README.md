@@ -51,7 +51,7 @@ widths; no audio, no game bytes) and the player's KH2 extract (`sounds/build_sou
 Config `"fx": "fxrec"` (default `"phh"` = old behaviour) makes the fx tools read kh2_fx.bin / kh2_fx.json from `work/fxrec/out/` (env SB_FXDIR)
 instead of the PHH cache. Steps `fxrec_build` (clang -> work/fxrec/build/fxrec_boot.exe) and `fxrec_record` (steps/fxrec.py ->
 fxrec/recordall.py: 82 files of fxrec/files82.txt, `--jobs` at once, loopend.py decides the tails, then phf2write.py). Needs config
-`"kh2exe"` (Steam KH2 FM exe, sha1 2548F119...5A, others refused), `"kh2"`; optional `fxrec_jobs` (default 2), `clang`, `bash`.
+`"kh2exe"` (Steam KH2 FM exe sha1 2548F119...5A or Epic F9758C77...62, others refused), `"kh2"`; optional `fxrec_jobs` (default 2), `clang`, `bash`.
 With `"sounds": "recipe"` too, the PHH cache is not needed at all. Full run: `sorabuild.py --config <cfg> fxrec_record` (~1-2 h, resumable per file).
 Test filter `"fxrec_only": "<regex over file names>"` = subset recording; the fx chain refuses to use it.
 
@@ -115,6 +115,6 @@ python.org 3.12 embeddable + numpy/Pillow/oead, ffmpeg (gyan 9.0.2), vgmstream r
 Config `"kit": <dir>` -> the build steps copy the prebuilt tools; dotnet / openkh / bash / ffmpeg / vgmstream default to the kit's.
 Run sorabuild with the kit's own `python/python.exe -E -P sorabuild.py ...`.
 
-Config `"kh2img": <Steam KH2 Image/dt>` (instead of `"kh2"`) -> kh2pick extracts only the files in `kit/kh2_files.json`
+Config `"kh2img": <KH2 Image/dt (Steam) or Image/en (Epic)>` (instead of `"kh2"`) -> kh2pick extracts only the files in `kit/kh2_files.json`
 (made by `kit/kh2list.py` from a last-access trace of a clean run: names + sizes + sha256, no game bytes) into `work/kh2`,
 checking every sha256 (a modded or other KH2 build is refused with a plain message).

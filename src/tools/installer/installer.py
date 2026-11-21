@@ -1,14 +1,14 @@
 """Legend of Kairi installer (Sora in BotW, s168): a local web page shown in an Edge app window, driven by the kit's own Python.
 
   <kit>/python/pythonw.exe -E -P tools/installer/installer.py [--root <install dir>] [--kit <kit dir>]
-        [--kh2img <Image/dt override, dev>] [--port N] [--browser]
+        [--kh2img <Image/dt or Image/en override, dev>] [--port N] [--browser]
 
 - Serves tools/installer/ui on 127.0.0.1 (random port, a random token guards the API) and opens it with
   msedge --app (own profile in <root>/.installer-ui, so the window is its own process: closing it ends the installer
   and stops a running build; the build resumes from its done markers next time).
 - The player picks two folders: Savage Wind (swsetup.SW_WANT, or an older one it upgrades; with its game files set up:
-  extracted/romfs) and the Steam
-  KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (found through Steam by itself when it can). Nothing else is asked.
+  extracted/romfs) and the Steam or Epic
+  KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (found through Steam or the Epic launcher by itself when it can). Nothing else is asked.
 - Install = tools/sorabuild/sorabuild.py all (kit mode, kh2img) into <root>/data with scratch <root>/work, then
   verify.py --expect manifest.json (every file = the reference build). Game files are only read, never written.
 - (s183) Update: the player can pick an OLDER Legend of Kairi folder instead; this release's program files replace the old ones there
@@ -40,7 +40,9 @@ DEFAULT_VERSION = "0.1.0-alpha"   # same default as mkzip --version; the release
 VERSION = DEFAULT_VERSION + "-dev"
 KH2_DIRNAME = "KINGDOM HEARTS -HD 1.5+2.5 ReMIX-"
 KH2_EXE = "KINGDOM HEARTS II FINAL MIX.exe"
-KH2_EXE_SHA1 = "2548F1191FE6587A34947952763CE6BB4F3B5C1A"
+# the KH2 FM exes the mod data can be built from (fxrec_ldr.h KH2_RVAS has an address column for each) -> store, image dir
+KH2_BUILDS = {"2548F1191FE6587A34947952763CE6BB4F3B5C1A": ("Steam", "dt"),
+              "F9758C7782C4DD03C5BF8A4BCCE9D897CB21CD62": ("Epic", "en")}
 GAME_VERSION = "1.9.0"      # the BotW version the mod is built for
 NEED_UPDATE_GB = 5         # (s183) stage + old copies of the program files (~1.1 GB) + the steps that re-run (GUESS: fxrec needs more)
 RELEASE = os.path.normpath(os.path.join(HERE, "..", ".."))   # this download's folder (bin/ kit/ tools/ manifest.json)
@@ -138,22 +140,29 @@ def game_version(romfs):
 
 
 def check_kh2(path):
-    """-> (ok, message, info). The Steam KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (Image/dt + the KH2 FM exe)."""
+    """-> (ok, message, info). The Steam or Epic KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (the KH2 FM exe + Image/dt on Steam,
+    Image/en on Epic; the packages are the same files). info: exe, img, dir, build ("Steam" / "Epic")."""
     if not path:
-        return False, "Choose your KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (Steam).", {}
+        return False, "Choose your KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (Steam or Epic).", {}
     p = path
-    if os.path.basename(p.rstrip("/\\")).lower() == "dt":           # picked Image/dt itself
+    if os.path.basename(p.rstrip("/\\")).lower() in ("dt", "en"):    # picked Image/dt or Image/en itself
         p = os.path.dirname(os.path.dirname(p.rstrip("/\\")))
     elif os.path.basename(p.rstrip("/\\")).lower() == "image":
         p = os.path.dirname(p.rstrip("/\\"))
-    exe, dt = os.path.join(p, KH2_EXE), os.path.join(p, "Image", "dt")
-    if not os.path.isfile(exe) or not os.path.isfile(os.path.join(dt, "kh2_first.hed")):
-        return False, "This is not the KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (no %s / Image/dt)." % KH2_EXE, {}
-    if sha1(exe) != KH2_EXE_SHA1:
-        return False, ("Your %s is not the Steam release this mod is made for (Epic and other versions are not supported "
-                       "yet)." % KH2_EXE), {}
-    return True, "KINGDOM HEARTS HD 1.5+2.5 ReMIX (Steam).", {"exe": exe.replace("\\", "/"), "img": dt.replace("\\", "/"),
-                                                              "dir": p.replace("\\", "/")}
+    exe = os.path.join(p, KH2_EXE)
+    imgs = [s for s in ("dt", "en") if os.path.isfile(os.path.join(p, "Image", s, "kh2_first.hed"))]
+    if not os.path.isfile(exe) or not imgs:
+        return False, "This is not the KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (no %s / Image/dt or Image/en)." % KH2_EXE, {}
+    build = KH2_BUILDS.get(sha1(exe))
+    if not build:
+        return False, ("Your %s is not the Steam or Epic release this mod is made for (other versions are not supported)."
+                       % KH2_EXE), {}
+    store, sub = build
+    if sub not in imgs:
+        return False, "This %s KINGDOM HEARTS folder has no Image/%s." % (store, sub), {}
+    img = os.path.join(p, "Image", sub)
+    return True, "KINGDOM HEARTS HD 1.5+2.5 ReMIX (%s)." % store, {"exe": exe.replace("\\", "/"), "img": img.replace("\\", "/"),
+                                                                   "dir": p.replace("\\", "/"), "build": store}
 
 
 def steam_kh2():
@@ -176,6 +185,27 @@ def steam_kh2():
         d = os.path.join(lib, "steamapps", "common", KH2_DIRNAME)
         if os.path.isfile(os.path.join(d, KH2_EXE)):
             return os.path.normpath(d).replace("\\", "/")
+    return ""
+
+
+def epic_kh2():
+    """the Epic Games Store KH2 folder, from the Epic launcher's install manifests (<ProgramData>/Epic/EpicGamesLauncher/Data/
+    Manifests/*.item, json with InstallLocation): the first one holding the KH2 FM exe + Image/en, or ''"""
+    if sys.platform != "win32":
+        return ""
+    d = os.path.join(os.environ.get("PROGRAMDATA") or "C:/ProgramData", "Epic", "EpicGamesLauncher", "Data", "Manifests")
+    try:
+        names = sorted(n for n in os.listdir(d) if n.lower().endswith(".item"))
+    except OSError:
+        return ""
+    for n in names:
+        try:
+            with open(os.path.join(d, n), encoding="utf-8", errors="replace") as f:
+                loc = json.load(f).get("InstallLocation") or ""
+        except (OSError, ValueError, AttributeError):
+            continue
+        if loc and os.path.isfile(os.path.join(loc, KH2_EXE)) and os.path.isfile(os.path.join(loc, "Image", "en", "kh2_first.hed")):
+            return os.path.normpath(loc).replace("\\", "/")
     return ""
 
 
@@ -445,7 +475,7 @@ class State:
         except (OSError, ValueError):
             prev = {}
         self.set_sw(prev.get("sw", ""))
-        kh = prev.get("kh2") or steam_kh2()
+        kh = prev.get("kh2") or steam_kh2() or epic_kh2()
         self.set_kh2(kh, auto=bool(kh and not prev.get("kh2")))
         if os.path.isdir(os.path.join(self.root, "work", "done")) and any(
                 n for n in os.listdir(os.path.join(self.root, "work", "done")) if not n.startswith("_")):
@@ -1190,7 +1220,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=os.path.normpath(os.path.join(HERE, "..", "..")))
     ap.add_argument("--kit")
-    ap.add_argument("--kh2img", help="dev: an Image/dt to read instead of the chosen KH2 folder's (e.g. unmodded hard links)")
+    ap.add_argument("--kh2img", help="dev: an Image/dt (or Epic Image/en) to read instead of the chosen KH2 folder's (e.g. unmodded hard links)")
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--browser", action="store_true", help="dev: open in the default browser, serve until Ctrl+C")
     ap.add_argument("--serve", action="store_true", help="dev: only serve (print the URL), until Ctrl+C")

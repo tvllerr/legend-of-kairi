@@ -12,8 +12,19 @@ from backup/. Output lines: "pkg <pkg> size <actual length>" then "<offset hex> 
 import argparse, hashlib, os, struct, sys
 
 PKGS = ["kh2_first", "kh2_second", "kh2_third", "kh2_fourth", "kh2_fifth", "kh2_sixth"]
-IMAGE = (os.path.join(os.path.dirname(os.environ["FXREC_GAMEEXE"]), "Image", "dt") if os.environ.get("FXREC_GAMEEXE")
-         else "D:/SteamLibrary/steamapps/common/KINGDOM HEARTS -HD 1.5+2.5 ReMIX-/Image/dt")  # sorabuild sets FXREC_GAMEEXE
+
+
+def image_dir(game):
+    """<game>/Image/dt (Steam) or <game>/Image/en (Epic): the one that holds kh2_first.hed (both builds ship the same packages)"""
+    for sub in ("dt", "en"):
+        d = os.path.join(game, "Image", sub)
+        if os.path.isfile(os.path.join(d, "kh2_first.hed")):
+            return d
+    return os.path.join(game, "Image", "dt")
+
+
+IMAGE = image_dir(os.path.dirname(os.environ["FXREC_GAMEEXE"]) if os.environ.get("FXREC_GAMEEXE")
+                  else "D:/SteamLibrary/steamapps/common/KINGDOM HEARTS -HD 1.5+2.5 ReMIX-")  # sorabuild sets FXREC_GAMEEXE
 
 
 def pkg_path(image, pkg, ext):

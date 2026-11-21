@@ -125,7 +125,7 @@ function setVal(el, st, item, autoText) {
 let LEAD = "", doneReady = false, doneSeenAt = 0;
 function renderSetup() {
   setVal($("v-sw"), $("st-sw"), S.sw, "");
-  setVal($("v-kh2"), $("st-kh2"), S.kh2, "Found (Steam)");
+  setVal($("v-kh2"), $("st-kh2"), S.kh2, "Found (" + ((S.kh2.info || {}).build || "Steam") + ")");
   const ready = S.sw.ok && S.kh2.ok && S.disk.ok;
   const U = S.upd || {}, upd = !!S.updating, ui = U.info || {};
   if (!helpInit) { helpInit = true; if (upd) helpSel = "h-go"; }     // (s184) opened by Update.bat: show the Update tip first
