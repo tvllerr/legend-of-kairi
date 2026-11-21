@@ -1825,6 +1825,14 @@ static void camp_abort(const char *why);
 static bool camp_live_set(const char *key, int v);
 #include "sora_title.h"  // (s199 title: Sora mode off on BotW's title after a quit to it; TITLE.on is read in pad_tap)
 
+// (ridel) BotW's L while Link rides: pad_tap keeps L from BotW (KH2's L1 = the shortcut menu), so on a horse L1 (BotW's soothe)
+// did nothing and wild horses could not be tamed (user report). While Link's state word (actor +0xcec) has bit 0x100000 = riding
+// (GUESS from the epictest logs: 0x100000 from the mount through the ride, left via 0x600002 / 0x100010; also seen on a Lynel's
+// back), L reaches BotW; the d-pad and ZL stay Sora's. Set per world frame by the tick (the state word is game-thread only).
+// On by default (tested in game); SAVAGEWIND_SORA_RIDE_L1=0 / live "set ridel 0" = L1 always KH2's (as before).
+#define LINK_SW_RIDING 0x100000u
+static int g_ride_l = 1;
+static volatile int g_riding;  // (the tick: g_ride_l and Link riding now)
 static void pad_tap(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t now = vk_frame_counter();
     px_pad(now);  // (s194 promptx: which button BotW's A glyph shows)
@@ -1880,7 +1888,7 @@ static void pad_tap(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t 
     // and the KH2 pause menu, which also sits on pause state 2, still eats the whole pad in camp_pad below)
     bool bmenu = *(volatile uint32_t *)(uintptr_t)PAUSE_STATE == 2 && g_menu_pass;
     *b &= ~BTN_TEST_ENEMY;
-    if (!bmenu && !g_slate_pass && !SLATE_LIVE(now)) *b &= ~BTN_MENU;  // (Sora's only: the game never sees them - the d-pad and L are KH2's menu; s93: unless the Slate)
+    if (!bmenu && !g_slate_pass && !SLATE_LIVE(now)) *b &= ~(g_riding ? BTN_MENU & ~BTN_SHORTCUT : BTN_MENU);  // (Sora's only: the game never sees them - the d-pad and L are KH2's menu; s93: unless the Slate; ridel: L = BotW's soothe while Link rides)
     if (SLATE_LIVE(now) && now >= g_slate_l_from && now < g_slate_l_until) *b |= BTN_SHORTCUT;  // (s93: the L tap that uses the rune)
     if (!g_zl_pass && !bmenu) *b &= ~BTN_LOCK;  // (ZL is KH2's lock-on)
     // (KH2's triangle = the reaction command: BotW gets A instead of the jump; Sora still saw the raw pad above, and
@@ -5433,6 +5441,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "firespkey")) g_fire_spk_y[1] = v / 100.0f;
             else if (!strcmp(key, "wofloor")) g_wo_floor_cm = (float)v;
             else if (!strcmp(key, "woguard")) g_wo_guard = v;
+            else if (!strcmp(key, "ridel")) g_ride_l = v != 0;  // (L1 = BotW's soothe while Link rides a horse)
             else if (!strcmp(key, "wosnap")) g_wo_snap = v != 0;
             else if (!strcmp(key, "firer")) g_fire_obj_r = v / 100.0f;
             else if (!strcmp(key, "firebr")) g_fire_burst_r = v / 100.0f;
@@ -6875,6 +6884,8 @@ static void sora_mod_frame_body(void) {
         int lv = (int)env_f("SAVAGEWIND_SORA_GLIDE_LV", (float)g_glide_lv);
         g_glide_lv = lv < 1 ? 1 : lv > 5 ? 5 : lv;
         g_air_once = env_f("SAVAGEWIND_SORA_AIR_ONCE", (float)g_air_once) != 0;
+        g_ride_l = env_f("SAVAGEWIND_SORA_RIDE_L1", (float)g_ride_l) != 0;
+        if (g_ride_l) LOG("[sora] ridel on: L1 goes to BotW while Link rides (soothe a horse)\n");
         const char *k = getenv("SAVAGEWIND_SORA_SCALE");
         if (k && *k) g_k = strtof(k, NULL);
         slog_open();
@@ -7294,6 +7305,11 @@ static void sora_mod_frame_body(void) {
             if (why) bed_on = false, bed_block = !strcmp(why, "timeout"), LOG("[sora] bed: over (%s) after %llu presents, state %#x, vert %.2f horiz %.2f\n", why, (unsigned long long)(present - bed_at), sw_now, vert, horiz);
         }
         if (bed_on) st = LINK_OTHER, g_event = true;
+    }
+    {   // (ridel) Link rides (state word bit 0x100000): BotW gets L (soothe) - pad_tap reads g_riding
+        int r = g_ride_l && !dead && !g_loading && (sw_now & LINK_SW_RIDING);
+        if (r != g_riding) LOG("[sora] ridel: %s (Link state %#x)\n", r ? "Link rides: L1 goes to BotW (soothe)" : "not riding: L1 is the KH2 shortcut again", sw_now);
+        g_riding = r;
     }
     sh_tick(present);  // (s94 b8-slatehip)
     bh_tick();  // (s102 bombhand)
