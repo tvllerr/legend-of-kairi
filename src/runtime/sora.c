@@ -5525,6 +5525,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "rstay")) g_repel_stay = v / 100.0f;
             else if (!strcmp(key, "rray")) g_rray = v != 0;
             else if (!strcmp(key, "guard")) g_guard = v != 0, LOG("[sora] guard %s\n", v ? "on (Square, stick neutral)" : "off (Square always rolls)");
+            else if (!strcmp(key, "guardlimit")) g_guard_limit = v != 0, LOG("[sora] guardlimit %d (%s)\n", v, v ? "Limit Form guards (its own K322)" : "no Guard in any Drive Form");
             else if (!strcmp(key, "guardgate")) g_guard_gate = v != 0, LOG("[sora] guardgate %d (%s)\n", v, v ? "Guard needs the Guard ability equipped (Abilities page); else Square rolls" : "Guard always available");
             else if (!strcmp(key, "guardinv")) g_guard_inv = v, LOG("[sora] guardinv %d (post-block invulnerable frames: 0 none, 1 enemy hits, 2 all)\n", v);
             else if (!strcmp(key, "bmswallow")) { g_bmswallow = v != 0; if (!v) g_camp_swallow = 0; LOG("[sora] bmswallow %d\n", g_bmswallow); }
@@ -6875,6 +6876,8 @@ static void sora_mod_frame_body(void) {
         int lv = (int)env_f("SAVAGEWIND_SORA_GLIDE_LV", (float)g_glide_lv);
         g_glide_lv = lv < 1 ? 1 : lv > 5 ? 5 : lv;
         g_air_once = env_f("SAVAGEWIND_SORA_AIR_ONCE", (float)g_air_once) != 0;
+        g_guard_limit = env_f("SAVAGEWIND_SORA_GUARD_LIMIT", (float)g_guard_limit) != 0;
+        if (g_guard_limit) LOG("[sora] guardlimit on: Limit Form guards (its own K322, KH2's Id 11)\n");
         const char *k = getenv("SAVAGEWIND_SORA_SCALE");
         if (k && *k) g_k = strtof(k, NULL);
         slog_open();

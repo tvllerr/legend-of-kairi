@@ -9,8 +9,8 @@
 // AB_TAB): Sora has it from the start here. PHH hit_reaction_kh2.py (reference): a Guard that blocks plays motion 42 and
 // sets +0xD70 = 80 invulnerable frames (re:0x3D61D0).
 // GUESS: the block is frontal (nearest enemy in the front half plane; KH2's guard shape is a 120 cm sphere in front).
-// Drive Forms: base Sora only. Valor's ptya Id 11 is a leaping slash (B330 = motion 181), not a guard; the other
-// forms' Id 11 was not read (GUESS: none) - Square in a form stays as it was.
+// Drive Forms: base Sora only, and Limit Form with guardlimit (below; every form's Id 11 read from KH2's data: only Limit's is a
+// Guard). Square in the other forms stays as it was.
 #pragma once
 
 #define MOT_GUARD 173
@@ -19,6 +19,13 @@
 #define GUARD_WIN_A 6           // atkp 161 window, GFR (sora_hits.bin slot 692), used if the hit bake is missing
 #define GUARD_WIN_B 37
 
+// (guardlimit) Limit Form's own Guard. KH2 (VERIFIED, P_EX100_KH1F + W_EX010_KH1F via sorabake info / hits / atkp): its ptya
+// Id 11 is K322 = motion 173 (slot 692, 60 GFR, no root move) with a Keyblade atkp 161 (Type Guard) window GFR 1..35, its
+// Ability field 0 (no Guard ability needed, unlike base Sora's entry); the block-hit is A321 (slot 168, atkp 162 0..40), both
+// in data/forms/limit_hits.bin. The other forms' Id 11: Valor B330 (a leaping slash), Anti F311 (a 12.5 m lunge), Wisdom /
+// Master / Final none - they keep no Guard. User report: "the only form that uses block is Limit" (and Limit could not).
+// On by default (tested in game); SAVAGEWIND_SORA_GUARD_LIMIT=0 / live "set guardlimit 0" = no Guard in any Drive Form (as before).
+static int g_guard_limit = 1;
 static int g_guard_gate = 0;  // (s91 b5-abil) live "set guardgate 1": Guard needs the ability (id 82) equipped on the Abilities page, as in KH2; default OFF = always; debugall ON = counts as equipped (s91 review)
 static int g_guard = 1;  // live "set guard 0/1" (0 = old behaviour: Square always rolls)
 // (s88 review) live "set guardinv 0/1/2": what the 80 frames after a block swallow. 0 = nothing (only the guard window
@@ -126,11 +133,17 @@ static bool guard_front(const float p[3]) {  // GUESS: the hit comes from the fr
 
 // The Square press. true = the press became a Guard (the caller skips the roll).
 static bool guard_press(uint64_t press, float sspeed, bool is_free, const float p[3]) {
-    if (!g_guard || (g_guard_gate && g_abilfix && !g_dbgall && !ab_on(AB.on, AB_GUARD)) || !(press & BTN_ROLL) || sspeed > 0 || fm_in_form() || S.act != ACT_IDLE || S.takeoff > 0 ||
+    bool limit = g_guard_limit && IN_LIMIT;  // (guardlimit: Limit Form's own K322; its KH2 entry needs no Guard ability)
+    if (!g_guard || (!limit && g_guard_gate && g_abilfix && !g_dbgall && !ab_on(AB.on, AB_GUARD)) || !(press & BTN_ROLL) || sspeed > 0 || (fm_in_form() && !limit) || S.act != ACT_IDLE || S.takeoff > 0 ||
         S.air_frames || !is_free || !mot_of(MOT_GUARD))
         return false;
     play(MOT_GUARD), S.special = SP_GUARD;
-    LOG("[sora] guard at %.3f %.3f %.3f face %.1f (window GFR %d..%d)\n", p[0], p[1], p[2], S.face * 180 / PI, g_guard_from < GUARD_WIN_A ? g_guard_from : GUARD_WIN_A, GUARD_WIN_B);
+    int wa = g_guard_from < GUARD_WIN_A ? g_guard_from : GUARD_WIN_A, wb = GUARD_WIN_B;  // (the window guard_window uses: the hit bake's)
+    const HitSlot *hw = S.mot ? hit_slot(S.mot->slot, 0) : NULL;
+    for (int i = 0; hw && i < hw->nwin; i++)
+        if (hw->win[i].atkp == 161) wa = g_guard_from < hw->win[i].start ? g_guard_from : hw->win[i].start, wb = hw->win[i].end;
+    LOG("[sora] guard at %.3f %.3f %.3f face %.1f (%s, slot %d, window GFR %d..%d)\n", p[0], p[1], p[2], S.face * 180 / PI,
+        limit ? "Limit Form" : "base", S.mot ? S.mot->slot : -1, wa, wb);
     return true;
 }
 
