@@ -7,11 +7,11 @@
 #include "sora_abil.h"
 #include "sora_cust.h"
 #include "sora_kb.h"
-#define CP_DB_ROWS 16             // (s140/s141/s146 dbgmenu) Debug page rows, shown top to bottom: Become Sora, Outfit, Auto Outfits, Party 1, Party 2 (s217 / s220), Sora Level, Keyblades, Drive Forms, Infinite Drive, Infinite MP, Drive Form, Mickey Rescue (s233), Summons, All Abilities, God Mode, No Clip
+#define CP_DB_ROWS 18             // (s140/s141/s146 dbgmenu) Debug page rows, shown top to bottom: Become Sora, Outfit, Auto Outfits, Party 1, Party 2 (s217 / s220), Sora Level, Keyblades, Drive Forms, Infinite Drive, Infinite MP, Drive Form, Mickey Rescue (s233), Summons, All Abilities, God Mode, High Jump, Aerial Dodge (dbgjump), No Clip
 // (s146 outfit) the BACKEND row of each shown row (dbm_set / dbm_state in sora_dbgmenu.h: 0 level, 1 Keyblades, 2 Drive Forms, 3 Summons, 4 All Abilities, 5 God, 6 No Clip, 7 Become Sora, 8 Outfit, 9 Auto Outfits,
 // 10 Party 1 = the character in Donald's place, 11 Party 2 = in Goofy's place (s220 members: the values = sora_pchar.h PCH_* ids),
 // (s233) 12 Infinite Drive, 13 Drive Form (0 Off, 1 Valor .. 6 Anti), 14 Mickey Rescue (0 Off, 1 Any Enemy, 2 Now), 15 Infinite MP
-static const int CP_DB_ORD[CP_DB_ROWS] = {7, 8, 9, 10, 11, 0, 1, 2, 12, 15, 13, 14, 3, 4, 5, 6};  // (s217 riku / s220: Party 1 / 2 = backend 10 / 11, shown after Auto Outfits; s233: 12 / 15 / 13 / 14 after Drive Forms)
+static const int CP_DB_ORD[CP_DB_ROWS] = {7, 8, 9, 10, 11, 0, 1, 2, 12, 15, 13, 14, 3, 4, 5, 16, 17, 6};  // (dbgjump: High Jump / Aerial Dodge = 16 / 17 before No Clip: every earlier shown row keeps its place, No Clip stays last)  // (s217 riku / s220: Party 1 / 2 = backend 10 / 11, shown after Auto Outfits; s233: 12 / 15 / 13 / 14 after Drive Forms)
 
 // (s111 roxmenu) 1 = Roxas is the body (RX.on, set by camp_vals at open): the camp lists ONE member, "Roxas" (KH2's prologue
 // menu has no party; GUESS), no Donald / Goofy plates / rows. A literal text wins over msg_key, so his name is a text.

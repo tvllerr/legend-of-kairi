@@ -211,6 +211,9 @@ static bool sm_out(void);  // (s136 summon, sora_summon.h: Chicken Little is out
 static void sm_hit_refill(float drain);  // (s148 sumlv, sora_summon.h: a hit Sora lands while a summon is out refills its gauge)
 #include "sora_sumlv.h"   // (s148 sumlv: KH2 Summon EXP + Summon Level)
 #include "sora_drive.h"   // (s67 drive: KH2's Drive gauge, Drive Forms slice 1; S64_HELPER_DRIVE_RECON.md 6)
+// (dbgjump) the Debug Menu's High Jump / Aerial Dodge rows (sora_dbgmenu.h): base Sora's level is at least this (0 = Off = KH2's rule
+// alone: his level = Valor's / Master's growth - 1). Read by sora_valor_lv.h vl_base_jump_h and sora_bdodge.h bd_lv; never saved.
+static int g_dbm_hjump, g_dbm_adodge;
 #include "sora_valor_lv.h" // (s70: Valor EXP + form levels)
 #include "sora_light.h"  // (s121 a1 light: time of day / weather light for Sora + party; S121_HELPER_LIGHTDLL.md)
 // s54: the map warp's blue glow (sora_draw.c sora_draw_tint). Looked up in the exe by name, not imported: an exe linked

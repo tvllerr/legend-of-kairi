@@ -13,11 +13,13 @@
 // (s233) the arrays are by BACKEND row (was: by shown row); CP_DB_ORD (sora_camp_page.h) gives the backend row of each shown row. A new row = one
 // entry in each array (+ a value list below if it is not a toggle) + its place in CP_DB_ORD. Help lines show their first 23 chars (CsDesc.text).
 static const char *const CP_DB_NAME[CP_DB_ROWS] = { "Sora Level", "Unlock Keyblades", "Unlock Drive Forms", "Unlock Summons", "All Abilities", "God Mode", "No Clip",
-    "Become Sora", "Outfit", "Auto Outfits", "Party 1", "Party 2", "Infinite Drive", "Drive Form", "Mickey Rescue", "Infinite MP" };
+    "Become Sora", "Outfit", "Auto Outfits", "Party 1", "Party 2", "Infinite Drive", "Drive Form", "Mickey Rescue", "Infinite MP",
+    "High Jump", "Aerial Dodge" };  // (dbgjump)
 static const char *const CP_DB_HELP[CP_DB_ROWS] = { "Left/Right: set level", "A or Left/Right: toggle", "A or Left/Right: toggle", "A or Left/Right: toggle", "A or Left/Right: toggle",
     "A or Left/Right: toggle", "Stick, B up, Y down", "Roxas turns into Sora now (Off: story)", "Halloween/Christmas Town, Space Paranoids, Timeless River",
     "Night: Halloween, cold: Christmas", "Left/Right: who stands in Donald's place (this session)", "Left/Right: who stands in Goofy's place (this session)",
-    "Drive gauges stay full", "Form now; stays till Off", "Any Enemy, or Now", "MP never runs out" };
+    "Drive gauges stay full", "Form now; stays till Off", "Any Enemy, or Now", "MP never runs out",
+    "Base Sora: at least this LV", "Base Sora: at least this LV" };  // (dbgjump)
 #define CP_DB_VIS 7  // (s146) rows shown at once = the 7-row list the window was built for (s140); the list scrolls (p->db_top)
 #define CP_DB_OUTFITS 8  // (s146) Outfit row values: Normal, Halloween Town, Christmas Town, Space Paranoids, Timeless River; (s263) Roxas, Kairi, Green Tunic (= sora_outfit.h OF_N)
 static const char *const CP_DB_OUTFIT_TAG[CP_DB_OUTFITS] = { "Normal", "Halloween", "Christmas", "Paranoids", "Timeless", "Roxas", "Kairi", "Tunic" };  // (<= 9 chars: the tag column is as wide as "L+Triangle"; GUESS that fits)
@@ -26,9 +28,11 @@ static const char *const CP_DB_FORM_TAG[CP_DB_FORMS] = { "Off", "Valor", "Wisdom
 #define CP_DB_MICKEYS 3  // (s233) Mickey Rescue row values
 static const char *const CP_DB_MICKEY_TAG[CP_DB_MICKEYS] = { "Off", "Any Enemy", "Now" };
 // (s233) the rows with a value list (Left / Right step, clamped; A = the next, wraps): their count + tags; 0 = not one
-static int cp_db_nvals_(int be) { return be == 8 ? CP_DB_OUTFITS : be == 13 ? CP_DB_FORMS : be == 14 ? CP_DB_MICKEYS : 0; }
+#define CP_DB_GROWS 4  // (dbgjump) High Jump / Aerial Dodge row values: Off + LV1-3 (= sora_dbgmenu.h g_dbm_hjump / g_dbm_adodge)
+static const char *const CP_DB_GROW_TAG[CP_DB_GROWS] = { "Off", "LV1", "LV2", "LV3" };
+static int cp_db_nvals_(int be) { return be == 8 ? CP_DB_OUTFITS : be == 13 ? CP_DB_FORMS : be == 14 ? CP_DB_MICKEYS : be == 16 || be == 17 ? CP_DB_GROWS : 0; }
 static const char *cp_db_tag_(int be, int v) {
-    const char *const *t = be == 8 ? CP_DB_OUTFIT_TAG : be == 13 ? CP_DB_FORM_TAG : CP_DB_MICKEY_TAG;
+    const char *const *t = be == 8 ? CP_DB_OUTFIT_TAG : be == 13 ? CP_DB_FORM_TAG : be == 16 || be == 17 ? CP_DB_GROW_TAG : CP_DB_MICKEY_TAG;
     return t[v < 0 || v >= cp_db_nvals_(be) ? 0 : v];
 }
 
