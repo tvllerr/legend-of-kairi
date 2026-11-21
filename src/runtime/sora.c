@@ -3903,6 +3903,25 @@ static void goto_carry(bool hold) {
     RideFn fn = ride_fn();
     if (fn) hold ? fn(0, 0) : fn(g_ride_live, g_wind_live);
 }
+// (airnoride) the ground carry is off while Sora is in the air (jump / fall / glide). BotW keeps Link's body GROUND
+// for a while after Sora's take-off; linkpos read a one-frame jump spike there as a platform's carry (cap 10 u/s), and
+// that carry came back as the body's ground velocity every frame after: some plain jumps flew ~2.8x as far (user report,
+// epictest log: 12.6-14.3 m instead of 4.3-5.0 m for the same air time, "ext ground (ride)" lines all through the
+// jump). The wind / updraft push (the AIR sample) stays. A carry taken before take-off still runs its EXT_HOLD frames.
+// Off by default until tested in game: SAVAGEWIND_SORA_AIR_NORIDE=1 / live "set airnoride 1".
+static int g_air_noride = 0;
+static void air_carry(bool air, bool goto_hold) {
+    static int applied = -1;  // the ride value this function last wrote (-1 = none / goto took it over)
+    RideFn fn = ride_fn();
+    if (!fn) return;
+    if (goto_hold) { applied = -1; return; }  // (goto_carry owns the switch while it holds, and restores it after)
+    if (!g_air_noride && applied != 0) return;  // option off: never touch it (only undo our own "off")
+    int want = g_air_noride && air ? 0 : g_ride_live;
+    if (want == applied) return;
+    fn(want, -1);
+    if (want == 0 || applied == 0) LOG("[sora] airnoride: ground carry %s (%s)\n", want ? "back" : "off", air ? "in the air" : "landed");
+    applied = want;
+}
 // (s88 review) true while linkpos adds an updraft (ext y > 0.5 u/s): the glide / fall landing tests below would read
 // the rise as "the sink was stopped" and land him mid-air. Old exe (no export): never.
 static bool ride_updraft(void) {
@@ -5642,6 +5661,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "savepicn")) g_savepic_n = v < 0 ? 0 : v > 600 ? 600 : v, LOG("[sora] savepic: pose held %d presents into a pause\n", g_savepic_n);
             else if (!strcmp(key, "glidelv")) g_glide_lv = v < 1 ? 1 : v > 5 ? 5 : v;
             else if (!strcmp(key, "aironce")) g_air_once = v != 0;
+            else if (!strcmp(key, "airnoride")) g_air_noride = v != 0;  // (no ground carry in the air: air_carry)
             else if (!strcmp(key, "airmagic")) g_air_magic = v != 0;  // (s68 air casts)
             else if (!strcmp(key, "gcancel")) g_glide_cancel = (uint64_t)v;
             else if (!strcmp(key, "mp")) MP.mp = (float)v, MP.charge = MP.charge_total = 0;
@@ -6875,6 +6895,8 @@ static void sora_mod_frame_body(void) {
         int lv = (int)env_f("SAVAGEWIND_SORA_GLIDE_LV", (float)g_glide_lv);
         g_glide_lv = lv < 1 ? 1 : lv > 5 ? 5 : lv;
         g_air_once = env_f("SAVAGEWIND_SORA_AIR_ONCE", (float)g_air_once) != 0;
+        g_air_noride = env_f("SAVAGEWIND_SORA_AIR_NORIDE", (float)g_air_noride) != 0;
+        if (g_air_noride) LOG("[sora] airnoride on: no ground carry while Sora is in the air\n");
         const char *k = getenv("SAVAGEWIND_SORA_SCALE");
         if (k && *k) g_k = strtof(k, NULL);
         slog_open();
@@ -8191,6 +8213,7 @@ static void sora_mod_frame_body(void) {
     // 6. out: cm per step -> u/s
     float vx = move[0] / kh * KH_FPS * to_u, vz = move[1] / kh * KH_FPS * to_u, vy = dz / kh * KH_FPS * to_u;
     bool vy_on = ACT_AIR(S.act);
+    air_carry(vy_on, GT.on);  // (airnoride: no ground carry in the air; before the velocity below reaches linkpos)
     if (!vy_on && slope_follow(p, vx, vz, &vy)) vy_on = true;  // (s64: uphill at full speed)
     if (GT.on || g_dbm_clip || (S.special == SP_DAMAGE && !is_free) || nox_win) drive_off();  // (goto hold: zero velocity) BotW's hit push / ragdoll / pick up moves him
     else linkpos_set_velocity(true, vx, vz), linkpos_set_velocity_y(vy_on, vy);  // (the y servo on for the glide too)
