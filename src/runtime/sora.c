@@ -5120,6 +5120,13 @@ static bool land_veto(float z_up, const float p[3]) {
 // Live "set woguard 0 (s60) / 1 (swing or enemy near) / 2 (every drop)", "set wofloor <cm>", "set wosnap 0/1".
 static int g_wo_guard = 1, g_wo_snap = 1, g_wo_cap = 1;
 static float g_wo_floor_cm = 50.0f;
+// (ledgeslope) the ledge hold below first asks walkoff_floor: floor within g_wo_floor_cm under the feet = a steep slope,
+// not an edge -> no hold; the walk-off guard keeps him grounded instead (snap down at most FallMax per KH frame) and the
+// swing's root move goes on. User report (epictest log): on a ~44 deg mountain slope a finisher (motion 161) following a
+// knocked-back enemy downhill was held back and its root move cut, with the floor 18 cm under his feet ("pulled back").
+// A real drop (no floor in reach) is held as before. Only with the walk-off guard on (else nothing would keep him on the
+// slope). Off by default until tested in game: SAVAGEWIND_SORA_LEDGE_SLOPE=1 / live "set ledgeslope 1".
+static int g_ledge_slope = 0;
 static bool walkoff_floor(const float p[3], float *floor_u) {  // true: a floor (not a wall) within reach, its y (u)
     float a[3] = {p[0], p[1] + 0.3f, p[2]}, b[3] = {p[0], p[1] - g_wo_floor_cm * 0.01f * g_k, p[2]}, h[3] = {0}, n[3] = {0};
     if (!linkpos_raycast(a, b, h, n) || n[1] < g_ray_wall_ny) return false;
@@ -5433,6 +5440,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "firespkey")) g_fire_spk_y[1] = v / 100.0f;
             else if (!strcmp(key, "wofloor")) g_wo_floor_cm = (float)v;
             else if (!strcmp(key, "woguard")) g_wo_guard = v;
+            else if (!strcmp(key, "ledgeslope")) g_ledge_slope = v != 0;  // (no ledge hold on a slope: floor in reach)
             else if (!strcmp(key, "wosnap")) g_wo_snap = v != 0;
             else if (!strcmp(key, "firer")) g_fire_obj_r = v / 100.0f;
             else if (!strcmp(key, "firebr")) g_fire_burst_r = v / 100.0f;
@@ -6875,6 +6883,8 @@ static void sora_mod_frame_body(void) {
         int lv = (int)env_f("SAVAGEWIND_SORA_GLIDE_LV", (float)g_glide_lv);
         g_glide_lv = lv < 1 ? 1 : lv > 5 ? 5 : lv;
         g_air_once = env_f("SAVAGEWIND_SORA_AIR_ONCE", (float)g_air_once) != 0;
+        g_ledge_slope = env_f("SAVAGEWIND_SORA_LEDGE_SLOPE", (float)g_ledge_slope) != 0;
+        if (g_ledge_slope) LOG("[sora] ledgeslope on: no ledge hold where the floor is in reach (a slope)\n");
         const char *k = getenv("SAVAGEWIND_SORA_SCALE");
         if (k && *k) g_k = strtof(k, NULL);
         slog_open();
@@ -7759,6 +7769,16 @@ static void sora_mod_frame_body(void) {
     // Here the floor ahead is unknown (no BotW ray cast yet), so the body is put back where it last stood and the
     // swing's root move stops until the next swing (KH2 would slide along the edge; root left after frame 39 too)
     bool hold = S.special == SP_ATTACK && S.mot && (mot_bits(S.mot, S.clock) & RB_NO_FALL_OFF);
+    if (hold && g_ledge_slope && g_wo_guard >= 1 && S.act == ACT_IDLE && dropping && S.special != SP_DAMAGE) {
+        float fy;
+        if (walkoff_floor(p, &fy)) {  // (ledgeslope) a slope, not an edge: the walk-off guard below takes it
+            static int logged_swing = -1;
+            if (logged_swing != S.swing)
+                logged_swing = S.swing, LOG("[sora] ledge hold skipped (motion %d clock %.1f): floor %.1f cm under the feet, a slope\n",
+                                            S.motion, S.clock, (p[1] - fy) * 100 / g_k);
+            hold = false;
+        }
+    }
     if (S.special == SP_DAMAGE) S.air_frames = 0;  // (BotW's knockback, not a walk-off)
     else if (S.act == ACT_IDLE && dropping && hold && S.nsafe) {
         const float *q = S.safe[0];
