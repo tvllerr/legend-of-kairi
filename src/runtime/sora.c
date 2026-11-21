@@ -2003,6 +2003,7 @@ static void set_motion(int m) {
     }
 }
 
+static int g_air_ceil = 1;  // (airceil: see fall_motion; live "set airceil 0" / SAVAGEWIND_SORA_AIR_CEIL=0 = the old Fall)
 static int g_play_trig;  // (s88 review) sounds the last play()'s frame-0 triggers started (fm_drive's voice check)
 static void play(int m) {  // a cut to the motion's start, also when it is already playing (the next swing)
     S.motion = m, S.clock = 0, S.mot = mot_st(m), S.swing++;
@@ -5433,6 +5434,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "firespkey")) g_fire_spk_y[1] = v / 100.0f;
             else if (!strcmp(key, "wofloor")) g_wo_floor_cm = (float)v;
             else if (!strcmp(key, "woguard")) g_wo_guard = v;
+            else if (!strcmp(key, "airceil")) g_air_ceil = v != 0;  // (no ceiling stop -> Fall during an air swing / cast)
             else if (!strcmp(key, "wosnap")) g_wo_snap = v != 0;
             else if (!strcmp(key, "firer")) g_fire_obj_r = v / 100.0f;
             else if (!strcmp(key, "firebr")) g_fire_burst_r = v / 100.0f;
@@ -6316,6 +6318,14 @@ static int g_glide_stuck;  // frames in a row the glide's sink was stopped (sect
 // 16 on the walk-off, re:0x3D6430) with glide_pose_draw's two-pose mix; the drawer runs it while Fall plays
 static int g_fb_from = -1;  // the motion Fall blends in from (-1: no blend)
 static float g_fb_clock, g_fb_len;
+// (airceil) the ceiling stop below sent an air swing / cast into Fall: its pose was swapped for Fall at once (the swing
+// gone, S.special still set, the next presses dropped as "air combo done, motion 4"). User report (epictest log): "random"
+// air attack cancels, 3 in two sessions, each right after the swing started. An air swing's arc is short (21 cm, apex
+// ~10 KH frames) and near its top the requested rise per step is tiny, so BotW's body lag alone reads as a ceiling
+// (got < CeilingStop 0.49 of the request). In KH2 the ceiling -> Fall is the Jump ACTION's (the apex Fall here is also
+// Jump / Aerial Dodge only); that KH2's attack ACTIONs skip it is a GUESS, not checked in the KH2 exe.
+// On by default (tested in game): no ceiling stop while an air swing / cast plays (its arc and pose go on);
+// SAVAGEWIND_SORA_AIR_CEIL=0 / live "set airceil 0" = the old Fall. The log line below shows each such stop either way.
 static void fall_motion(float len) {
     if (S.motion == MOT_FALL) return;
     if (S.mot && S.motion >= 0 && len > 0)
@@ -6875,6 +6885,8 @@ static void sora_mod_frame_body(void) {
         int lv = (int)env_f("SAVAGEWIND_SORA_GLIDE_LV", (float)g_glide_lv);
         g_glide_lv = lv < 1 ? 1 : lv > 5 ? 5 : lv;
         g_air_once = env_f("SAVAGEWIND_SORA_AIR_ONCE", (float)g_air_once) != 0;
+        g_air_ceil = env_f("SAVAGEWIND_SORA_AIR_CEIL", (float)g_air_ceil) != 0;
+        if (g_air_ceil) LOG("[sora] airceil on: no ceiling stop while an air swing / cast plays\n");
         const char *k = getenv("SAVAGEWIND_SORA_SCALE");
         if (k && *k) g_k = strtof(k, NULL);
         slog_open();
@@ -8041,7 +8053,13 @@ static void sora_mod_frame_body(void) {
             fall_start(KH_SHORT_HOP, hop_z);  // (clears the latch)
             fall_motion(8);
         } else if (S.apex <= S.air + KH_APEX_EARLY) S.jump_held = S.jump_released = false;  // kh2ctl.py:1511
-        if (S.ceiling && KH_HOP_MIN < S.air && S.air < S.apex) fall_start(0, z_up), fall_motion(8);
+        if (S.ceiling && KH_HOP_MIN < S.air && S.air < S.apex) {
+            bool swing = S.special == SP_ATTACK || S.special == SP_MAGIC;
+            if (swing) LOG("[sora] ceiling stop in air %s %d at clock %.1f (air %.1f of apex %.1f)%s\n",
+                           S.special == SP_MAGIC ? "cast" : "swing", S.motion, S.clock, S.air, S.apex,
+                           g_air_ceil ? ": skipped (airceil)" : ": Fall");
+            if (!swing || !g_air_ceil) fall_start(0, z_up), fall_motion(8);
+        }
         if ((S.motion == MOT_JUMP || S.motion == MOT_AIR_DODGE) && S.air >= S.apex - KH_APEX_EARLY) fall_motion(8);  // (s89: + the Aerial Dodge)
     } else if (S.act == ACT_GLIDE_HOVER && sspeed <= 0) {  // re:0x423840
         set_motion(MOT_GLIDE_HOVER);  // (16-frame blend: glide_pose_draw)
