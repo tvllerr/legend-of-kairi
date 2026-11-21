@@ -12,7 +12,58 @@
 #include <stddef.h>
 
 #define KH2_BASE      0x140000000ull
-#define KH2_SHA1      "2548F1191FE6587A34947952763CE6BB4F3B5C1A"   /* Steam KH2 FM exe; the only build our RVAs fit */
+#define KH2_SHA1_STEAM "2548F1191FE6587A34947952763CE6BB4F3B5C1A"   /* Steam KH2 FM exe (comments name its RVAs) */
+#define KH2_SHA1_EPIC  "F9758C7782C4DD03C5BF8A4BCCE9D897CB21CD62"   /* Epic Games Store KH2 FM exe */
+
+/* Every KH2 exe address fxrec uses: X(name, Steam RVA, Epic RVA). ldr_map picks the column by the exe's sha1;
+ * an exe that is in no column is refused. Epic column: the same functions found in the Epic exe with headless
+ * Ghidra 12.1.2 (identical instruction shape, paired through unique shapes and matched callers) and the same
+ * data addresses (the same instruction in matched functions references them, every reference agreeing).
+ * Comments elsewhere in fxrec keep naming the Steam RVAs. */
+#define KH2_RVAS(X) \
+    X(DEV_GET,        0x11C150,  0x120780)  /* returns &device (thread-safe static 0x8A0970, ctor 0x10A270) */ \
+    X(FX_INIT,        0x2BDB50,  0x2BCFF0)  /* (allocator*, pool 0x80000, sort 0x20000) */ \
+    X(ALLOC_G,        0xB63620,  0xB630A0)  /* allocator global (0x2C4330 writes it) */ \
+    X(FX_ALLOC,       0xB1DA20,  0xB1D4A0)  /* 0x2BDB50: allocator, +8 pool, +0x10 sort buffer */ \
+    X(PPP_MGR,        0x2B0EC08, 0x2B0EA48) /* 0x2C2480: = &PPP_MGR_VAL after init */ \
+    X(PPP_MGR_VAL,    0xB60808,  0xB60288) \
+    X(TEXCOMMON,      0x2BEC60,  0x2BE100)  /* texcommon(dpd) */ \
+    X(DRAW_FLAG,      0xB1D984,  0xB1D404)  /* "drawing on" flag, set by texcommon */ \
+    X(HD_LOOKUP,      0x12AA20,  0x104FB0) \
+    X(VRAM_LOOKUP,    0x12C0F0,  0x106680) \
+    X(VRAM_REGISTER,  0x12C620,  0x106BB0) \
+    X(Q_LAMBDA,       0x119BA0,  0x11E1D0) \
+    X(Q_LAMBDA2,      0x123700,  0x127D30) \
+    X(CTX_GET,        0x11BB30,  0x120160) \
+    X(DRAW_CORE,      0x11A330,  0x11E960) \
+    X(MODE_Q,         0x121310,  0x125940) \
+    X(BIND_TEX,       0x127240,  0x12B870) \
+    X(PREVTEX,        0x126C30,  0x12B260) \
+    X(FRAMETEX,       0x126890,  0x12AEC0) \
+    X(PAX_FIX,        0x2C4520,  0x2C39C0) \
+    X(FX_START,       0x2C6B30,  0x2C5FD0) \
+    X(FX_UPDATE,      0x2BD190,  0x2BC630) \
+    X(FX_DRAW,        0x2BD830,  0x2BCCD0) \
+    X(FX_LOOP_END,    0x2BE8E0,  0x2BDD80) \
+    X(PM_FREE1,       0x4B01C0,  0x4B1BB0) \
+    X(PM_FREE2,       0x2C1F50,  0x2C13F0) \
+    X(SORT_INSERT,    0x4AF7D0,  0x4B11C0) \
+    X(FRAME_TIME,     0x717480,  0x717270) \
+    X(B63628,         0xB63628,  0xB630A8)  /* == 1 -> 0x2C6B30 calls 0x3C8000(owner + 0x158): keep it 0 */ \
+    X(CAMBLK,         0x2B0EC20, 0x2B0EA60) \
+    X(SORT_SCALE,     0x5A9C9C,  0x5AA344)  /* float const */ \
+    X(TLS_NOTIFY_RET, 0x439FC8,  0x439650)  /* _Init_thread_notify head, patched to ret */
+
+enum {
+#define KH2_RV_ENUM(n, s, e) RV_##n,
+    KH2_RVAS(KH2_RV_ENUM)
+#undef KH2_RV_ENUM
+    RV_COUNT
+};
+extern const uint32_t *g_kh2_rva;   /* the column ldr_map picked */
+extern const char *g_kh2_build;     /* "Steam" / "Epic" */
+#define R(n)          (g_kh2_rva[RV_##n])
+
 #define KH(rva)       ((void *)(uintptr_t)(KH2_BASE + (uint64_t)(rva)))
 #define KHU64(rva)    (*(uint64_t *)KH(rva))
 #define KHU32(rva)    (*(uint32_t *)KH(rva))

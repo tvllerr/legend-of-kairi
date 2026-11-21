@@ -337,6 +337,13 @@ uint64_t ldr_hook_calls(uint32_t rva)
 }
 
 /* ---------------------------------------------------------------- map */
+#define KH2_RV_STEAM(n, s, e) s,
+#define KH2_RV_EPIC(n, s, e) e,
+static const uint32_t g_rva_steam[RV_COUNT] = { KH2_RVAS(KH2_RV_STEAM) };
+static const uint32_t g_rva_epic[RV_COUNT] = { KH2_RVAS(KH2_RV_EPIC) };
+const uint32_t *g_kh2_rva = g_rva_steam;
+const char *g_kh2_build = "Steam";
+
 #define ERR(...) do { snprintf(err, errsz, __VA_ARGS__); return -1; } while (0)
 
 int ldr_map(const char *exe_path, int check_sha1, char *err, size_t errsz)
@@ -348,10 +355,13 @@ int ldr_map(const char *exe_path, int check_sha1, char *err, size_t errsz)
     if (!file || fread(file, 1, (size_t)n, f) != (size_t)n) { fclose(f); ERR("read failed"); }
     fclose(f);
 
-    if (check_sha1) {
+    {   /* the address column = the build; check_sha1 0 (dev only) falls back to Steam for an unknown exe */
         char hex[41] = { 0 };
         if (!sha1_hex(file, (size_t)n, hex)) ERR("sha1 failed");
-        if (strcmp(hex, KH2_SHA1) != 0) ERR("unsupported KH2 build: sha1 %s (need %s, the Steam KH2 FM exe)", hex, KH2_SHA1);
+        if (strcmp(hex, KH2_SHA1_STEAM) == 0) { g_kh2_rva = g_rva_steam; g_kh2_build = "Steam"; }
+        else if (strcmp(hex, KH2_SHA1_EPIC) == 0) { g_kh2_rva = g_rva_epic; g_kh2_build = "Epic"; }
+        else if (check_sha1)
+            ERR("unsupported KH2 build: sha1 %s (need the Steam KH2 FM exe %s or the Epic one %s)", hex, KH2_SHA1_STEAM, KH2_SHA1_EPIC);
     }
 
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)file;
@@ -447,7 +457,7 @@ int ldr_map(const char *exe_path, int check_sha1, char *err, size_t errsz)
     /* thread-safe statics: KH2's own _Init_thread_header/footer run as they are (lock = stub, guards + TLS epoch
      * work on our fake TLS block); only _Init_thread_notify calls a wake pointer the skipped CRT init would set
      * (rax = -1 at _guard_dispatch_icall 0x5669F0) -> make it return. RVA confirmed in kh2proj (s156_d5). */
-    { static const uint8_t ret1[1] = { 0xC3 }; write_code(0x439FC8, ret1, 1); }
+    { static const uint8_t ret1[1] = { 0xC3 }; write_code(R(TLS_NOTIFY_RET), ret1, 1); }
 
     AddVectoredExceptionHandler(1, veh);
     free(file);

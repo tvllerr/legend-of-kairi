@@ -16,20 +16,21 @@
 #include <math.h>
 #include "fxrec_ldr.h"
 
-#define RVA_Q_LAMBDA   0x119BA0
-#define RVA_Q_LAMBDA2  0x123700
-#define RVA_CTX_GET    0x11BB30
-#define RVA_DRAW_CORE  0x11A330
-#define RVA_MODE_Q     0x121310
-#define RVA_BIND_TEX   0x127240
-#define RVA_PREVTEX    0x126C30
-#define RVA_FRAMETEX   0x126890
-#define RVA_PAX_FIX    0x2C4520
-#define RVA_FX_START   0x2C6B30
-#define RVA_FX_UPDATE  0x2BD190
-#define RVA_FX_DRAW    0x2BD830
-#define RVA_FRAME_TIME 0x717480
-#define RVA_B63628     0xB63628   /* == 1 -> 0x2C6B30 calls 0x3C8000(owner + 0x158): keep it 0 (no owner) */
+/* addresses: the per-build table in fxrec_ldr.h (comments here name the Steam RVAs) */
+#define RVA_Q_LAMBDA   R(Q_LAMBDA)
+#define RVA_Q_LAMBDA2  R(Q_LAMBDA2)
+#define RVA_CTX_GET    R(CTX_GET)
+#define RVA_DRAW_CORE  R(DRAW_CORE)
+#define RVA_MODE_Q     R(MODE_Q)
+#define RVA_BIND_TEX   R(BIND_TEX)
+#define RVA_PREVTEX    R(PREVTEX)
+#define RVA_FRAMETEX   R(FRAMETEX)
+#define RVA_PAX_FIX    R(PAX_FIX)
+#define RVA_FX_START   R(FX_START)
+#define RVA_FX_UPDATE  R(FX_UPDATE)
+#define RVA_FX_DRAW    R(FX_DRAW)
+#define RVA_FRAME_TIME R(FRAME_TIME)
+#define RVA_B63628     R(B63628)   /* == 1 -> 0x2C6B30 calls 0x3C8000(owner + 0x158): keep it 0 (no owner) */
 
 #define DEV_RING_IDX   0x578C
 #define DEV_RING0      0x5790
@@ -83,7 +84,7 @@ static int      g_tailat[1024][2], g_tailat_n;
 #define DEV_CB3    0x5BA8
 #define DEV_CB4    0x76AC
 #define DEV_CB6    0x5B04
-#define RVA_CAMBLK 0x2B0EC20
+#define RVA_CAMBLK R(CAMBLK)
 int fxrec_s2_opt(const char *k, const char *v)
 {
     if (strcmp(k, "--vramfake") == 0) { g_vram_fake = atoi(v); return 1; }
@@ -132,7 +133,7 @@ static uint64_t h_sort(uint32_t id, LdrRegs *r, void *user)
         uint8_t *sh = (uint8_t *)(uintptr_t)*(uint64_t *)(entry + 0x30);
         int64_t n = *(int16_t *)(sh + 2);
         int16_t *xy = (int16_t *)(sh + ((sh[0] & 8) ? n * 0x18 + 0x14 : (n + 1) * 0x10 + 4));
-        g_sort_kind = 2; g_sort_ax = (float)xy[0] * KHF32(0x5A9C9C); g_sort_ay = (float)xy[1] * KHF32(0x5A9C9C);
+        g_sort_kind = 2; g_sort_ax = (float)xy[0] * KHF32(R(SORT_SCALE)); g_sort_ay = (float)xy[1] * KHF32(R(SORT_SCALE));
     }
     if (cb) ((void (*)(void *))(uintptr_t)cb)(entry + 0x10);
     g_sort_kind = pk; g_sort_key = pkey; g_sort_ax = pax; g_sort_ay = pay;
@@ -390,7 +391,7 @@ static int record_element(uint64_t *set, uint64_t *up, int eid, int frames, int 
         uint64_t v0 = g_vtx_total;
         if (f == loop_end_at && !(*(uint32_t *)(uintptr_t)(fx + 0xC) & 0x10000)) {
             uint64_t le[1] = { fx };
-            if (ldr_call_rva(0x2BE8E0, 1, le, NULL)) { printf("loop end FAULTED\n"); ldr_print_fault(ldr_last_fault()); return -1; }
+            if (ldr_call_rva(R(FX_LOOP_END), 1, le, NULL)) { printf("loop end FAULTED\n"); ldr_print_fault(ldr_last_fault()); return -1; }
         }
         uint8_t *mgr = (uint8_t *)(uintptr_t)*(uint64_t *)(uintptr_t)(fx + 0x30);
         if (g_owner_axis >= 0 && mgr) { float t[3]; memcpy(t, trs0, 12); t[g_owner_axis] += 1.0f * (float)f; memcpy(mgr, t, 12); }
@@ -416,7 +417,7 @@ static int record_element(uint64_t *set, uint64_t *up, int eid, int frames, int 
     if (!ended) {
         uint64_t pm[1] = { *(uint64_t *)(uintptr_t)(fx + 0x30) };
         if (pm[0]) {
-            if (ldr_call_rva(0x4B01C0, 1, pm, NULL) || ldr_call_rva(0x2C1F50, 1, pm, NULL)) {
+            if (ldr_call_rva(R(PM_FREE1), 1, pm, NULL) || ldr_call_rva(R(PM_FREE2), 1, pm, NULL)) {
                 printf("element %d: kill FAULTED\n", eid); ldr_print_fault(ldr_last_fault()); return -1;
             }
             *(uint64_t *)(uintptr_t)(fx + 0x30) = 0;
@@ -453,9 +454,9 @@ int fxrec_run_fx(uint8_t *dev, void *(*alloc)(void *, int64_t, int64_t), const c
     ldr_hook_rec(RVA_BIND_TEX, "bind_tex", h_bind, NULL);
     ldr_hook_rec(RVA_PREVTEX, "prev_frame_tex", h_prev, NULL);
     ldr_hook_rec(RVA_FRAMETEX, "frame_tex", h_prev, NULL);
-    ldr_hook_rec(0x12C0F0, "vram_lookup_key", h_vram_lookup, NULL);
-    ldr_hook_rec(0x12C620, "vram_register_map", h_vram_register, NULL);
-    ldr_hook_rec(0x4AF7D0, "sort_insert", h_sort, NULL);
+    ldr_hook_rec(R(VRAM_LOOKUP), "vram_lookup_key", h_vram_lookup, NULL);
+    ldr_hook_rec(R(VRAM_REGISTER), "vram_register_map", h_vram_register, NULL);
+    ldr_hook_rec(R(SORT_INSERT), "sort_insert", h_sort, NULL);
 
     KHF32(RVA_FRAME_TIME) = 1.0f;
     KHU32(RVA_B63628) = 0;

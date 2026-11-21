@@ -1,6 +1,8 @@
 # fxrec - our own KH2 effect recorder (replaces PHH's harness; s156+)
 
-Written from scratch (no PHH code). Loads the Steam KH2 FM exe (sha1 2548F119...5A) headless and runs its effect code.
+Written from scratch (no PHH code). Loads the Steam KH2 FM exe (sha1 2548F119...5A) or the Epic one (F9758C77...62) headless and runs its effect code.
+Every KH2 address is in the per-build table `KH2_RVAS` in `fxrec_ldr.h` (Steam and Epic columns, picked by sha1); comments
+in the sources name the Steam RVAs.
 
 - `fxrec_ldr.c/h` - loader: maps the exe at 0x140000000 (entry point never run), binds imports (real CRT only for pure
   functions: math, rand, mem/str, heap, sprintf, _errno; throw/abort/exit = fatal; all else = counting stubs returning 0),

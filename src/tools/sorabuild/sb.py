@@ -24,10 +24,10 @@ CFG_KEYS = {
     "romfs": "BotW 1.9.0 romfs dir (Pack/Bootup.pack, Actor/, Map/ ...)",
     "out": "output data tree (what the game reads as <SORA_ROOT>/data)",
     "work": "scratch dir (intermediate files, logs, done markers)",
-    "kh2exe": "KINGDOM HEARTS II FINAL MIX.exe of the Steam KH2 FM install (needed for config fx = fxrec and sounds = recipe (step sounds_mine: hud icon widths); sha1 2548F1191FE6587A34947952763CE6BB4F3B5C1A)",
+    "kh2exe": "KINGDOM HEARTS II FINAL MIX.exe of the Steam or Epic KH2 FM install (needed for config fx = fxrec and sounds = recipe (step sounds_mine: hud icon widths); sha1 Steam 2548F1191FE6587A34947952763CE6BB4F3B5C1A, Epic F9758C7782C4DD03C5BF8A4BCCE9D897CB21CD62)",
     "dotnet": "dotnet.exe of a .NET 8 SDK (with a kit: the kit's .NET 8 runtime, only DOTNET_ROOT for the prebuilt tools)",
     "openkh": "dir with the OpenKH release DLLs (OpenKh.Kh2.dll, OpenKh.Common.dll, ...)",
-    "kh2img": "(s168) instead of 'kh2': the Steam KH2 'Image/dt' dir (kh2_*.hed + .pkg); only the needed files are extracted to work/kh2",
+    "kh2img": "(s168) instead of 'kh2': the KH2 'Image/dt' dir (Steam; Epic: 'Image/en') (kh2_*.hed + .pkg); only the needed files are extracted to work/kh2",
     "kit": "(s168) friend kit dir made by kit/mkkit.py: prebuilt C# tools + fxrec_boot.exe + .NET runtime + busybox + ffmpeg + vgmstream; "
            "with it no .NET SDK / clang / MSYS2 / Git bash is needed (dotnet, openkh, bash, ffmpeg, vgmstream default to the kit's)",
 }
@@ -333,6 +333,6 @@ def check_inputs(cfg):
         if not v or not os.path.exists(p):
             bad.append("  %-7s %s  (needs %s)" % (k, v or "<not set>", p if v else CFG_KEYS[k]))
     if (cfg.get("fx") == "fxrec" or cfg.get("sounds", "recipe") == "recipe") and not (cfg.get("kh2exe") and os.path.isfile(cfg["kh2exe"])):
-        bad.append("  kh2exe  %s  (needs the Steam KH2 FM exe for config fx = fxrec / sounds = recipe)" % (cfg.get("kh2exe") or "<not set>"))
+        bad.append("  kh2exe  %s  (needs the Steam or Epic KH2 FM exe for config fx = fxrec / sounds = recipe)" % (cfg.get("kh2exe") or "<not set>"))
     if bad:
         raise SystemExit("[sorabuild] inputs missing:" + chr(10) + chr(10).join(bad))

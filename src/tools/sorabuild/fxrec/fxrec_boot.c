@@ -11,11 +11,12 @@
 #include <string.h>
 #include "fxrec_ldr.h"
 
-#define RVA_DEV_GET     0x11C150   /* returns &device (thread-safe static 0x8A0970, ctor 0x10A270) */
-#define RVA_FX_INIT     0x2BDB50   /* (allocator*, pool 0x80000, sort 0x20000) */
-#define RVA_ALLOC_G     0xB63620   /* allocator global (0x2C4330 writes it) */
-#define RVA_FX_ALLOC    0xB1DA20   /* 0x2BDB50: allocator, +8 pool, +0x10 sort buffer */
-#define RVA_PPP_MGR     0x2B0EC08  /* 0x2C2480: = &0xB60808 after init */
+/* addresses: the per-build table in fxrec_ldr.h (comments here name the Steam RVAs) */
+#define RVA_DEV_GET     R(DEV_GET)
+#define RVA_FX_INIT     R(FX_INIT)
+#define RVA_ALLOC_G     R(ALLOC_G)
+#define RVA_FX_ALLOC    R(FX_ALLOC)
+#define RVA_PPP_MGR     R(PPP_MGR)
 
 /* ---------------------------------------------------------------- bump allocator in one arena */
 static uint8_t *g_arena; static uint64_t g_arena_size, g_arena_used, g_nalloc, g_nfree;
@@ -55,7 +56,7 @@ int main(int argc, char **argv)
 
     char err[512];
     if (ldr_map(exe, 1, err, sizeof err) != 0) { printf("map FAILED: %s\n", err); return 2; }
-    printf("mapped KH2 at 0x%llX, 0x%llX bytes (sha1 ok)\n", (unsigned long long)KH2_BASE, (unsigned long long)ldr_image_size());
+    printf("mapped KH2 (%s) at 0x%llX, 0x%llX bytes (sha1 ok)\n", g_kh2_build, (unsigned long long)KH2_BASE, (unsigned long long)ldr_image_size());
 
     g_arena_size = 0x30000000ull;
     g_arena = (uint8_t *)VirtualAlloc(NULL, g_arena_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -82,11 +83,11 @@ int main(int argc, char **argv)
     printf("globals: fx alloc %llX pool %llX sort %llX | ppp mgr %llX (want %llX)\n",
            (unsigned long long)KHU64(RVA_FX_ALLOC), (unsigned long long)KHU64(RVA_FX_ALLOC + 8),
            (unsigned long long)KHU64(RVA_FX_ALLOC + 0x10), (unsigned long long)KHU64(RVA_PPP_MGR),
-           (unsigned long long)(KH2_BASE + 0xB60808));
+           (unsigned long long)(KH2_BASE + R(PPP_MGR_VAL)));
     ldr_report_imports(1);
     ldr_report_hooks();
     int ok = rc == 0 && KHU64(RVA_FX_ALLOC) == (uint64_t)(uintptr_t)&g_alloc && KHU64(RVA_FX_ALLOC + 8) &&
-             KHU64(RVA_PPP_MGR) == KH2_BASE + 0xB60808;
+             KHU64(RVA_PPP_MGR) == KH2_BASE + R(PPP_MGR_VAL);
     printf("SLICE1 %s\n", ok ? "PASS" : "FAIL");
     if (!ok || !g_tex_path) return ok ? 0 : 1;
 
@@ -98,14 +99,14 @@ int main(int argc, char **argv)
     uint8_t *dpd = (uint8_t *)al_alloc(NULL, n, 0);
     fread(dpd, 1, (size_t)n, f); fclose(f);
     fxrec_hd_file(dpd, n, 0);
-    ldr_hook_rec(0x12AA20, "hd_lookup", fxrec_h_hd, NULL);  /* HD asset answers (--texhd/--fxhd), else 0 = PS2 page */
-    ldr_hook_rec(0x12C620, "vram_register", NULL, NULL);
-    ldr_hook_rec(0x12C0F0, "vram_lookup", NULL, NULL);
+    ldr_hook_rec(R(HD_LOOKUP), "hd_lookup", fxrec_h_hd, NULL);  /* HD asset answers (--texhd/--fxhd), else 0 = PS2 page */
+    ldr_hook_rec(R(VRAM_REGISTER), "vram_register", NULL, NULL);
+    ldr_hook_rec(R(VRAM_LOOKUP), "vram_lookup", NULL, NULL);
     uint64_t a2[1] = { (uint64_t)(uintptr_t)dpd };
-    printf("calling texcommon 0x2BEC60(%ld bytes)...\n", n);
-    rc = ldr_call_rva(0x2BEC60, 1, a2, &ret);
+    printf("calling texcommon 0x%X(%ld bytes)...\n", R(TEXCOMMON), n);
+    rc = ldr_call_rva(R(TEXCOMMON), 1, a2, &ret);
     if (rc != 0) ldr_print_fault(ldr_last_fault());
-    else printf("texcommon returned OK, draw flag 0xB1D984 = %u\n", KHU32(0xB1D984));
+    else printf("texcommon returned OK, draw flag 0x%X = %u\n", R(DRAW_FLAG), KHU32(R(DRAW_FLAG)));
     ldr_report_imports(1);
     ldr_report_hooks();
     if (rc != 0 || !g_fx_path) return rc == 0 ? 0 : 1;

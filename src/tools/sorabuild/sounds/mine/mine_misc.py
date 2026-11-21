@@ -11,6 +11,7 @@ system  the 12 menu / HUD sounds the runtime asks for by name (sfxpack NAMES "sy
 hud     font_widths = msg/us/fontinfo.bar entry 'sys' (280 bytes, one advance per glyph from code 32; hudbake reads the
         same entry); icon_widths = the icon-font advance table of the KH2 FM exe, u16[256] at RVA 0x5C8680 (.rdata),
         read from the exe file (sha1 pinned).  Without --exe the hud section has no icon_widths (and the run says so).
+        The Epic KH2 FM exe holds the same 512 bytes at RVA 0x5C87F0 (byte search of the Steam table: one hit).
 """
 import argparse
 import hashlib
@@ -28,8 +29,9 @@ import kh2snd  # noqa: E402
 # runtime name -> KH2 se000 sound id (the names are the sfx.bin event names, see fx/sfxpack.py NAMES)
 SYSTEM = [("cursor", 1), ("decide", 2), ("submenu", 3), ("cancel", 4), ("error", 5), ("lock_on", 7), ("lock_off", 8),
           ("danger", 9), ("page", 20), ("drive_bar", 32), ("drive_full", 33), ("game_over", 19)]
-EXE_SHA1 = "2548f1191fe6587a34947952763ce6bb4f3b5c1a"  # Steam KH2 FM exe (the one fxrec runs)
-ICON_RVA, ICON_N = 0x5C8680, 256
+# KH2 FM exe sha1 -> RVA of the icon-width table (the exes fxrec runs: Steam, Epic)
+ICON_RVA = {"2548f1191fe6587a34947952763ce6bb4f3b5c1a": 0x5C8680, "f9758c7782c4dd03c5bf8a4bcce9d897cb21cd62": 0x5C87F0}
+ICON_N = 256
 FONTINFO = "msg/us/fontinfo.bar"
 
 
@@ -70,15 +72,15 @@ def pe_read(d, rva, n):
 def icon_widths(exe):
     d = open(exe, "rb").read()
     sha = hashlib.sha1(d).hexdigest()
-    if sha != EXE_SHA1:
-        raise SystemExit("%s: sha1 %s is not the KH2 FM exe this table was found in (%s)" % (exe, sha, EXE_SHA1))
-    return list(struct.unpack("<%dH" % ICON_N, pe_read(d, ICON_RVA, 2 * ICON_N)))
+    if sha not in ICON_RVA:
+        raise SystemExit("%s: sha1 %s is not a KH2 FM exe this table was found in (%s)" % (exe, sha, ", ".join(ICON_RVA)))
+    return list(struct.unpack("<%dH" % ICON_N, pe_read(d, ICON_RVA[sha], 2 * ICON_N)))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kh2", required=True)
-    ap.add_argument("--exe", help="KINGDOM HEARTS II FINAL MIX.exe (Steam) for hud.icon_widths")
+    ap.add_argument("--exe", help="KINGDOM HEARTS II FINAL MIX.exe (Steam or Epic) for hud.icon_widths")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     t0 = time.time()
