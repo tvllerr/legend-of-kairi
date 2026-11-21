@@ -2223,6 +2223,42 @@ static int g_big_air = 1;  // (s88) live "set bigair 0" = the old 50 cm point at
 // one of those). The yellow icon keeps the s47 user's 600 by its own display-only search (g_icon_range, 0 = the aim's).
 static float g_auto_range = KH_AUTO_RANGE;  // live "set autor <cm>"
 static float g_icon_range = 600;            // live "set iconr <cm>" (s47 user: the icon showed only up close at 300)
+// (lockpt) the lock-on icon at BotW's own attention point of the enemy (linkpos_enemy_attpos: Actor +0x430, its
+// AttClientList AttPos = a bone + offset per enemy type, e.g. Bokoblin Spine_1 + 0.75, Moblin / Lynel Spine_2 + 1.25,
+// Hinox Head, Guardian Root + 4.3) instead of 1 u above the feet (and, on big bodies, the aim point at Sora's height).
+// User report: "the lock on placement position for some enemies doesn't match how it is locked on in BotW".
+// 0 = old placement, 1 (default) = BotW's marker: the attention point + the ModelList CursorOffsetY (Actor +0x490),
+// 2 = the attention point alone (for comparison). The "+ CursorOffsetY" is not traced in BotW's marker code; it is the
+// in-game match: the user compared both against BotW (1 "matches BotW better"; the point alone looked like the old
+// placement); log: Lynel chest +1.4 + 1.15 = icon 2.5 u, Hinox head +5.5 + 2.25 = 7.75 u above the feet.
+// SAVAGEWIND_SORA_LOCKPT=<0|1|2> / live "set lockpt <n>". An exe without the export, or a point farther than
+// LOCKPT_MAX_U from the enemy's feet (not a real attention point): the old placement.
+static int g_lockpt = 1;  // (on by default: tested in game, the user chose it)
+#define LOCKPT_MAX_U 30.0f
+typedef int (*AttPosFn)(uint64_t, float *, float *);
+static bool lockpt_icon(uint64_t actor, const float feet[3], float out[3]) {
+    static AttPosFn fn;
+    static int tried;
+    if (!g_lockpt) return false;
+    if (!tried) {
+        tried = 1, fn = (AttPosFn)(void *)GetProcAddress(GetModuleHandleA(NULL), "linkpos_enemy_attpos");
+        LOG("[sora] lockpt %d: %s\n", g_lockpt, !fn ? "NOT in this exe: old placement"
+            : g_lockpt == 1 ? "BotW's marker (attention point Actor +0x430 + CursorOffsetY)" : "the attention point alone (Actor +0x430)");
+    }
+    float a[3], cy = 0;
+    if (!fn || !fn(actor, a, &cy)) return false;
+    float dx = a[0] - feet[0], dy = a[1] - feet[1], dz = a[2] - feet[2];
+    if (dx * dx + dy * dy + dz * dz > LOCKPT_MAX_U * LOCKPT_MAX_U) return false;
+    out[0] = a[0], out[1] = a[1] + (g_lockpt == 1 && cy > 0 && cy < 20 ? cy : 0), out[2] = a[2];
+    static uint64_t last_actor;
+    static ULONGLONG last_t;
+    ULONGLONG now = GetTickCount64();
+    if (actor != last_actor || now - last_t > 2000)  // (one line per new target, then every 2 s: does it follow the body?)
+        last_actor = actor, last_t = now,
+        LOG("[sora] lockpt %llx: attention point %+.2f %+.2f %+.2f u from the feet, CursorOffsetY %.2f -> icon %.2f u above the feet\n",
+            (unsigned long long)actor, dx, dy, dz, cy, out[1] - feet[1]);
+    return true;
+}
 static float g_part_r = 50.0f, g_part_h = 80.0f;  // enemy part radius / half-height, cm (from g_hit_r / g_hit_h)
 static bool g_targets_on = true;
 
@@ -5687,6 +5723,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "autor")) g_auto_range = (float)v;
             else if (!strcmp(key, "airreach")) g_air_reach = (float)v;  // (s66 jump-up reach on enemies in the air)
             else if (!strcmp(key, "iconr")) g_icon_range = (float)v;  // (s65 combo feel)
+            else if (!strcmp(key, "lockpt")) g_lockpt = v < 0 ? 0 : v > 2 ? 2 : v;  // (lock-on icon at BotW's attention point)
             else if (!strcmp(key, "rwfall")) g_rw_fall = v != 0;
             else if (!strcmp(key, "wocap")) g_wo_cap = v != 0;
             else if (!strcmp(key, "finbig")) g_fin_big = v != 0;
@@ -6875,6 +6912,10 @@ static void sora_mod_frame_body(void) {
         int lv = (int)env_f("SAVAGEWIND_SORA_GLIDE_LV", (float)g_glide_lv);
         g_glide_lv = lv < 1 ? 1 : lv > 5 ? 5 : lv;
         g_air_once = env_f("SAVAGEWIND_SORA_AIR_ONCE", (float)g_air_once) != 0;
+        {
+            int lp = (int)env_f("SAVAGEWIND_SORA_LOCKPT", (float)g_lockpt);
+            g_lockpt = lp < 0 ? 0 : lp > 2 ? 2 : lp;
+        }
         const char *k = getenv("SAVAGEWIND_SORA_SCALE");
         if (k && *k) g_k = strtof(k, NULL);
         slog_open();
@@ -7872,6 +7913,17 @@ static void sora_mod_frame_body(void) {
         if (!lk && g_targets_on && g_icon_range > g_auto_range) lk = target_auto(tg, ntg, S.face, g_icon_range);
         float lc[3] = {0, 0, 0};
         if (lk) lc[0] = p[0] + lk->d[0] * to_u, lc[1] = p[1] - lk->dy * to_u - g_hit_h * 0.5f + 1.0f, lc[2] = p[2] + lk->d[1] * to_u;
+        if (lk && g_lockpt) {  // (lockpt) BotW's own attention point; feet = the enemy list's position (its mMtx)
+            uint64_t ea[64];
+            float ep[64][3], at[3];
+            int32_t el[64];
+            int en = linkpos_enemies(ea, ep, el, 64);
+            for (int k = 0; k < en; k++)
+                if (ea[k] == lk->actor) {
+                    if (lockpt_icon(lk->actor, ep[k], at)) lc[0] = at[0], lc[1] = at[1], lc[2] = at[2];
+                    break;
+                }
+        }
         sora_hud_target(!lk ? 0 : g_lock.locked ? 2 : 1, lc);
         // L5: the locked enemy's KH2 gauge; its max life = the highest seen per actor (BotW's max isn't read yet)
         static struct { uint64_t actor; int32_t max; } seen[32];

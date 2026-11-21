@@ -2247,7 +2247,14 @@ static void zero_opacity(uint64_t a) {
 #define VT_GET_DAMAGE_MGR 127
 #define ACTOR_LIFE 0x848        // (1.8.2: getLife = add x0, x0, #0x848; enemy1: 13 on the red Bokoblins)
 #define ACTOR_DAMAGE_MGR 0x840  // (getDamageMgr = ldr x0, [x0, #0x840])
-typedef struct { uint64_t actor, seen; float pos[3], dist; int32_t life; uint32_t hid; char name[48]; } Enemy;  // hid: mubin HashId, 0 = none (s166)
+// (lockpt) BotW's attention point (the lock-on / Z-target point) of an actor: Actor +0x430 (vec3), written every update
+// by the Actor virtual f_7001529290 (in ~60 actor vtables): the actor's AttClientList AttPos (node + offset + rotate,
+// YRotOnly; f_71013d8124 -> f_71013d9af4 on list +0x328, list = actor +0x5d8), else the model origin (f_71015290d4).
+// Actor +0x490 = the ModelList Attention CursorOffsetY (f_71015212e0 copies it at create; f_7101502524 = ModelList
+// getAttentionInfo, out +0x14). Ghidra 12.1.2 on 1.9.0 main (addresses: Ghidra's 0x71... base, runtime 0x70...).
+#define ACTOR_ATT_POS 0x430
+#define ACTOR_CURSOR_Y 0x490
+typedef struct { uint64_t actor, seen; float pos[3], dist; int32_t life; uint32_t hid; char name[48]; float att[3], cursor_y; } Enemy;  // hid: mubin HashId, 0 = none (s166)
 static Enemy g_enemy[ENEMY_MAX];
 static int g_nenemy;
 static SRWLOCK g_enemy_lock = SRWLOCK_INIT;
@@ -2322,6 +2329,11 @@ static void enemy_note(uint64_t a) {
     uint32_t hid = g_enemy[i].hid;
     g_enemy[i].seen = g_vel_frame_id;
     g_enemy[i].pos[0] = m[3], g_enemy[i].pos[1] = m[7], g_enemy[i].pos[2] = m[11];
+    {   // (lockpt) BotW's attention point + cursor height, read the same way as the matrix above
+        const float *at = (const float *)(uintptr_t)(a + ACTOR_ATT_POS);
+        g_enemy[i].att[0] = at[0], g_enemy[i].att[1] = at[1], g_enemy[i].att[2] = at[2];
+        g_enemy[i].cursor_y = *(const float *)(uintptr_t)(a + ACTOR_CURSOR_Y);
+    }
     g_enemy[i].dist = g_servo_actor ? link_dist(a) : -1;
     g_enemy[i].life = *(const int32_t *)(uintptr_t)(a + ACTOR_LIFE);
     EdmgPend pend;
@@ -2349,6 +2361,25 @@ int linkpos_enemies(uint64_t *actor, float (*pos)[3], int32_t *life, int max) {
     }
     ReleaseSRWLockExclusive(&g_enemy_lock);
     return n;
+}
+
+// (lockpt) for sora_mod.dll (GetProcAddress): an enemy's BotW attention point (u, world) and ModelList CursorOffsetY (u)
+// as of its last note. 1 = found, 0 = not in the list / not a finite point.
+int linkpos_enemy_attpos(uint64_t actor, float out[3], float *cursor_y) {
+    int ok = 0;
+    AcquireSRWLockExclusive(&g_enemy_lock);
+    for (int i = 0; i < g_nenemy; i++)
+        if (g_enemy[i].actor == actor) {
+            const float *t = g_enemy[i].att;
+            if (isfinite(t[0]) && isfinite(t[1]) && isfinite(t[2]) && isfinite(g_enemy[i].cursor_y)) {
+                out[0] = t[0], out[1] = t[1], out[2] = t[2];
+                if (cursor_y) *cursor_y = g_enemy[i].cursor_y;
+                ok = 1;
+            }
+            break;
+        }
+    ReleaseSRWLockExclusive(&g_enemy_lock);
+    return ok;
 }
 
 static uint64_t enemy_nearest(void) {  // the enemy nearest to Link right now (0: none)
