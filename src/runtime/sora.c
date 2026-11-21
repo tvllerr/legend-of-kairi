@@ -890,6 +890,42 @@ static int brk_blade(const HitWin *win, const float prev[6], const float now[6],
     }
     return hits;
 }
+// (swhit) the Keyblade sweep vs BotW hit-switches (the Goron cannon lever): a hit asks the exe to set the switch's "attack
+// received" float (linkpos_break.h) for one frame; BotW's own SwitchHit then flips it and the cannon turns. User report: the
+// Keyblade bounced off the lever (wall repel). Tested: 22 hits, the cannon turned, no repel off it.
+// On by default; SAVAGEWIND_SORA_SWHIT=0 / live "set swhit 0" = it bounces off as before. "set swhitv <x100>" the value
+// (default 1.0), "set swhitr <cm>" / "set swhith <cm>" the lever's cylinder (GUESS 80 / 300 cm; it connected in the test).
+static int g_swhit = 1;
+static float g_swhit_v = 1.0f, g_swhit_r = 0.8f, g_swhit_h = 3.0f;
+static int swh_blade(const HitWin *win, const float prev[6], const float now[6], float to_u) {
+    static LinkposSwitchesFn list;
+    static LinkposSwitchHitFn hit;
+    static int tried;
+    if (!g_swhit) return 0;
+    if (!tried) {
+        tried = 1;
+        HMODULE exe = GetModuleHandleA(NULL);
+        list = (LinkposSwitchesFn)(void *)GetProcAddress(exe, "linkpos_switches");
+        hit = (LinkposSwitchHitFn)(void *)GetProcAddress(exe, "linkpos_switch_hit");
+        LOG("[sora] swhit: %s\n", list && hit ? "on (the Goron cannon lever)" : "not in this exe (NEEDS EXE RELINK)");
+    }
+    if (!list || !hit) return 0;
+    LinkposBreakable b[8];
+    int n = list(b, 8), hits = 0;
+    for (int i = 0; i < n; i++) {
+        int k = 0;
+        while (k < S.nhit && S.hit_actor[k] != b[i].actor) k++;
+        if (k < S.nhit || !sweep_hits_rh(prev, now, b[i].pos, g_swhit_r, g_swhit_h)) continue;
+        if (S.nhit < 16) S.hit_actor[S.nhit++] = b[i].actor;  // (once per swing window)
+        int ok = hit(b[i].actor, g_swhit_v);
+        LOG("[sora] swhit: blade on %s %llx (motion %d clock %.1f): %s\n", b[i].name, (unsigned long long)b[i].actor, S.motion, S.clock,
+            ok ? "attack value written" : "refused by the exe");
+        sora_fx_event(kbfx_name("hit"), now + 3, S.face, to_u);
+        kbse_hit(win->atkp, 1.0f, b[i].pos);
+        S.hit = true, hits++;  // (no wall repel off the lever)
+    }
+    return hits;
+}
 // A spell's area vs the breakables: a cylinder (r, from y0 - below to y0 + above) at c.
 static int brk_spell(int how, const float c[3], float r, float below, float above) {
     LinkposBreakable b[32];
@@ -1413,6 +1449,7 @@ static int blade_hits_one(int blade, float clock_old, float to_u) {  // (after t
         kbbeam_swing(blade, win, prev, now, feet, to_u);  // (s216 beam: the Sealing Blade's full-health crescent, once per swing; s217: prev = the roll)
         if (g_bh.n < 0) g_bh.n = linkpos_enemies(g_bh.actor, g_bh.pos, g_bh.life, 64);
         hits += brk_blade(win, prev, now, to_u);  // (s55: boxes first; a hit sets S.hit, so no repel off the box)
+        hits += swh_blade(win, prev, now, to_u);  // (swhit: the Goron cannon lever, also before the repel)
         hits += bb_blade(win, prev, now, feet, to_u);  // (s217: explosive barrels, one hit; 0 while barrelboom is off)
         hits += world_blade(win, prev, now, feet, to_u);  // (s122: trees + Stasis'd objects, also before the repel)
         if (repel_try(win, w, now, prev, feet, to_u)) return hits;  // (the blade met the wall first: no enemy hits; S.mot
@@ -5433,6 +5470,10 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "firespkey")) g_fire_spk_y[1] = v / 100.0f;
             else if (!strcmp(key, "wofloor")) g_wo_floor_cm = (float)v;
             else if (!strcmp(key, "woguard")) g_wo_guard = v;
+            else if (!strcmp(key, "swhit")) g_swhit = v != 0;  // (the Keyblade flips the Goron cannon lever)
+            else if (!strcmp(key, "swhitv")) g_swhit_v = v / 100.0f;
+            else if (!strcmp(key, "swhitr")) g_swhit_r = v / 100.0f;
+            else if (!strcmp(key, "swhith")) g_swhit_h = v / 100.0f;
             else if (!strcmp(key, "wosnap")) g_wo_snap = v != 0;
             else if (!strcmp(key, "firer")) g_fire_obj_r = v / 100.0f;
             else if (!strcmp(key, "firebr")) g_fire_burst_r = v / 100.0f;
@@ -6875,6 +6916,7 @@ static void sora_mod_frame_body(void) {
         int lv = (int)env_f("SAVAGEWIND_SORA_GLIDE_LV", (float)g_glide_lv);
         g_glide_lv = lv < 1 ? 1 : lv > 5 ? 5 : lv;
         g_air_once = env_f("SAVAGEWIND_SORA_AIR_ONCE", (float)g_air_once) != 0;
+        g_swhit = env_f("SAVAGEWIND_SORA_SWHIT", (float)g_swhit) != 0;
         const char *k = getenv("SAVAGEWIND_SORA_SCALE");
         if (k && *k) g_k = strtof(k, NULL);
         slog_open();

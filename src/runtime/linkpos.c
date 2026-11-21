@@ -3092,6 +3092,7 @@ static void life_frame(void) {
 }
 
 static void break_note(uint64_t a);  // (breakables section, s55)
+static void swhit_note(uint64_t a);  // (swhit experiment, after the breakables)
 static void tree_note(uint64_t a), stasis_note(uint64_t a);  // (world section, s122)
 static void fire_note(uint64_t a);   // (fire world section, s59)
 
@@ -3246,7 +3247,7 @@ static void opacity_apply(Cpu *c) {
     g_opacity_calls++;
     cam_override_late();
     uint64_t a = c->x[0];
-    if (in_guest(a)) enemy_note(a), break_note(a), tree_note(a), stasis_note(a), fire_note(a), tbox_note(a), show_name_log(a);
+    if (in_guest(a)) enemy_note(a), break_note(a), swhit_note(a), tree_note(a), stasis_note(a), fire_note(a), tbox_note(a), show_name_log(a);
     if (g_hide && g_servo_actor && a == g_servo_actor) {
         zero_opacity(a);
         if (g_opacity_hits++ == 0) LOG("[linkpos] opacity hook: hiding Link (actor %llx)\n", (unsigned long long)g_servo_actor);
@@ -4107,6 +4108,97 @@ int linkpos_break_hit(uint64_t actor, int n) {
     }
     ReleaseSRWLockExclusive(&g_brk_lock);
     return after;
+}
+
+// ---- (swhit) hit-switches: the Goron cannon lever (BotW AI SwitchHit, headless Ghidra on 1.9.0).
+// SwitchHit's calc (0x7100a87910) takes "hit" from an attack contact OR *(actor+0x708)+0x1c > 0: a per-frame "attack received"
+// value (tested: BotW clears it by the next frame itself). linkpos_switch_hit writes v there for ONE frame; the next linkpos
+// frame puts the old value back only if it is still ours (in the test BotW had always cleared it already).
+#define SWHIT_MAX 8
+#define ACTOR_SWHIT_OBJ 0x708
+#define SWHIT_VAL 0x1c
+typedef struct { LinkposBreakable b; uint64_t vt, seen; } SwHit;
+static SwHit g_swhit[SWHIT_MAX];
+static int g_nswhit;
+static SRWLOCK g_swhit_lock = SRWLOCK_INIT;
+static struct { uint64_t addr, frame; float old, v; int n; } g_swhit_put;  // (one pending write; game thread)
+static void swhit_frame(void);
+
+static void swhit_note(uint64_t a) {  // (opacity hook, any thread)
+    if (!g_servo_actor || a == g_servo_actor) return;
+    const char *name = actor_name(a);
+    if (!name || strncmp(name, "FldObj_GoronCannonSwitch", 24) || link_dist(a) > BREAK_DIST) return;
+    const float *m = (const float *)(uintptr_t)(a + ACTOR_MTX);
+    AcquireSRWLockExclusive(&g_swhit_lock);
+    int i;
+    for (i = 0; i < g_nswhit && g_swhit[i].b.actor != a; i++) {}
+    bool fresh = i == g_nswhit;
+    if (fresh) {
+        if (g_nswhit == SWHIT_MAX) { ReleaseSRWLockExclusive(&g_swhit_lock); return; }
+        SwHit *e = &g_swhit[g_nswhit++];
+        memset(e, 0, sizeof *e);
+        e->b.actor = a, e->vt = *(const uint64_t *)(uintptr_t)a;
+        snprintf(e->b.name, sizeof e->b.name, "%s", name);
+    }
+    SwHit *e = &g_swhit[i];
+    e->seen = g_vel_frame_id;
+    e->b.pos[0] = m[3], e->b.pos[1] = m[7], e->b.pos[2] = m[11];
+    SwHit copy = *e;
+    ReleaseSRWLockExclusive(&g_swhit_lock);
+    if (fresh) {
+        uint64_t o = readable(a + ACTOR_SWHIT_OBJ, 8) == 8 ? *(const uint64_t *)(uintptr_t)(a + ACTOR_SWHIT_OBJ) : 0;
+        float v = in_guest(o) && readable(o + SWHIT_VAL, 4) == 4 ? *(const float *)(uintptr_t)(o + SWHIT_VAL) : -1;
+        LOG("[linkpos] swhit: %llx %s at %.2f %.2f %.2f, +0x708 %llx (+0x1c = %g)\n", (unsigned long long)a, copy.b.name,
+            copy.b.pos[0], copy.b.pos[1], copy.b.pos[2], (unsigned long long)o, v);
+    }
+}
+
+int linkpos_switches(LinkposBreakable *out, int max) {  // (drawn this or the last frame)
+    AcquireSRWLockExclusive(&g_swhit_lock);
+    int n = 0;
+    for (int i = 0; i < g_nswhit && n < max; i++)
+        if (g_vel_frame_id - g_swhit[i].seen <= 1) out[n++] = g_swhit[i].b;
+    ReleaseSRWLockExclusive(&g_swhit_lock);
+    return n;
+}
+
+// *(actor+0x708)+0x1c = v for this frame (only inside linkpos_frame, on a switch seen this or the last frame, unchanged vtable,
+// not being deleted). 1 = written, 0 = refused.
+int linkpos_switch_hit(uint64_t actor, float v) {
+    if (!g_in_frame || g_swhit_put.addr) return 0;
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_swhit_lock);
+    for (int i = 0; i < g_nswhit; i++)
+        if (g_swhit[i].b.actor == actor)
+            ok = g_vel_frame_id - g_swhit[i].seen <= 1 && *(const uint64_t *)(uintptr_t)actor == g_swhit[i].vt &&
+                 *(const uint8_t *)(uintptr_t)(actor + BASEPROC_STATE) != 3;
+    ReleaseSRWLockExclusive(&g_swhit_lock);
+    if (!ok || readable(actor + ACTOR_SWHIT_OBJ, 8) != 8) return 0;
+    uint64_t o = *(const uint64_t *)(uintptr_t)(actor + ACTOR_SWHIT_OBJ);
+    if (!in_guest(o) || readable(o + SWHIT_VAL, 4) != 4) return 0;
+    float *f = (float *)(uintptr_t)(o + SWHIT_VAL);
+    g_swhit_put.addr = o + SWHIT_VAL, g_swhit_put.old = *f, g_swhit_put.v = v, g_swhit_put.frame = g_vel_frame_id, g_swhit_put.n++;
+    *f = v;
+    LOG("[linkpos] swhit: hit %llx: +0x708 %llx +0x1c %g -> %g (#%d)\n", (unsigned long long)actor, (unsigned long long)o, g_swhit_put.old, v,
+        g_swhit_put.n);
+    return 1;
+}
+
+static void swhit_frame(void) {  // (game thread, once a frame: the written value back after its frame; drop stale entries)
+    if (g_swhit_put.addr && g_vel_frame_id != g_swhit_put.frame) {
+        float *f = (float *)(uintptr_t)g_swhit_put.addr;
+        if (readable(g_swhit_put.addr, 4) == 4) {
+            float now = *f;
+            if (now == g_swhit_put.v) *f = g_swhit_put.old;
+            LOG("[linkpos] swhit: next frame +0x1c was %g (%s), now %g\n", now, now == g_swhit_put.v ? "ours: put back" : "BotW changed it", *f);
+        }
+        g_swhit_put.addr = 0;
+    }
+    AcquireSRWLockExclusive(&g_swhit_lock);
+    for (int i = 0; i < g_nswhit;)
+        if (g_vel_frame_id - g_swhit[i].seen > BREAK_STALE) g_swhit[i] = g_swhit[--g_nswhit];
+        else i++;
+    ReleaseSRWLockExclusive(&g_swhit_lock);
 }
 
 static void break_frame(void) {  // (game thread, once a frame: drop stale entries)
@@ -5001,6 +5093,7 @@ void linkpos_frame(void) {
     hide_frame();
     enemy_frame();
     break_frame();
+    swhit_frame();  // (swhit: put back last frame's written value)
     world_frame();  // (s122 trees / Stasis)
     life_frame();
     watch_frame(g_frame);
