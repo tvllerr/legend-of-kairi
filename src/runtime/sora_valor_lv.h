@@ -67,6 +67,7 @@ static int vl_combo_plus(void) { int lv = vl_lv(); return (lv >= 4) + (lv >= 6);
 static float vl_jump_h(void) { return VL_HIGH_JUMP[VL_GROWTH[vl_lv() - 1] - 1]; }
 static float vl_base_jump_h(float base) {
     int g = VL.grow_base ? VL_GROWTH[vl_lv() - 1] - 1 : 0;
+    if (g_dbm_hjump > g) g = g_dbm_hjump > 3 ? 3 : g_dbm_hjump;  // (dbgjump: the Debug Menu's High Jump row, LV1-3 = 235 / 310 / 385 cm)
     return g > 0 && VL_HIGH_JUMP[g - 1] > base ? VL_HIGH_JUMP[g - 1] : base;
 }
 

@@ -36,6 +36,14 @@ _Static_assert(sizeof(KgEvent) == 128, "SDL_Event");
 #define KG_PIECES 64
 
 static int g_kg_on = 1, g_kg_sens = 100, g_kg_sensy = 100, g_kg_log = 1;
+// (kbthrowstick) the right stick aims too. The exe's camera takes the mouse OR the stick (hle/input.c input_cam_frame: any mouse
+// motion in a frame and the cameras read it instead of the stick), and the gyro above sends mouse motion every frame of the aim
+// (a still pad still reads a little), so the right stick never turned the aim (user report; epictest log: the camera turned only
+// what the gyro asked, 0.7 / -5.2 deg). With this on, a frame whose right stick is past g_kg_dead % sends no gyro motion: BotW's
+// own stick camera turns the aim at its own speed; the gyro's samples of that frame are used up (no jump on letting go).
+// On by default (tested in game); SAVAGEWIND_SORA_KBTHROW_STICK=0 / live "set kbthrowstick 0" = gyro only (as before);
+// "set kbthrowstickdz <%>" the stick's dead zone (GUESS 25).
+static int g_kg_stick = 1, g_kg_dead = 25;
 static struct {
     bool tried, was, warned;
     HostFn read;
@@ -104,6 +112,14 @@ static void kg_tick(bool aim) {
     KG.last = st[0].sampling_number;
     KG.frames++;
     yaw *= g_kg_sens / 100.0, pitch *= g_kg_sensy / 100.0;
+    if (g_kg_stick) {  // (kbthrowstick) the stick pushed: this frame is the stick's (no gyro mouse motion, its samples dropped)
+        int32_t dz = (int32_t)(32767 * g_kg_dead / 100);
+        bool stick = g_rx_raw > dz || g_rx_raw < -dz || g_ry_raw > dz || g_ry_raw < -dz;
+        static bool was_stick;
+        if (stick != was_stick && g_kg_log) LOG("[kbgyro] right stick %s\n", stick ? "pushed: it aims (no gyro motion while it is)" : "let go: the gyro aims again");
+        was_stick = stick;
+        if (stick) return;
+    }
     if (yaw == 0 && pitch == 0) return;
     KG.yaw += yaw, KG.pitch += pitch;
     // degrees -> mouse counts (input_cam_frame: a count = 0.022 deg x Mouse sensitivity on both axes; the vertical part also takes
@@ -124,6 +140,8 @@ static void kg_tick(bool aim) {
 }
 
 static bool kg_live_set(const char *key, int v) {
+    if (!strcmp(key, "kbthrowstick")) { g_kg_stick = v != 0; LOG("[kbgyro] kbthrowstick %d: %s\n", g_kg_stick, g_kg_stick ? "the right stick aims the throw (no gyro while it is pushed)" : "gyro only (the stick is drowned out)"); return true; }
+    if (!strcmp(key, "kbthrowstickdz")) { g_kg_dead = v < 1 ? 1 : v > 90 ? 90 : v; return true; }
     if (!strcmp(key, "kbthrowgyro")) g_kg_on = v != 0, LOG("[kbgyro] kbthrowgyro %d: %s\n", g_kg_on, g_kg_on ? "the pad's gyro aims the Keyblade throw (needs Mouse camera on)" : "off");
     else if (!strcmp(key, "kbthrowgyrosens")) g_kg_sens = v < -1000 ? -1000 : v > 1000 ? 1000 : v, LOG("[kbgyro] left / right %d %%\n", g_kg_sens);
     else if (!strcmp(key, "kbthrowgyroy")) g_kg_sensy = v < -1000 ? -1000 : v > 1000 ? 1000 : v, LOG("[kbgyro] up / down %d %%\n", g_kg_sensy);
