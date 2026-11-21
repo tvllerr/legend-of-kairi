@@ -2305,13 +2305,54 @@ static float target_surface(const Target *e) {
     return sqrtf(e->hd * e->hd + dy * dy) - e->radius;
 }
 
+// (lockbotw) R1 lock-on reach per enemy type as in BotW, instead of KH2's LockOnRange 12 m / release 15 m for all.
+// User wish: "extend the distance of locking on to an enemy". BotW's reach = each enemy's LockOn AttClient (its
+// AttClientList "LockOn" entry, Actor/AttClient/<name>.batcl in its actor pack), first check (Radius, or FixedRadius
+// when larger: GUESS at how the two combine): AreaFan from the player, 20 m for 104 of 200 Enemy_* packs (Bokoblins,
+// Moblins, Lizalfos, Lynels, Yiga, ...), Guardian_Mini* 50, Guardian_* 60, Golem_* weak points 60 (Golem_Little 20),
+// SiteBoss_Bow* 40, GanonBeast weak point 50. Hinox (Enemy_Giant*, "ForestGiant"): AreaCylinderFan = 10 m all around
+// + 50 m within +-60 deg (Angle 1.047) ahead; "ahead" = the camera's direction here (GUESS: the file says only
+// FromPlayer). Release = reach x 1.25 (KH2's 15 / 12: GUESS, BotW's release not traced). Anything else: 20 m.
+// BotW's other checks (on screen, line of sight, +-10 m height) are not done (KH2's search has none either).
+// On by default (tested in game); SAVAGEWIND_SORA_LOCK_BOTW=0 / live "set lockbotw 0" = KH2's 12 m / 15 m for all.
+static int g_lock_botw = 1;
+static float lock_reach(const Target *e, bool release) {  // cm, surface distance
+    if (!g_lock_botw) return release ? KH_LOCK_RELEASE : KH_LOCK_RANGE;
+    static struct { uint64_t actor; float near_m, fan_m; } cache[32];
+    static int next;
+    float near_m = 20, fan_m = 0;  // fan_m > 0: farther reach only inside the Hinox fan
+    int k;
+    for (k = 0; k < 32 && cache[k].actor != e->actor; k++) {}
+    if (k < 32) near_m = cache[k].near_m, fan_m = cache[k].fan_m;
+    else {
+        char nm[48] = {0};
+        if (body_actor_name(e->actor, nm, (int)sizeof nm) > 0) {
+            static const struct { const char *pre; float near_m, fan_m; } REACH[] = {
+                {"Enemy_Guardian_Mini", 50, 0}, {"Enemy_Guardian", 60, 0}, {"Enemy_Golem_Little", 20, 0},
+                {"Enemy_Golem", 60, 0}, {"Enemy_SiteBoss_Bow", 40, 0}, {"Enemy_GanonBeast", 50, 0}, {"Enemy_Giant", 10, 50},
+            };
+            for (size_t r = 0; r < sizeof REACH / sizeof *REACH; r++)
+                if (!strncmp(nm, REACH[r].pre, strlen(REACH[r].pre))) { near_m = REACH[r].near_m, fan_m = REACH[r].fan_m; break; }
+            cache[next].actor = e->actor, cache[next].near_m = near_m, cache[next].fan_m = fan_m, next = (next + 1) % 32;
+            LOG("[sora] lockbotw %llx %s: reach %.0f m%s\n", (unsigned long long)e->actor, nm, near_m,
+                fan_m > 0 ? " (50 m inside +-60 deg ahead of the camera)" : "");
+        }  // (no name yet: 20 m, not cached - retried next time)
+    }
+    float m = near_m;
+    float cf[2];
+    if (fan_m > 0 && e->hd > 1 && linkpos_camera_fwd(cf) &&
+        (e->d[0] * cf[0] + e->d[1] * cf[1]) / e->hd >= cosf(60 * PI / 180))
+        m = fan_m;
+    return m * 100 * (release ? 1.25f : 1.0f);
+}
+
 // re:0x3BEA30: R1 with no target, the part nearest to Sora's point by surface distance within LockOnRange
 static const Target *target_lock(const Target *t, int n) {
     const Target *best = NULL;
     float best_d = 0;
     for (int i = 0; i < n; i++) {
         float d = target_surface(&t[i]);
-        if (d > KH_LOCK_RANGE) continue;  // (KH2's large actors have no limit: BotW has no flag for them yet)
+        if (d > lock_reach(&t[i], false)) continue;  // (KH2's large actors have no limit: BotW's per type with lockbotw)
         if (!best || d < best_d) best = &t[i], best_d = d;
     }
     return best;
@@ -2337,7 +2378,7 @@ static void lock_release(const char *why) {
 static void lock_tick(const Target *t, int n, float kh, uint32_t bits_prev, float face, bool r1) {
     const Target *cur = g_lock.actor ? target_of(t, n, g_lock.actor) : NULL;
     if (!cur && g_lock.actor) lock_release("target gone");
-    if (cur && g_lock.locked && target_surface(cur) > KH_LOCK_RELEASE) lock_release("out of range"), cur = NULL;
+    if (cur && g_lock.locked && target_surface(cur) > lock_reach(cur, true)) lock_release("out of range"), cur = NULL;
     if (r1 && g_lock.locked) { lock_release("R1"); return; }
     if (r1) {  // NONE -> search_lock, AUTO -> its target (re:0x3DCD70: no new search)
         const Target *p = cur ? cur : target_lock(t, n);
@@ -2345,7 +2386,7 @@ static void lock_tick(const Target *t, int n, float kh, uint32_t bits_prev, floa
             g_lock.actor = p->actor, g_lock.locked = true, g_lock.timer = 0;
             sora_sfx_event("lock_on", 1);
             LOG("[sora] lock-on %llx (%.0f cm surface, %s)\n", (unsigned long long)p->actor, target_surface(p), cur ? "auto target" : "search");
-        } else LOG("[sora] lock-on: nothing within %.0f cm\n", KH_LOCK_RANGE);
+        } else LOG("[sora] lock-on: nothing within %s\n", g_lock_botw ? "BotW's reach" : "1200 cm");
         return;
     }
     if (g_lock.locked) return;
@@ -2367,7 +2408,7 @@ static const Target *target_switch(const Target *t, int n, const Target *cur, fl
     float base = atan2f(cur->d[0], cur->d[1]), best_a = 0;
     const Target *best = NULL;
     for (int i = 0; i < n; i++) {
-        if (t[i].actor == cur->actor || target_surface(&t[i]) > KH_LOCK_RANGE) continue;
+        if (t[i].actor == cur->actor || target_surface(&t[i]) > lock_reach(&t[i], false)) continue;
         float a = wrap(atan2f(t[i].d[0], t[i].d[1]) - base) * sign;
         if (a > 0 && (!best || a < best_a)) best = &t[i], best_a = a;
     }
@@ -5687,6 +5728,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "autor")) g_auto_range = (float)v;
             else if (!strcmp(key, "airreach")) g_air_reach = (float)v;  // (s66 jump-up reach on enemies in the air)
             else if (!strcmp(key, "iconr")) g_icon_range = (float)v;  // (s65 combo feel)
+            else if (!strcmp(key, "lockbotw")) g_lock_botw = v != 0;  // (R1 lock-on reach per enemy type as in BotW)
             else if (!strcmp(key, "rwfall")) g_rw_fall = v != 0;
             else if (!strcmp(key, "wocap")) g_wo_cap = v != 0;
             else if (!strcmp(key, "finbig")) g_fin_big = v != 0;
@@ -6875,6 +6917,8 @@ static void sora_mod_frame_body(void) {
         int lv = (int)env_f("SAVAGEWIND_SORA_GLIDE_LV", (float)g_glide_lv);
         g_glide_lv = lv < 1 ? 1 : lv > 5 ? 5 : lv;
         g_air_once = env_f("SAVAGEWIND_SORA_AIR_ONCE", (float)g_air_once) != 0;
+        g_lock_botw = env_f("SAVAGEWIND_SORA_LOCK_BOTW", (float)g_lock_botw) != 0;
+        if (g_lock_botw) LOG("[sora] lockbotw on: R1 lock-on reach per enemy type as in BotW (20 m for most)\n");
         const char *k = getenv("SAVAGEWIND_SORA_SCALE");
         if (k && *k) g_k = strtof(k, NULL);
         slog_open();
