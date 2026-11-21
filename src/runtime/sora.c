@@ -241,6 +241,13 @@ static float smooth01(float a, float b, float x) {
 
 // KH2 motion ids (mset slot = id * 4 + variant; SORA_DRIVER_RECON.md 1.2) - what the renderer will play
 enum { MOT_IDLE = 0, MOT_WALK = 1, MOT_RUN = 2, MOT_JUMP = 3, MOT_FALL = 4, MOT_LAND = 5, MOT_ROLL = 209 };
+// (hjanim) KH2's High Jump motion: re:0x3B59B0 (the jump start 0x422630 asks it for the height + the motion) answers motion 3 and
+// the prty jump height, and when the High Jump level (FUN_140401680) is above 0: that level's fmab height and motion 0xC9 = 201
+// (P_EX100 slot 806 B003, 64 GFR, takes off at GFR 4 like A003). Base Sora only here: Valor's own motion 3 already is B003, the
+// other forms have none. User report: High Jump works but Sora has no High Jump animation.
+// On by default (tested in game); SAVAGEWIND_SORA_HJ_ANIM=0 / live "set hjanim 0" = the plain jump motion (as before).
+enum { MOT_HIGH_JUMP = 201 };
+static int g_hjanim = 1;
 // S32 glide port (recon/S32_glide_port_draft.c): KH2's ACTION 17 hover / 18 glide in Sora's own servo
 enum { ACT_IDLE, ACT_JUMP, ACT_GLIDE_HOVER = 17, ACT_GLIDE = 18 };  // KH2 registry ids (re:0x750D30), as in PHH
 #define ACT_AIR(a) ((a) == ACT_JUMP || (a) == ACT_GLIDE_HOVER || (a) == ACT_GLIDE)  // ACT_FLAGS bit 0
@@ -5433,6 +5440,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "firespkey")) g_fire_spk_y[1] = v / 100.0f;
             else if (!strcmp(key, "wofloor")) g_wo_floor_cm = (float)v;
             else if (!strcmp(key, "woguard")) g_wo_guard = v;
+            else if (!strcmp(key, "hjanim")) g_hjanim = v != 0;  // (base Sora's High Jump plays KH2's motion 201)
             else if (!strcmp(key, "wosnap")) g_wo_snap = v != 0;
             else if (!strcmp(key, "firer")) g_fire_obj_r = v / 100.0f;
             else if (!strcmp(key, "firebr")) g_fire_burst_r = v / 100.0f;
@@ -6875,6 +6883,8 @@ static void sora_mod_frame_body(void) {
         int lv = (int)env_f("SAVAGEWIND_SORA_GLIDE_LV", (float)g_glide_lv);
         g_glide_lv = lv < 1 ? 1 : lv > 5 ? 5 : lv;
         g_air_once = env_f("SAVAGEWIND_SORA_AIR_ONCE", (float)g_air_once) != 0;
+        g_hjanim = env_f("SAVAGEWIND_SORA_HJ_ANIM", (float)g_hjanim) != 0;
+        if (g_hjanim) LOG("[sora] hjanim on: base Sora's High Jump plays motion 201 (B003)\n");
         const char *k = getenv("SAVAGEWIND_SORA_SCALE");
         if (k && *k) g_k = strtof(k, NULL);
         slog_open();
@@ -7913,7 +7923,14 @@ static void sora_mod_frame_body(void) {
         S.hvel[0] = dir[0] * speed, S.hvel[1] = dir[1] * speed;
         S.takeoff = g_jump_trigger;
         S.jump_held = true, S.jump_released = false;  // re:0x422630: +0x120 bit 16; re:0x3CBD30 makes it bit 17
-        set_motion(MOT_JUMP);
+        // (hjanim) re:0x3B59B0: High Jump above LV0 = motion 201 (base Sora: vl_base_jump_h is above the plain jump exactly then)
+        bool hj = g_hjanim && !g_fmots_on && !IN_GUEST && !SKT.riding && vl_base_jump_h(KH_JUMP_H) > KH_JUMP_H && mot_of(MOT_HIGH_JUMP);
+        if (hj) {
+            S.takeoff = mot_frame_trigger(mot_of(MOT_HIGH_JUMP), 0, g_jump_trigger);  // (its own lift-off frame: GFR 4, as A003's)
+            static int said;
+            if (said++ < 3) LOG("[sora] high jump: motion %d (KH2 re:0x3B59B0), %.0f cm, takeoff at %.0f\n", MOT_HIGH_JUMP, F_JUMP_H, S.takeoff);
+        }
+        set_motion(hj ? MOT_HIGH_JUMP : MOT_JUMP);
         if (NET.melty) sora_melty_addon_act("jump", SORA_MELTY_ACT_START, "m3");  // (s209 step 2: Melty's ACT note; m<MOT_JUMP>, sora_net_act.h)
         LOG("[sora] jump at %.3f %.3f %.3f (speed %.0f)\n", p[0], p[1], p[2], speed);
     }
@@ -8042,7 +8059,7 @@ static void sora_mod_frame_body(void) {
             fall_motion(8);
         } else if (S.apex <= S.air + KH_APEX_EARLY) S.jump_held = S.jump_released = false;  // kh2ctl.py:1511
         if (S.ceiling && KH_HOP_MIN < S.air && S.air < S.apex) fall_start(0, z_up), fall_motion(8);
-        if ((S.motion == MOT_JUMP || S.motion == MOT_AIR_DODGE) && S.air >= S.apex - KH_APEX_EARLY) fall_motion(8);  // (s89: + the Aerial Dodge)
+        if ((S.motion == MOT_JUMP || S.motion == MOT_HIGH_JUMP || S.motion == MOT_AIR_DODGE) && S.air >= S.apex - KH_APEX_EARLY) fall_motion(8);  // (s89: + the Aerial Dodge; hjanim: + the High Jump)
     } else if (S.act == ACT_GLIDE_HOVER && sspeed <= 0) {  // re:0x423840
         set_motion(MOT_GLIDE_HOVER);  // (16-frame blend: glide_pose_draw)
         glide_end(p, z_up, (held & BTN_JUMP) != 0 && !gs_out);
