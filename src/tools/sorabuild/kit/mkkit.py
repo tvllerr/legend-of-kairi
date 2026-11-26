@@ -10,7 +10,7 @@
 Kit layout (sorabuild config "kit": <dir>):
   kit.json            {"src": {tool: sb.src_hash(tool)}, "files": {rel: sha256}, ...}: sorabuild refuses a tool whose sources changed
   tools/<tool>/       sorabake partybake gobake skatebake hudbake trigjson (dotnet build -c Release, the SAME command as the steps)
-                      fxrec_boot (clang, sb.fxrec_cmd) kh2pick (only-the-needed-files KH2 extractor)
+                      fxrec_boot + kh2mot (clang, sb.fxrec_cmd / sb.kh2mot_cmd) kh2pick (only-the-needed-files KH2 extractor)
   dotnet/             .NET 8 runtime only (dotnet.exe + host/fxr + shared/Microsoft.NETCore.App), from the SDK: DOTNET_ROOT for the tools
   openkh/             OpenKH release DLLs (only the sorabuild input probe; each tool dir has its own copies)
   busybox/sh.exe      busybox-w32 (runfile.sh: jobs, wait, xargs -P) instead of Git bash / MSYS2
@@ -214,6 +214,11 @@ def main():
     fxd = os.path.join(out, "tools", "fxrec_boot")
     os.makedirs(fxd)
     run(sb.fxrec_cmd(a.clang, os.path.join(fxd, "fxrec_boot.exe")),
+        env={"PATH": os.path.dirname(a.clang) + os.pathsep + os.environ.get("PATH", "")})
+    # kh2mot.exe (config pose = kh2: KH2's own motion poses, the same loader and flags)
+    kmd = os.path.join(out, "tools", "kh2mot")
+    os.makedirs(kmd)
+    run(sb.kh2mot_cmd(a.clang, os.path.join(kmd, "kh2mot.exe")),
         env={"PATH": os.path.dirname(a.clang) + os.pathsep + os.environ.get("PATH", "")})
     # (s168) the installer window: WebView2 in a WinForms form (needs Microsoft.WindowsDesktop.App, shipped below)
     if a.webview2:

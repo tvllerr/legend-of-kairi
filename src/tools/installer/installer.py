@@ -627,7 +627,10 @@ class State:
         kit = (root + "/kit") if self.mode == "update" else self.kit
         cfg = {"kit": kit, "kh2img": self.kh2img_dev or self.kh2["info"]["img"], "romfs": self.sw["info"]["romfs"],
                "out": root + "/data", "work": root + "/work", "fx": "fxrec", "sounds": "recipe", "fx_keep": "used",
-               "kh2exe": self.kh2["info"]["exe"]}
+               "kh2exe": self.kh2["info"]["exe"],
+               # pose = kh2: the motions that switch a constraint (Guard's left hand, 18 Sora + 29 Drive Form motions) from
+               # KH2's own motion code (step kh2mot, needs kh2exe); the rest stay OpenKH's emulator. Deck (install.sh) stays emu.
+               "pose": "kh2"}
         p = os.path.join(root, "work", "install_config.json")
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8", newline="\n") as f:

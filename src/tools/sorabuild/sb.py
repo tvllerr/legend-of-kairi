@@ -40,10 +40,20 @@ CFG_KEYS = {
 KIT_SRC = {
     "sorabake": "cs/sorabake", "partybake": "cs/partybake", "gobake": "cs/gobake", "skatebake": "cs/skatebake",
     "hudbake": "hud/hudbake", "trigjson": "fx/trigjson", "fxrec_boot": "fxrec", "kh2pick": "cs/kh2pick",
+    "kh2mot": "fxrec",   # (config pose = kh2) KH2's own motion poses, on the fxrec loader (fxrec/fxrec_mot.c)
 }
 FXREC_SRC = ["fxrec_boot.c", "fxrec_s2.c", "fxrec_ldr.c", "fxrec_ldr.h"]
 FXREC_FLAGS = ["-O1", "-g", "-Wall", "-Wno-unused-function", "-Wl,--image-base,0x10000000", "-Wl,--disable-dynamicbase",
                "-Wl,--disable-high-entropy-va", "-Wl,--stack,0x4000000", "-lbcrypt"]
+
+
+KH2MOT_SRC = ["fxrec_mot.c", "fxrec_ldr.c", "fxrec_ldr.h"]
+
+
+def kh2mot_cmd(clang, exe):
+    """the one clang command for kh2mot.exe (step kh2mot and kit/mkkit.py): fxrec_boot's flags (KH2 is mapped at 0x140000000)"""
+    return [clang] + FXREC_FLAGS[:4] + ["-o", exe] + [os.path.join(HERE, "fxrec", n) for n in KH2MOT_SRC if n.endswith(".c")] + \
+        FXREC_FLAGS[4:]
 
 
 def fxrec_cmd(clang, exe):
@@ -56,6 +66,8 @@ def src_files(tool):
     d = os.path.join(HERE, KIT_SRC[tool])
     if tool == "fxrec_boot":
         return [os.path.join(d, n) for n in FXREC_SRC]
+    if tool == "kh2mot":
+        return [os.path.join(d, n) for n in KH2MOT_SRC]
     return sorted(os.path.join(d, n) for n in os.listdir(d) if os.path.isfile(os.path.join(d, n)))
 
 
@@ -64,7 +76,7 @@ def src_hash(tool):
     h = hashlib.sha256()
     for p in src_files(tool):
         h.update(os.path.basename(p).encode() + b"\0" + open(p, "rb").read().replace(b"\r\n", b"\n") + b"\0")
-    if tool == "fxrec_boot":
+    if tool in ("fxrec_boot", "kh2mot"):
         h.update(" ".join(FXREC_FLAGS).encode())
     return h.hexdigest()
 
@@ -194,6 +206,16 @@ class Ctx:
         m = self.cfg.get("fx", "phh")
         if m not in ("phh", "fxrec"):
             raise SystemExit("[sorabuild] config 'fx' must be 'phh' or 'fxrec', not %r" % (m,))
+        return m
+
+    # pose switch: config "pose": "emu" (default) = every body pose / hit bake from OpenKH's Kh2AnimEmu as before; "kh2" = the motions
+    # whose constraint switches change a constraint (KH2's ConstraintActivations, which the emulator ignores: e.g. the Guard's left hand
+    # lets go of the Keyblade) come from KH2's OWN motion code (step kh2mot: kh2mot.exe on the player's KH2 exe, needs "kh2exe")
+    @property
+    def pose_mode(self):
+        m = self.cfg.get("pose", "emu")
+        if m not in ("emu", "kh2"):
+            raise SystemExit("[sorabuild] config 'pose' must be 'emu' or 'kh2', not %r" % (m,))
         return m
 
     # fx_keep (s166): "used" (default) = the fxrec recorder records only the KH2 effects the fx chain tools read (keep list derived from our
