@@ -73,7 +73,7 @@ static struct {
     NetFxOut fxo[NET_FXO_N]; int fxrr;                             // (Task 8) our sent fx by handle: moves / kills to send
     uint32_t rfx_born;                                        // (mp2) arrival counter: which remote fx copy is the oldest (all peers)
     bool parked;                                              // (mp2) Sora mode off while net was on: BYE sent, socket closed, resumes with Sora
-    bool wet, dead;                                           // set by the frame body (ghost / Game Over)
+    bool wet, dead, downed;                                   // set by the frame body (ghost / Game Over; s289 revive: DOWNED, sora_revive.h rv_tick)
     struct { uint32_t sent, recv, bad, stale, other, echo, ev_sent, ev_fresh, ev_played, lost_out, lost_in, err;
         uint32_t mv_sent, mv_skip, anc_ev[4], anc_ev_in[4], anc_mv_in[4], anc_guess;
         uint32_t melty_wait; } st;  // (s187: melty_wait = packets not sent because the room was not connected yet)  // (slice 3: moves sent / skipped as unchanged, fx events by anchor, received moves by anchor, party anchors played at Sora; mp4: lost_out = our queue full, lost_in = a peer's inq full)
@@ -91,6 +91,11 @@ static void net_fill(NetSnap *s);  // (sora.c) body, Keyblades, slot, clock, yaw
 // (slice 3, sora_net_party.h) the party members' drawn poses for the fx anchors: local (sender) / remote slot k (receiver)
 static bool net_party_local_pose(int who, float feet[3], float *face);
 static bool net_party_remote_pose(int k, int who, float feet[3], float *face);
+// (s289 nopause, sora_nopause.h: the world runs behind a menu while a friend is in the room; live netnopause / netnopauselog /
+// netnopausedmg / netnopausestep, all off = nothing read or written)
+static bool np_frame(uint64_t now, float feet[3]);  // net_frame: true = it runs now, feet = Link's (net_sora_off: feet NULL)
+static bool np_live_set(const char *key, int v);
+static void np_unload(void);  // (sora_mod_unload)
 
 #define NETP(k) (NET.slot[k].p)
 
@@ -200,6 +205,8 @@ static void net_send_all(const NetAddr *d, int nd, const uint8_t *buf, int n) {
     for (int i = 0; i < nd; i++) net_send_to(d[i].ip, d[i].port, buf, n);
 }
 #include "sora_net_area.h"  // (s191, Melty spec 4.1: NET_AREA, who is on which map; needs NET, net_dests, net_send_all)
+#include "sora_net_gear.h"  // (s289 netgear: NET_GEAR, the BotW weapon in each Sora's hand, `set netgear 1`; default ON since s290; needs the same)
+#include "sora_net_shots.h"  // (s289 shots: NET_SHOTS / NET_RUNES, a friend's arrows, bombs, thrown weapon and runes, `set netshots 1` / `set netrunes 1`; both default ON since s290)
 #include "sora_net_edmg.h"  // (s166 v6: shared enemy HP; needs NET, net_dests, net_send_to)
 #include "sora_net_fire.h"  // (s176 v10: fire sync; needs NET, net_dests, net_send_to, NetEdOut)
 #define NET_ESYNC_GLUE
@@ -212,6 +219,14 @@ static void net_send_all(const NetAddr *d, int nd, const uint8_t *buf, int n) {
 #include "sora_net_kills.h"  // (s196: kills stay dead after a reload / for a joining game, `set killsync 0|1`, default 1 since s197; needs NETED)
 #include "sora_net_warp.h"  // (s269 warpcore, co-op item 4: NET_WARP ask / spot / note for the warp to a friend; hooks from sora_warp.h)
 #include "sora_net_duel.h"  // (s272 duel, co-op item 6: NET_DUEL ask / answer / hit / end / time / ring, queued for sora_duel.h; default OFF)
+#define NET_NOAUTO_GLUE
+#include "sora_net_noauto.h"  // (s289 noauto: BotW's enemy auto-placement held off while a friend is connected, `set roomnoauto 1`; default ON since s290)
+#define NET_LOOT_GLUE
+#include "sora_net_loot.h"  // (s289 loot: NET_LOOT, enemy drops / dropped items / map item pickups once for the room, `set netloot 1`; default ON since s290; needs NETK)
+#define NET_WORLD_GLUE
+#include "sora_net_world.h"  // (s290 networld: NET_WORLD, the room's world flags (chests, Koroks, shrines, towers, runes, items, quests, shops), `set networld 1`; default OFF; after Savage Wind PR #294, MIT)
+#include "sora_net_objs.h"  // (s289 objs: `set netbump 1` players bump, `set netobjs 1` crates / trees / boulders the same in a Melty room; default OFF; after Savage Wind PR #294, MIT)
+#include "sora_net_flip.h"  // (s290 flip: netobjs / roomnoauto / netgear / netshots / netrunes default ON: their exe check said once when a Melty room is up)
 
 static inline uint8_t net_oct0(uint32_t ip_be) { return *(const uint8_t *)&ip_be; }
 // an address worth HELLOing from a list sent by `from_ip`: not 0.x, 255.255.255.255, multicast 224-239.x, port 0; 127.x only from a 127.x sender
@@ -332,8 +347,12 @@ static void net_set_on(bool on) {
         net_edmg_reset(GetTickCount64());
         net_fire_reset(GetTickCount64());
         net_area_reset(GetTickCount64());  // (s191)
+        net_gear_reset(GetTickCount64());  // (s289 netgear)
+        net_shots_reset(GetTickCount64());  // (s289 shots)
         net_react_reset(GetTickCount64());  // (s194)
         net_kills_reset(GetTickCount64());  // (s196: asks / answers of an earlier session go; the kill list stays)
+        net_loot_reset(GetTickCount64());  // (s289 loot: a fresh gid counter, no list)
+        net_world_reset(GetTickCount64());  // (s290 networld: no friends' sets; the list + our own flags stay)
         for (int i = 0; i < NET.ntg; i++) if (!NET.tg[i].pinned) net_tg_del(i--);  // (learned addresses are stale)
         NET.nalias = 0, NET.learn_hello_at = 0;
         if (NET.melty) LOG("[net] on: Melty Net room (no UDP port), player %u, name \"%s\", up to %d peers%s\n", NET.me, NET.name, NET_MAX_PEERS, g_net_loop ? ", loopback" : "");
@@ -361,11 +380,20 @@ static void net_clock_frame(void);
 static void net_sora_off(void) {
     if (NET.melty) net_melty_pump(GetTickCount64());  // (s187: the room client is polled every frame, also while we send nothing)
     net_clock_frame();  // (s191: the room's clock also while Sora mode is off)
+    net_noauto_frame(false, NULL, GetTickCount64());  // (s289 noauto: nothing written with Sora off; a hold's stop is logged once the session is left)
+    np_frame(GetTickCount64(), NULL);  // (s289 nopause: Sora off = no room: a world let run behind a menu is stopped again)
     if (!NET.on) return;
     LOG("[net] Sora mode off: leaving the session (resumes with Sora)\n");
     net_set_on(false);
     av_drop_events();
     NET.parked = true;
+    // (s292 coopfix, s291 review2 #2) the room is over for the map objects too, as when it ends with Sora on: the first call
+    // forgets the room's lists, stops the movers his records drove and marks his horse puppets; the second deletes them now
+    // (the calls need the game's frame; nothing of this runs on later Sora-off frames). Today unreachable: g_on is fixed at
+    // the first frame (SAVAGEWIND_SORA, sora.c sora_mod_frame_body), so NET is never on in a Sora-off run.
+    uint64_t now = GetTickCount64();
+    net_objs_frame(false, NULL, now);
+    net_objs_frame(false, NULL, now);
 }
 
 // "ip[:port],ip[:port],..." -> pins (port default NET_PORT)
@@ -702,6 +730,7 @@ static void net_recv_all(uint64_t now) {
             }
             continue;
         }
+        if (!NET.melty && player == NET.me && (type == NET_OBJS || type == NET_OBJEV)) { NET.st.echo++; continue; }  // (s289 objs: our own broadcast back, as NET_GEAR's)
         if (NET.melty) {
             // (s187) the room never hands us our own packets back, and only its joins make slots: HELLO / BYE (an old build's)
             // and anything from a player the room has not announced (or who left) are dropped
@@ -712,7 +741,10 @@ static void net_recv_all(uint64_t now) {
                 NET.me = net_roll_free(player);
                 LOG("[net] player id clash with %s: now %u\n", NET.slot[mk].p.name[0] ? NET.slot[mk].p.name : "the peer", NET.me);
             }
-        } else if (player == NET.me && (type == NET_EDMG || type == NET_ESYNC || type == NET_FIRE || type == NET_AREA || type == NET_REACT || type == NET_KILLS || type == NET_WARP || type == NET_DUEL)) { NET.st.echo++; continue; }  // (s166: its seq is a different counter than the SNAP seq below)
+        } else if (player == NET.me && (type == NET_SHOTS || type == NET_RUNES)) { NET.st.echo++; continue;  // (s289 shots: their seqs are their own counters, as below)
+        } else if (player == NET.me && type == NET_LOOT) { NET.st.echo++; continue;  // (s289 loot: its own seq counter, as below)
+        } else if (player == NET.me && type == NET_WORLD) { NET.st.echo++; continue;  // (s290 networld: its own seq counter, as below)
+        } else if (player == NET.me && (type == NET_EDMG || type == NET_ESYNC || type == NET_FIRE || type == NET_AREA || type == NET_REACT || type == NET_KILLS || type == NET_WARP || type == NET_DUEL || type == NET_GEAR)) { NET.st.echo++; continue; }  // (s166: its seq is a different counter than the SNAP seq below)
         else if (player == NET.me) {
             // our own broadcast coming back (seq one we just used), or a peer that rolled our id: we re-roll
             if ((uint16_t)(NET.seq - seq) < 256) {
@@ -745,8 +777,12 @@ static void net_recv_all(uint64_t now) {
                 k = own;
             }
         }
+        if (k < 0 && (type == NET_OBJS || type == NET_OBJEV)) continue;  // (s289 objs: from nobody we know)
+        if (k < 0 && type == NET_LOOT) continue;  // (s289 loot: from nobody we know)
+        if (k < 0 && type == NET_WORLD) continue;  // (s290 networld: from nobody we know)
         if (k < 0) {
-            if (type == NET_BYE || type == NET_EDMG || type == NET_ESYNC || type == NET_FIRE || type == NET_AREA || type == NET_REACT || type == NET_KILLS || type == NET_WARP || type == NET_DUEL) continue;  // (a stranger leaving / a hit from nobody we know)
+            if (type == NET_SHOTS || type == NET_RUNES) continue;  // (s289 shots: a stranger's shots)
+            if (type == NET_BYE || type == NET_EDMG || type == NET_ESYNC || type == NET_FIRE || type == NET_AREA || type == NET_REACT || type == NET_KILLS || type == NET_WARP || type == NET_DUEL || type == NET_GEAR) continue;  // (a stranger leaving / a hit from nobody we know)
             k = net_slot_join(ip, port, player, name, type, now);
             if (k < 0) { NET.st.other++; continue; }
         } else if (NET.slot[k].ip == ip && NET.slot[k].port != port) {
@@ -770,13 +806,24 @@ static void net_recv_all(uint64_t now) {
             net_take_snap_events(k, &s, now);
             if (cur) net_take_snap_moves(k, &s, now);  // (a stale SNAP's places are older than the track's)
         } else if (type == NET_EDMG) {
+            net_loot_edmg_peek(buf, n, now);  // (s289 loot: a friend's kills by HashId, read only, before the replay drops loot here)
             net_edmg_recv(k, buf, n, now);
+        } else if (type == NET_LOOT) {
+            net_loot_recv(k, buf, n, now);  // (s289 loot)
+        } else if (type == NET_WORLD) {
+            net_world_recv(k, buf, n, now);  // (s290 networld)
         } else if (type == NET_FIRE) {
             net_fire_recv(k, buf, n);
         } else if (type == NET_ESYNC) {
             net_esync_recv(k, buf, n);
         } else if (type == NET_AREA) {
             net_area_recv(k, buf, n, now);  // (s191)
+        } else if (type == NET_GEAR) {
+            net_gear_recv(k, buf, n, now);  // (s289 netgear)
+        } else if (type == NET_SHOTS || type == NET_RUNES) {
+            net_shots_recv(k, type, buf, n, now);  // (s289 shots)
+        } else if (type == NET_OBJS || type == NET_OBJEV) {
+            net_objs_recv(k, type, buf, n, now);  // (s289 objs)
         } else if (type == NET_REACT) {
             net_react_recv(k, buf, n, now);  // (s194)
         } else if (type == NET_KILLS) {
@@ -850,6 +897,8 @@ static void net_tick(const float link_pos[3], uint64_t now) {
     bool loading = !link_pos || NET.loading;
     if (link_pos) NET.feet[0] = link_pos[0], NET.feet[1] = link_pos[1], NET.feet[2] = link_pos[2], NET.have_feet = true;
     net_area_tick(now);  // (s191: our map out when due, who is hidden; before the receive, so this frame's FIRE is judged by it)
+    net_gear_tick(now);  // (s289 netgear: our BotW weapon out on a change / join / slow refresh; nothing with netgear 0)
+    net_shots_tick(now);  // (s289 shots: our shots / runes out when due; nothing with netshots 0 / netrunes 0)
     net_recv_all(now);
     int live = 0;
     for (int k = 0; k < NET_MAX_PEERS; k++) {
@@ -882,6 +931,8 @@ static void net_tick(const float link_pos[3], uint64_t now) {
     net_edmg_pump(now);  // (s166 v6: shared enemy HP out; every tick, also while loading)
     net_react_pump(now);  // (s194: hit reactions on enemies another game owns)
     net_kills_tick(loading ? NULL : link_pos, now);  // (s196 killsync: Blood Moon clear, asks / answers, the apply scan on driven frames)
+    net_loot_tick(loading ? NULL : link_pos, now);  // (s289 loot: one look every 150 ms on driven frames; key 0 = nothing)
+    net_world_tick(loading ? NULL : link_pos, now);  // (s290 networld: a look at our flags every 2 s on driven frames, the union; key 0 = nothing)
     g_esa.log = g_net_esynclog;
     esa_tick(&g_esa);  // (s175: re-apply `set esyncatk 2` after a hot reload)
     esp_tick(now);     // (s176 R2 diag lines; s178 club ON / OFF sync hooks + counters)
@@ -905,8 +956,15 @@ static void net_frame(const float link_pos[3], uint64_t now) {
     }
     if (NET.parked) NET.parked = false, net_set_on(true);  // (mp2: Sora is back on)
     if (NET.melty) net_melty_pump(now);  // (s187: the room first: its joins / leaves, then net_tick receives and sends)
+    float np_feet[3];  // (s289 nopause: the world runs behind our menu: the net ticks with Link's body as in play, noauto holds)
+    bool np = np_frame(now, np_feet) && !NET.driven;  // (every frame: it sees the menu go; a driven frame has no menu)
     if (NET.driven) net_tick(link_pos, now);
+    else if (np) net_tick(np_feet, now);
     else net_tick_idle(now);
+    net_noauto_frame((NET.driven || np) && !NET.loading, np ? np_feet : link_pos, now);  // (s289 noauto: after this frame's joins / leaves; key 0 = nothing read or written)
+    // (s289 objs: bump + map objects; both keys 0 = nothing read, sent or moved. s289 nopause: also while the world runs behind our menu, as in play)
+    net_objs_frame((NET.driven || np) && !NET.loading, np ? np_feet : link_pos, now);
+    net_flip_frame();  // (s290 flip: one line, the first frame a Melty room is up: the default-ON room keys + their exe checks)
     NET.driven = false;
     net_clock_frame();  // (s191: the room's story, then the room clock)
 }
@@ -991,12 +1049,17 @@ static void net_diag_log(void) {
         g_net_skate ? "on" : "OFF (set netskate 1)");
     net_edmg_diag();
     net_area_diag();
+    net_gear_diag();  // (s289)
+    net_shots_diag();  // (s289 shots)
     net_warp_diag();  // (s269)
     net_duel_diag();  // (s272)
     net_fire_diag();
     net_esync_diag();
     net_react_diag();  // (s194)
     net_kills_diag();  // (s196)
+    net_noauto_diag();  // (s289)
+    net_loot_diag();  // (s289 loot)
+    net_world_diag();  // (s290 networld)
     avatar_diag();
     net_party_diag();
 }
@@ -1004,8 +1067,16 @@ static void net_diag_log(void) {
 // live "set <key> <int>": true = a net key
 static bool net_live_set(const char *key, int v) {
     if (!strcmp(key, "net")) { net_init_from_env(); NET.parked = false; net_set_on(v != 0); if (v && !NET.on) LOG(net_solo() ? "[net] still off (solo build)\n" : "[net] still off (socket)\n"); }
+    else if (net_gear_live_set(key, v)) {}  // (s289: netgear / netgearlog / netgearmax)
+    else if (net_shots_live_set(key, v)) {}  // (s289 shots: netshots / netshotslog / netshotstrace / netshotsmax / netshotsboom / netrunes)
     else if (ck_live_set(key, v)) {}  // (s191: mclock)
     else if (net_kills_live_set(key, v)) {}  // (s196: killsync / killsclear / killslog)
+    else if (net_noauto_live_set(key, v)) {}  // (s289: roomnoauto / noautolog)
+    else if (nm_live_set(key, v)) {}  // (s290 labfix: netmoverelev, sora_net_movers.h)
+    else if (net_objs_live_set(key, v)) {}  // (s289 objs: netbump / netbumplog / netobjs / netobjslog / netobjsdiag)
+    else if (net_loot_live_set(key, v)) {}  // (s289 loot: netloot / netlootlog)
+    else if (net_world_live_set(key, v)) {}  // (s290 networld: networld / networldlog / networldfam)
+    else if (np_live_set(key, v)) {}  // (s289 nopause: netnopause / netnopauselog / netnopausedmg / netnopausestep)
     else if (!strcmp(key, "mclockfake")) ck_fake((float)v);  // (s191: whole hours; sora.c reads "set mclockfake 21.5" as a float first)
     else if (!strcmp(key, "netloop")) {
         if (g_net_loop == (v != 0)) return true;  // (a live rewrite re-applies every line: only a change resets the peers)

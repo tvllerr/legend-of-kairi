@@ -260,9 +260,21 @@ static const WpnArm *wpn_arm(const WpnDef *d) {
     if (d) for (int i = 0; i < 3; i++) if (!strcmp(d->actor, g_warm[i].actor)) return &g_warm[i];
     return NULL;
 }
-static int wpn_gz(const WpnDef *d) {  // cm: the model origin past the grip, for this weapon (arms: 0, the grip point does it)
+static int wpn_gz_rx(const WpnDef *d, bool rx) {  // cm: the model origin past the grip, for this weapon (arms: 0, the grip point does it); rx = Roxas' body
     if (wpn_arm(d)) return 0;
-    return g_wgz[d && d->type < 3 ? d->type : 0] + (IN_ROXAS ? g_wgz_rox : 0);
+    return g_wgz[d && d->type < 3 ? d->type : 0] + (rx ? g_wgz_rox : 0);
+}
+static int wpn_gz(const WpnDef *d) { return wpn_gz_rx(d, IN_ROXAS); }
+// the exe's hand offsets off[8] (linkpos_weapon_hand2) for weapon d in Sora's (rx: Roxas') hand: back m, roll / pitch / yaw deg,
+// scale, grip point m. (s289 netgear) Also what a friend's puppet uses for his weapon (sora_net_gear_draw.h, rx = his body).
+static void wpn_hand_off(const WpnDef *d, bool rx, float off[8]) {
+    const WpnArm *a = wpn_arm(d);
+    off[0] = d ? -(float)wpn_gz_rx(d, rx) / 100.0f : 0;  // (minus: the exe puts the origin at grip - Z*off; we want grip + Z*wgz, hands on the handle)
+    off[1] = (float)(g_wroll + (rx ? g_wroll_rox : 0) + (a ? g_wroll_arm : 0));
+    off[2] = (float)(g_wpitch + (rx ? g_wpitch_rox : 0) + (a ? g_wpitch_arm : 0));
+    off[3] = (float)(g_wyaw + (rx ? g_wyaw_rox : 0) + (a ? g_wyaw_arm : 0));
+    off[4] = a ? (float)a->s_pct / 100.0f : 1.0f;
+    off[5] = a ? (float)a->gx_cm / 100.0f : 0, off[6] = a ? a->gy : 0, off[7] = a ? a->gz : 0;
 }
 // grip -> tip (m = u). (s128 review) a few table rows have tiny zmax (glowing / elemental blades not in the mesh size,
 // Ancient Battle Axe 0.01, Guardian Sword 0.116) or look modelled backwards (tridents Spear_049/050: zmin -2.03): use the
@@ -294,6 +306,7 @@ static volatile int g_wpn_bow_hide;
 // Only the drawing changes. SAVAGEWIND_SORA_WPN_SHEATHE=0 / live "set wpnsheathe 0" = always in his hand. Default 1.
 static int g_wpnsheathe = 0;  /* (s288: stays OFF: the user wants his BotW weapon in Sora's hand outside combat too) */
 static volatile int g_wpn_field_hide;
+static bool g_wpn_hand;  // (s289 netgear) this frame's "in his hand" as wpn_tick told the exe (an exe without the hand exports: false)
 static void wpn_tick(bool drawn) {
     static int tried;
     if (!tried) {
@@ -320,13 +333,12 @@ static void wpn_tick(bool drawn) {
     g_wpn_cur = on ? c : (WpnCur){0};
     if (on && g_wpn_name_fn) g_wpn_name_fn(c.def->actor);
     if (g_wpn_lead_fn) g_wpn_lead_fn(g_wlead);
+    g_wpn_hand = false;
     if (g_wpn_hand_fn || g_wpn_hand2_fn) {
-        const WpnArm *a = wpn_arm(c.def);
-        const int rx = IN_ROXAS;
-        float off[8] = {c.def ? -(float)wpn_gz(c.def) / 100.0f : 0,  // (minus: the exe puts the origin at grip - Z*off; we want grip + Z*wgz, hands on the handle)
-                        (float)(g_wroll + (rx ? g_wroll_rox : 0) + (a ? g_wroll_arm : 0)), (float)(g_wpitch + (rx ? g_wpitch_rox : 0) + (a ? g_wpitch_arm : 0)), (float)(g_wyaw + (rx ? g_wyaw_rox : 0) + (a ? g_wyaw_arm : 0)),
-                        a ? (float)a->s_pct / 100.0f : 1.0f, a ? (float)a->gx_cm / 100.0f : 0, a ? a->gy : 0, a ? a->gz : 0};
+        float off[8];
+        wpn_hand_off(c.def, IN_ROXAS, off);
         bool hand = on && !g_wpn_fake && !g_wpn_bow_hide && !g_wpn_field_hide;  // (wpnsheathe: put away with the Keyblade)
+        g_wpn_hand = hand;
         if (g_wpn_hand2_fn) g_wpn_hand2_fn(hand, off);
         else g_wpn_hand_fn(hand, off);
     }

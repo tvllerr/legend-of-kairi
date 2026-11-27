@@ -52,7 +52,10 @@ static int g_sk_stay = 0;     // live "set slatestay 1": no natural end (only sl
 // PS5 Cross; the press also reaches Link, so BotW puts the rune away), the timeout, a death or a load. "set slateb 0" = old end rule.
 static int g_sk_bend = 1;
 static int g_sk_rec = 0;      // live "set slaterec <n>": 1 = R1 flags (now + each load), 2 = + state word log, 3 = + the actor diff probe (R2)
-static struct { bool on; uint64_t t0; uint32_t sw0, last_sw; int stand, rune; bool moved; bool wait; int want; } SK;
+// (s291 bombrock) live "set slateeata 1" (default 0 = as before): the A that picked the rune is kept from BotW until it is let go
+// (runtime/sora_slate_a.h; s291 lab: next to a liftable rock that held A lifted the rock before the L tap pulled out the bomb)
+static int g_sk_eat_a = 1;  // (default ON since s292: lab s291e PASS + the user: "works")
+static struct { bool on; uint64_t t0; uint32_t sw0, last_sw; int stand, rune; bool moved; bool wait; int want; bool eat_a, kept; uint64_t keep_to; } SK;
 // (s99 b14-runes) live "set slaterune 1": Slate mode first chooses the row's rune in BotW (exe export linkpos_rune_select, NEEDS EXE RELINK),
 // then taps L once the game has applied it. 0 (default) = as before: BotW's own selected rune is used.
 static int g_sk_rune = 1;  // (s183: default ON, verified s100c)
@@ -149,7 +152,22 @@ static void sk_hud(SoraHudMenu *m) {
 static void sk_end(const char *why, uint64_t present) {
     LOG("[slate] Slate mode off (%s) after %llu presents, state %#x\n", why, (unsigned long long)(present - SK.t0), linkpos_link_state_word());
     SK.on = false, SK.wait = false, g_slate_mode = 0, g_slate_l_until = 0;
+    g_slate_eat_a = 0, SK.eat_a = false;  // (s291 bombrock)
     S.fresh = true;  // (the press that ended it is not an attack)
+}
+
+// (s291 bombrock) live "set slatekeep 1" (default 0 = as before): the timeout (slatemax) waits while Link still holds a Remote Bomb
+// overhead. s290 lab (copy2_s290a.log): a fresh bomb "picked up" at line 109728, then "Slate mode off (timeout) after 3600 presents"
+// with it still overhead: the pad went back to Sora (L / d-pad = KH2's menu, R = the Keyblade's), so R / L did nothing until B.
+// Link +0x88 = the held object (VERIFIED in the logs: the bomb's address while overhead, 0 at the throw).
+static const char *carry_actor_name(uint64_t h);  // (sora_carry.h)
+static int g_sk_keep = 1;  // (default ON since s292: lab s291e PASS + the user: "works")
+#define SK_KEEP_GRACE 600  // presents (10 s) after the held bomb leaves his hands: L can still set it off (GUESS: long enough)
+static bool sk_holds_bomb(void) {
+    uint64_t a = link_actor();
+    uint64_t h = a && rd_ok(a + 0x88, 8) ? *(const uint64_t *)(uintptr_t)(a + 0x88) : 0;
+    const char *n = h ? carry_actor_name(h) : NULL;
+    return n && (!strncmp(n, "RemoteBomb", 10) || !strncmp(n, "Obj_RemoteBomb", 14));
 }
 
 // the command: enter Slate mode (Sora idle on the ground, not in a Drive Form / Limit)
@@ -161,6 +179,7 @@ static void sk_request(int i, int st, uint64_t present) {
     memset(&SK, 0, sizeof SK);
     SK.on = true, SK.t0 = present, SK.rune = i, SK.sw0 = SK.last_sw = linkpos_link_state_word();
     g_slate_mode = 1, g_slate_seen = present;
+    if (g_sk_eat_a) g_slate_eat_a = 1, SK.eat_a = true;  // (s291 bombrock: pad_tap keeps this A from BotW until it is up)
     // L pulse 3 presents later (Link has the pad from the next tick on), held 2 presents
     g_slate_l_from = present + 3, g_slate_l_until = g_sk_pulse ? present + 5 : 0;
     if (g_sk_rune) {  // (s99) choose the rune in BotW first; the L tap waits until the game has applied it (sk_tick)
@@ -200,10 +219,19 @@ static int sk_tick(uint64_t present, int st, uint32_t sw) {
                 (unsigned long long)age, rq, cu, fl);
         }
     }
+    if (SK.eat_a && !g_slate_eat_a) {  // (s291 bombrock) pad_tap saw the A up: BotW gets A again
+        SK.eat_a = false;
+        if (g_sk_rec) LOG("[slate] slateeata: the rune pick's A was kept from BotW until let go (up by t+%llu)\n", (unsigned long long)age);
+    }
     SK.stand = st == LINK_GROUND ? SK.stand + 1 : 0;
+    if (g_sk_keep && age >= (uint64_t)g_sk_max && sk_holds_bomb()) {  // (s291 slatekeep) held past the timeout: wait, + a grace to throw / set it off
+        SK.keep_to = age + SK_KEEP_GRACE;
+        if (!SK.kept && g_sk_rec) LOG("[slate] slatekeep: timeout reached with a Remote Bomb held: Slate mode stays until %d presents after it leaves his hands (or B)\n", SK_KEEP_GRACE);
+        SK.kept = true;
+    }
     if (g_loading) sk_end("load", present);
     else if (linkpos_link_life() <= 0) sk_end("died", present);
-    else if (age >= (uint64_t)g_sk_max) sk_end("timeout", present);
+    else if (age >= (uint64_t)g_sk_max && age >= SK.keep_to) sk_end("timeout", present);  // (keep_to 0 unless slatekeep 1)
     else if (g_sk_bend && !g_sk_stay) {  // (s100) B ends it (edge, after the first 10 presents so the menu's own press doesn't count)
         static uint64_t prevb;
         uint64_t b = g_held & BTN_JUMP;
@@ -273,6 +301,13 @@ static bool sk_live_set(const char *key, int v) {
         g_sk_rune = v != 0;
         if (g_sk_rune) sk_rune_bind();
         LOG("[slate] slaterune %d: Slate mode %s\n", g_sk_rune, g_sk_rune ? "chooses the row's rune in BotW first (needs the relinked exe)" : "uses BotW's selected rune");
+    } else if (!strcmp(key, "slateeata")) {
+        g_sk_eat_a = v != 0;
+        if (!g_sk_eat_a) g_slate_eat_a = 0, SK.eat_a = false;
+        LOG("[slate] slateeata %d: the A that picks a rune %s\n", g_sk_eat_a, g_sk_eat_a ? "is kept from BotW until let go (no lift / grab next to a rock)" : "reaches BotW (as before)");
+    } else if (!strcmp(key, "slatekeep")) {
+        g_sk_keep = v != 0;
+        LOG("[slate] slatekeep %d: the Slate mode timeout %s\n", g_sk_keep, g_sk_keep ? "waits while Link holds a Remote Bomb overhead" : "ends it even with a bomb held (as before)");
     } else if (!strcmp(key, "slateforce")) g_sk_force = v != 0;
     else if (!strcmp(key, "slatepulse")) g_sk_pulse = v != 0;
     else if (!strcmp(key, "slatehold")) g_sk_hold = v < 0 ? 0 : v;

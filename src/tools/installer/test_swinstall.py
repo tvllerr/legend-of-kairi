@@ -252,13 +252,65 @@ def t_mkzip_guard(d):
     assert "no import from savagewind.exe" in mkzip.dll_misses("e", "d", dump=lambda p: exe_txt)[0]
 
 
+def t_mkzip_kit(d):
+    """(s291, the s291 review's finding 1) mkzip packs nothing with a kit whose tools were built from other sources: the SAME
+    sb.kit_stale rule sb.kit_tool applies at cs_build on the player's PC (one rule, not a second hash)"""
+    import subprocess
+    import mkzip
+    sb = mkzip.sb
+    kit = os.path.join(d, "kit")
+    os.makedirs(kit)
+
+    def put(kj):
+        with open(os.path.join(kit, "kit.json"), "w", encoding="utf-8") as f:
+            f.write(kj if isinstance(kj, str) else json.dumps(kj))
+    good = {"src": {t: sb.src_hash(t) for t in sb.KIT_SRC}, "files": {}}
+    put(good)
+    assert mkzip.kit_mismatch(kit) == [], mkzip.kit_mismatch(kit)
+    # one tool built from old sources (the 0.2.3 kit: sorabake before PR #64's Program.cs), one tool the kit never had (kh2mot)
+    old = dict(good, src=dict(good["src"], sorabake="0" * 64))
+    del old["src"]["kh2mot"]
+    put(old)
+    bad = mkzip.kit_mismatch(kit)
+    assert len(bad) == 2 and "sorabake" in bad[0] and "000000000000" in bad[0] and "kh2mot" in bad[1] and "none" in bad[1], bad
+    assert bad == ["kit tool %s was built from other sources (kit %s, tree %s)" % (t, (old["src"].get(t) or "none")[:12],
+                                                                                    sb.src_hash(t)[:12]) for t in ("sorabake", "kh2mot")]
+    # the player's side says the same tools are stale (kit_tool would stop at cs_build / kh2mot)
+    assert sb.kit_stale(old) == ["sorabake", "kh2mot"] and sb.kit_stale(good) == []
+    # no src at all, a src that is not a dict, broken JSON, no kit.json
+    put({"files": {}})
+    assert len(mkzip.kit_mismatch(kit)) == len(sb.KIT_SRC)
+    put({"src": ["x"]})
+    assert len(mkzip.kit_mismatch(kit)) == len(sb.KIT_SRC)
+    put("{not json")
+    assert "cannot be read" in mkzip.kit_mismatch(kit)[0]
+    os.remove(os.path.join(kit, "kit.json"))
+    assert "cannot be read" in mkzip.kit_mismatch(kit)[0]
+    # end to end: mkzip itself refuses before it writes anything (out stays absent)
+    put(old)
+    exe, dll = os.path.join(d, "e.exe"), os.path.join(d, "d.dll")
+    for p in (exe, dll):
+        open(p, "wb").write(b"MZ")
+    out = os.path.join(d, "out")
+    r = subprocess.run([sys.executable, "-E", "-P", os.path.join(os.path.dirname(os.path.abspath(__file__)), "mkzip.py"),
+                        "--kit", kit, "--out", out, "--exe", exe, "--dll", dll, "--src-commit", "t", "--track", "github",
+                        "--allow-dirty"], capture_output=True, text=True)
+    assert r.returncode != 0 and "does not fit this tree, nothing was packed" in r.stderr and "sorabake" in r.stderr, r.stderr
+    assert not os.path.exists(out), "mkzip wrote %s" % out
+    put(good)   # a matching kit gets past the guard (then stops at the next check: the fake exe)
+    r = subprocess.run([sys.executable, "-E", "-P", os.path.join(os.path.dirname(os.path.abspath(__file__)), "mkzip.py"),
+                        "--kit", kit, "--out", out, "--exe", exe, "--dll", dll, "--src-commit", "t", "--track", "github",
+                        "--allow-dirty", "--runtime-dlls", d], capture_output=True, text=True)
+    assert r.returncode != 0 and "does not fit this tree" not in r.stderr and "version mismatch" in r.stderr, r.stderr
+
+
 def main():
     with tempfile.TemporaryDirectory(dir=TMP) as d:
-        for t in (t_check_sw, t_phase_first, t_disk, t_work_tag, t_gameside, t_mkzip_guard):
+        for t in (t_check_sw, t_phase_first, t_disk, t_work_tag, t_gameside, t_mkzip_guard, t_mkzip_kit):
             sub = os.path.join(d, t.__name__)
             os.makedirs(sub)
             t(sub)
-    print("ok (6 groups)")
+    print("ok (7 groups)")
 
 
 main()

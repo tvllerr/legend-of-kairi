@@ -50,9 +50,11 @@ static const char *const DU_PH_NAME[DU_NPH] = {"idle", "asking", "asked", "count
 enum { DU_ROLE_NONE = 0, DU_ROLE_ASKER, DU_ROLE_FRIEND };
 enum { DUR_NONE = 0, DUR_WIN, DUR_LOSE, DUR_DRAW, DUR_CANCEL, DUR_N };
 static const char *const DUR_NAME[DUR_N] = {"none", "win", "lose", "draw", "cancel"};
-enum { DUE_NONE = 0, DUE_KO, DUE_FORFEIT, DUE_LEFT, DUE_ENEMY, DUE_TIME, DUE_GONE, DUE_CANCEL, DUE_N };
+// (s289: DUE_GAVEUP = the menu's Forfeit / the live "duel end" line in a fight; DUE_FORFEIT stays the ring-out. New reasons go at the
+//  END: the wire sends the number, and an older build turns a number >= its DUE_N into DUE_CANCEL, sora_duel.h s273 H1)
+enum { DUE_NONE = 0, DUE_KO, DUE_FORFEIT, DUE_LEFT, DUE_ENEMY, DUE_TIME, DUE_GONE, DUE_CANCEL, DUE_GAVEUP, DUE_N };
 static const char *const DUE_NAME[DUE_N] = {"none", "KO (dropped to 1 HP)", "left the ring", "left (a load / another map / Sora mode off)",
-                                            "an enemy came near", "time limit", "the other game left the duel", "cancelled"};
+                                            "an enemy came near", "time limit", "the other game left the duel", "cancelled", "forfeit (gave up)"};
 enum { DUA_ACCEPT = 1, DUA_DECLINE, DUA_BUSY };  // (DUA_DECLINE = his 10 s ran out or he walked off; BUSY + a DUG_* why)
 
 // ---- the gate: may this game ask / be asked / accept now ----
@@ -95,6 +97,26 @@ static inline int du_gate(const DuGateIn *g, bool strict) {
 }
 // an enemy name that counts for "combat": Enemy_* only (BotW's animals, Animal_*, are in the same list: they do not count)
 static inline bool du_enemy_name(const char *nm) { return nm && !strncmp(nm, "Enemy_", 6); }
+// (s290 duelhorse, user: "make the duel prompt not take over X near horses") a horse one can mount: wild Animal_Horse_* (and
+// the other Animal_Horse kinds), a registered GameRomHorse* (not its saddle / reins), the Master Cycle
+#define DU_HORSE_M 5.0f        // no "Duel" prompt while a horse is this close (GUESS: BotW's Mount prompt is ~2 m; 5 m covers a walk up)
+static inline bool du_horse_name(const char *nm) {
+    if (nm && !strncmp(nm, "OnlineHorse_", 12)) nm += 12;  // (s291 duelride: a friend's horse puppet, nethorse's, by the horse it stands for)
+    return nm && (!strncmp(nm, "Animal_Horse", 12) || (!strncmp(nm, "GameRomHorse", 12) && !strstr(nm, "Saddle") && !strstr(nm, "Reins")) ||
+                  !strcmp(nm, "GameROMMotorcycle"));
+}
+// (s291 duelride, s291 lab: copy2 got "Duel" toward pc riding 0.9 m away; the stall horses were the only horses duelhorse saw)
+// why the "Duel" prompt is not offered now: DURB_NONE it may be; DURB_WE_RIDE our Link rides; DURB_PUPPET a friend's horse puppet
+// (nethorse) within the duelhorse distance (puppet_m < 0 = none shown; horse_m <= 0 = duelhorse 0: puppets do not count).
+// duelride 0 = as before (DURB_NONE). A friend who rides is skipped by du_ride_skip (his record fresh = nh_rides).
+enum { DURB_NONE, DURB_WE_RIDE, DURB_PUPPET };
+static inline int du_ride_block(int duelride, bool we_ride, float puppet_m, float horse_m) {
+    if (!duelride) return DURB_NONE;
+    if (we_ride) return DURB_WE_RIDE;
+    if (horse_m > 0 && puppet_m >= 0 && puppet_m <= horse_m) return DURB_PUPPET;
+    return DURB_NONE;
+}
+static inline bool du_ride_skip(int duelride, bool he_rides) { return duelride && he_rides; }
 // BotW's enemy target record state (enemy+0xcc4, recon S55: 0 none, 2 seen, 1/4 lost with the timer running, 3/5 special):
 // 2 and 4 = it is after Link (the same two states linkpos.c's redirect works on). GUESS: valid for every Enemy_*.
 static inline bool du_chasing_state(int32_t st) { return st == 2 || st == 4; }
@@ -275,12 +297,49 @@ static inline int du_sm_step(DuSm *m, uint64_t now) {
     }
     return DUS_NONE;
 }
+// ---- (s289, the user's pick on recon/s289/S289_HELPER_COOPCHECK.md 3c) the Debug Menu's God Mode in a duel ----
+// God Mode refills the life every frame (sora_dbgmenu.h dbm_god_tick_), so a duel hit (du_take_hit writes the life down) was put
+// back at once and a God player only lost to one hit bigger than his whole life. Live "set duelgod 1" (default 1 since s290; 0 = as before):
+// while this game's duel is live (du_sm_live: the countdown, the fight, and the time-up judge, whose HP % must be the real one)
+// the refill waits; it is back by itself once the duel is over (forfeit, time, END, a load, Sora mode off, duel 0: at once; a KO:
+// after the KO hold, sora_duel.h DU_KO_HOLD_MS, the loser's 2 s at 1 HP that ends with the duel's own full heal, so a God player's
+// KO looks like anyone's). The God Mode row stays as the player set it (nothing changes in it, nothing is saved differently). The
+// exe's hit drop stays on: duel hits are written into the life (du_life_set), not dealt through BotW's addDamage, so they count.
+// key = duelgod, live = du_sm_live (sora_net_duel.h DUS.live), ko_hold = this game's KO hold runs (DUS.ko_hold). -> the refill waits
+static inline bool du_god_waits(bool key, bool live, bool ko_hold) { return key && (live || ko_hold); }
+// the pause's log edge, once a God Mode frame: *paused (false at start) follows wait. -> +1 = it pauses now, -1 = it is back now,
+// 0 = no change
+static inline int du_god_edge(bool *paused, bool wait) {
+    if (wait == *paused) return 0;
+    *paused = wait;
+    return wait ? 1 : -1;
+}
+
 // his game's NF_DUEL: true = he is gone (no flag for DU_PEER_MS, after the grace from the countdown's start)
 static inline bool du_peer_gone(uint64_t count0, uint64_t last_flag_ms, uint64_t now) {
     if (!count0 || now < count0 + DU_PEER_GRACE_MS) return false;
     if (last_flag_ms <= count0) return true;  // (never seen since the accept, the grace is over)
     return now >= last_flag_ms + DU_PEER_MS;
 }
+
+// ---- (s289) a HIT's src (the wire's u8, sora_net_proto.h): 0 blade, 1 Fire, 2 Blizzard, 3 Thunder, 4 Keyblade throw, 6 Magnet,
+// 7 Reflect. Src numbers are reserved: 4 = Keyblade throw, 5 = BotW weapon throw, 6 = Magnet, 7 = Reflect (recon/s289/S289_HELPER_DUELPLAN.md).
+// Any src is damage (net_unpack_duel does not check it); a game without its name logs "another attack" (an older build: "Thunder").
+enum { DU_SRC_BLADE = 0, DU_SRC_FIRE, DU_SRC_BLIZZARD, DU_SRC_THUNDER, DU_SRC_KBTHROW, DU_SRC_MAGNET = 6, DU_SRC_REFLECT = 7 };
+static inline const char *du_src_name(int src) {
+    switch (src) {
+    case DU_SRC_BLADE: return "blade";
+    case DU_SRC_FIRE: return "Fire";
+    case DU_SRC_BLIZZARD: return "Blizzard";
+    case DU_SRC_THUNDER: return "Thunder";
+    case DU_SRC_KBTHROW: return "Keyblade throw";
+    case DU_SRC_MAGNET: return "Magnet";    // (s289 duelmagnet: the pull's one hit, sora_duel_magnet.h)
+    case DU_SRC_REFLECT: return "Reflect";  // (s289 duelreflect: Reflect's burst, sora_duel_reflect.h)
+    default: return "another attack";
+    }
+}
+// the attacker's log word: "blade" / "spell" (Fire, Blizzard, Thunder) as before s289, the name for every other src
+static inline const char *du_src_kind(int src) { return src >= DU_SRC_FIRE && src <= DU_SRC_THUNDER ? "spell" : du_src_name(src); }
 
 // ---- the victim's hit de-dupe (UDP copies, a resend) ----
 typedef struct { uint16_t s[32]; int n, i; } DuSeen;
@@ -305,6 +364,30 @@ typedef struct { bool on; float feet[3]; int life, max; uint64_t next_hit; uint1
 static inline bool du_body_near(const float feet[3], const float p[3], float r, float lo, float hi) {
     float dx = p[0] - feet[0], dz = p[2] - feet[2], dy = p[1] - feet[1];
     return dx * dx + dz * dz <= r * r && dy >= lo && dy <= hi;
+}
+// ---- (s289 kbthrow) the thrown Keyblade (sora_kbthrow.h's base-form throw, flown by sora_limit.h lm_frame) against the opponent:
+// lm_frame's enemy test as it is: his drawn feet within a flat r of the blade (the 160 cm the Raid uses on enemies; projectiles_kh2
+// attack_set_radius is a GUESS source, see sora_limit.h; live duelthrowr) and the blade -50..220 cm above his feet. One hit on the
+// way out and one on the way back; a hit on the way out turns the blade back, as at an enemy target (lm_frame does the turn).
+// BotW units; to_u = 0.01 x g_k (KH cm -> units).
+#define DU_THROW_R_CM 160
+#define DU_THROW_DY_LO_CM (-50.0f)
+#define DU_THROW_DY_HI_CM 220.0f
+static inline bool du_throw_near(const float feet[3], const float blade[3], float r_cm, float to_u) {
+    return du_body_near(feet, blade, r_cm * to_u, DU_THROW_DY_LO_CM * to_u, DU_THROW_DY_HI_CM * to_u);
+}
+enum { DUT_NONE = 0, DUT_OUT, DUT_BACK };  // du_throw_step: no hit / a hit on the way out (the blade turns back) / on the way back
+// one frame of the flight (blade = where it is now; back = it flies home). *legs: bit 1 = the way out had its hit, bit 2 = the way back
+static inline int du_throw_step(uint8_t *legs, bool back, const float feet[3], const float blade[3], float r_cm, float to_u) {
+    uint8_t b = back ? 2 : 1;
+    if (!legs || (*legs & b) || !du_throw_near(feet, blade, r_cm, to_u)) return DUT_NONE;
+    *legs |= b;
+    return back ? DUT_BACK : DUT_OUT;
+}
+// the HIT's Power: KH2's 200 (atkp 1866, Strike Raid's "Raid") x kbthrowdmg % (50 -> 100), rounded as lm_hit does, at least 1
+static inline int du_throw_power(int power, int pct) {
+    int p = (power * pct + 50) / 100;
+    return p < 1 ? 1 : p;
 }
 // the asker's "Duel" prompt: Sora (at me, facing fw = {sin, cos}) looks at the friend within DU_FACE_DEG (GUESS), after standing
 // still DU_IDLE_MS (GUESS): Triangle is BotW's A too (talk / pick up), so walking past a friend does not eat it

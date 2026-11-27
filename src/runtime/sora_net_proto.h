@@ -26,19 +26,22 @@
 #define NET_ESYNC_EVMAX 6
 #define NET_PKT_MAX 768  // (v8: 512 -> 768 for the NF_BONES block;  slice 3: 256 -> 512; a full SNAP with both party members + a shield is 309)
 
-enum { NET_HELLO = 1, NET_SNAP = 2, NET_BYE = 3, NET_EDMG = 4, NET_ESYNC = 5, NET_FIRE = 6, NET_AREA = 7, NET_REACT = 8, NET_KILLS = 9, NET_WARP = 10, NET_DUEL = 11 };  // (s191: AREA, s194: REACT, s196: KILLS, s269: WARP, s272: DUEL, no NET_VERSION change: see the end of this file)
+enum { NET_HELLO = 1, NET_SNAP = 2, NET_BYE = 3, NET_EDMG = 4, NET_ESYNC = 5, NET_FIRE = 6, NET_AREA = 7, NET_REACT = 8, NET_KILLS = 9, NET_WARP = 10, NET_DUEL = 11, NET_GEAR = 12 };  // (s191: AREA, s194: REACT, s196: KILLS, s269: WARP, s272: DUEL, s289: GEAR, no NET_VERSION change: see the end of this file)
+enum { NET_LOOT = 13, NET_WORLD = 14 };  // (s289 loot: the room's loot list, layout at the end of this file; s290 networld: NET_WORLD = the room's world flags, `set networld`, layout after the NET_LOOT block; no NET_VERSION change)
+enum { NET_OBJS = 17, NET_OBJEV = 18 };  // (s289 objs: map objects that move / break the same for everyone, sora_net_objs.h; layouts at the end of this file, no NET_VERSION change)
 // (s269 warpcore, co-op item 4) NET_WARP sizes (the packet is at the end of this file; net_unpack_ex checks them)
 enum { NWO_ASK = 1, NWO_SPOT = 2, NWO_NOTE = 3 };
 #define NET_WARP_HEAD (NET_HDR + 6)        // 13: op, target player, u32 nonce (= ASK / NOTE)
 #define NET_WARP_SPOT_LEN (NET_WARP_HEAD + 33)  // 46: + flags, live xyz, live deg, save xyz, save deg
 // (s272 duel, co-op item 6) NET_DUEL sizes (the packet is at the end of this file; net_unpack_ex checks them)
-enum { NDO_ASK = 1, NDO_ANSWER = 2, NDO_HIT = 3, NDO_END = 4, NDO_TIME = 5, NDO_RING = 6 };
+enum { NDO_ASK = 1, NDO_ANSWER = 2, NDO_HIT = 3, NDO_END = 4, NDO_TIME = 5, NDO_RING = 6, NDO_PULL = 7 };
 #define NET_DUEL_HEAD (NET_HDR + 6)               // 13: op, target player, u32 duel id (= ASK)
 #define NET_DUEL_ANSWER_LEN (NET_DUEL_HEAD + 16)  // 29: + answer, why, centre xyz, radius cm
 #define NET_DUEL_HIT_LEN (NET_DUEL_HEAD + 38)     // 51: + hseq, power, stat, flags, src, boost, react, pad, from xyz, at xyz, atkp
 #define NET_DUEL_END_LEN (NET_DUEL_HEAD + 4)      // 17: + reason, result, hp permille
 #define NET_DUEL_TIME_LEN (NET_DUEL_HEAD + 2)     // 15: + hp permille
 #define NET_DUEL_RING_LEN (NET_DUEL_HEAD + 18)    // 31: + player a, player b, phase, pad, centre xyz, radius cm
+#define NET_DUEL_PULL_LEN (NET_DUEL_HEAD + 24)    // 37: (s289) + hseq, centre xyz, radius cm, hold cm, swirl, frames, tier, pad
 #define NET_REACT_ENT 24  // (s194, see the end of this file)
 #define NET_REACT_MAX 8
 #define NET_KILLS_CHUNK 106       // (s197) kills in one NET_KILLS part: 6 B each (u32 hid + u16 age), 17 + 636 = 653 <= the s196 657 (see the end of this file)
@@ -46,7 +49,7 @@ enum { NDO_ASK = 1, NDO_ANSWER = 2, NDO_HIT = 3, NDO_END = 4, NDO_TIME = 5, NDO_
 #define NET_KILLS_ENT 6           // (s197) one kill in a part: u32 hid, u16 age (s)
 #define NET_KILLS_ASK_LEN (NET_HDR + 17)   // 24 (s197: + u16 moon age)
 #define NET_KILLS_PART_HDR (NET_HDR + 10)  // 17
-enum { NF_WEAPON = 1, NF_AIR = 2, NF_GHOST = 4, NF_GUARD = 8, NF_DEAD = 16, NF_LOADING = 32, NF_BONEPOSE = 64, NF_BONES = 128, NF_SKATE = 256, NF_DUEL = 2048 };  // (s272 duel: NF_DUEL = he is in a duel (countdown / fight); no NET_VERSION change: an older game copies the flags raw and tests no bit above 256; 512 / 1024 are kept for the s267 revive plan)
+enum { NF_WEAPON = 1, NF_AIR = 2, NF_GHOST = 4, NF_GUARD = 8, NF_DEAD = 16, NF_LOADING = 32, NF_BONEPOSE = 64, NF_BONES = 128, NF_SKATE = 256, NF_DOWNED = 512, NF_REVIVING = 1024, NF_DUEL = 2048 };  // (s272 duel: NF_DUEL = he is in a duel (countdown / fight); no NET_VERSION change: an older game copies the flags raw and tests no bit above 256; s289 revive: NF_DOWNED = he is DOWNED (sora_revive.h, a friend standing by revives him); NF_REVIVING kept for a button revive (design R2), never sent)
 // (v9, s172) NF_SKATE = he rides a skateboard: the SNAP's slot / clock are the KH2 skate rider's board slot (151..170, SKB_SLOTS) and
 // its clock (60 Hz frames), body 7 = Roxas' rider, any other = Sora's; the receiver draws its own copy of the rider actor (rider + board).
 // Never together with NF_BONEPOSE (a puppet / ragdoll gets him off the board).
@@ -369,9 +372,41 @@ static inline bool net_area_chars(const char *s, int n) {  // letters, digits, '
     }
     return true;
 }
+// (s289 objs) NET_OBJS / NET_OBJEV sizes and their body check (used by net_unpack_ex; the packets are at the end of this file)
+#define NET_OBJS_N 12                                          // records in one NET_OBJS
+#define NET_OBJS_REC 58                                        // u8 kind, u8 flags, u32 h, then f32 m[12] + u32 extra (kind 1) or a pose + AS name (2, 3)
+#define NET_OBJS_PKT (NET_HDR + 1 + NET_OBJS_N * NET_OBJS_REC)  // 704
+#define NET_OBJEV_LEN (NET_HDR + 22)                           // 29
+_Static_assert(NET_OBJS_PKT == 704 && NET_OBJS_PKT <= NET_PKT_MAX, "s289 objs: a full NET_OBJS must fit NET_PKT_MAX");
+static inline bool net_objs_body_ok(int t, const uint8_t *p, int n) {
+    if (!p) return false;
+    if (t == NET_OBJEV) return n == NET_OBJEV_LEN - NET_HDR && (p[0] == 1 || p[0] == 2) && (p[1] == 1 || p[1] == 2);
+    return n >= 1 && p[0] >= 1 && p[0] <= NET_OBJS_N && n == 1 + p[0] * NET_OBJS_REC;
+}
+// (s289 netgear) NET_GEAR sizes and its body check (used by net_unpack_ex; the packet itself is right after NET_AREA's)
+#define NET_GEAR_N 4          // entries in one packet (0 = nothing equipped / in his hands)
+#define NET_GEAR_NAME_MAX 31  // an actor name ("Weapon_Sword_001"), net_area_chars' letters only
+// p / n = the bytes after the header: u8 count (<= NET_GEAR_N), then per entry u8 kind, u8 flags, u8 len (1..31), len letters;
+// nothing after the last entry
+static inline bool net_gear_body_ok(const uint8_t *p, int n) {
+    if (!p || n < 1 || p[0] > NET_GEAR_N) return false;
+    int at = 1;
+    for (int i = 0; i < p[0]; i++) {
+        if (at + 3 > n) return false;
+        int l = p[at + 2];
+        if (l < 1 || l > NET_GEAR_NAME_MAX || at + 3 + l > n || !net_area_chars((const char *)p + at + 3, l)) return false;
+        at += 3 + l;
+    }
+    return at == n;
+}
+// (s289 shots) NET_SHOTS / NET_RUNES (sora_net_shots.h): the types here for net_unpack_ex, the layouts at the END of this file
+enum { NET_SHOTS = 15, NET_RUNES = 16 };
+static inline bool net_shots_body_ok(int t, const uint8_t *p, int n);
 
 // false on bad magic/version/type/size; snap filled for NET_SNAP, name for NET_HELLO
 // (mp4) pa[NET_HELLO_PEERS] / *npa get a HELLO's peer list (entries with ip 0 or port 0 are dropped); NULL = not wanted
+static inline bool net_loot_body_ok(const uint8_t *p, int n);  // (s289 loot: NET_LOOT's op / counts / names / exact size, at the end of this file)
+static inline bool net_world_body_ok(const uint8_t *p, int n);  // (s290 networld: NET_WORLD's op / counts / pages / exact size, after the NET_LOOT block)
 static inline bool net_unpack_ex(const uint8_t *in, int len, int *type, uint8_t *player, uint16_t *seq, NetSnap *snap,
                                  char name[NET_NAME_MAX + 1], NetAddr *pa, int *npa) {
     if (npa) *npa = 0;
@@ -498,6 +533,12 @@ static inline bool net_unpack_ex(const uint8_t *in, int len, int *type, uint8_t 
         if (len < NET_HDR + 2 || len != NET_HDR + 2 + p[0] * NET_ESYNC_ENT + p[1] * NET_ESYNC_EV || p[0] > NET_ESYNC_MAX || p[1] > NET_ESYNC_EVMAX || !(p[0] + p[1])) return false;
     } else if (t == NET_AREA) {  // (s191) the text is read by net_unpack_area; here the exact size and the letters are checked
         if (len < NET_HDR + 1 || p[0] > NET_AREA_MAX || len != NET_HDR + 1 + p[0] || !net_area_chars((const char *)p + 1, p[0])) return false;
+    } else if (t == NET_GEAR) {  // (s289) the entries are read by net_unpack_gear; here the count, each name's letters and the exact size
+        if (!net_gear_body_ok(p, len - NET_HDR)) return false;
+    } else if (t == NET_SHOTS || t == NET_RUNES) {  // (s289 shots) read by net_unpack_shots / _runes; here counts, kinds, finite floats, exact size
+        if (!net_shots_body_ok(t, p, len - NET_HDR)) return false;
+    } else if (t == NET_OBJS || t == NET_OBJEV) {  // (s289 objs) read by net_unpack_objs / net_unpack_objev; here the count / op / kind and the exact size
+        if (!net_objs_body_ok(t, p, len - NET_HDR)) return false;
     } else if (t == NET_REACT) {  // (s194) the entries are read by net_unpack_react; here only the size is checked
         if (len < NET_HDR + NET_REACT_ENT || (len - NET_HDR) % NET_REACT_ENT || (len - NET_HDR) / NET_REACT_ENT > NET_REACT_MAX) return false;
     } else if (t == NET_KILLS) {  // (s196) the body is read by net_unpack_kills; here the op, the exact size and the part numbers are checked
@@ -512,8 +553,13 @@ static inline bool net_unpack_ex(const uint8_t *in, int len, int *type, uint8_t 
         else if (p[0] == NWO_SPOT) { if (len != NET_WARP_SPOT_LEN) return false; }
         else return false;
     } else if (t == NET_DUEL) {  // (s272) the body is read by net_unpack_duel; here the op and the exact size are checked
-        static const uint8_t DL[7] = {0, NET_DUEL_HEAD, NET_DUEL_ANSWER_LEN, NET_DUEL_HIT_LEN, NET_DUEL_END_LEN, NET_DUEL_TIME_LEN, NET_DUEL_RING_LEN};
-        if (len < NET_DUEL_HEAD || p[0] < NDO_ASK || p[0] > NDO_RING || len != DL[p[0]]) return false;
+        static const uint8_t DL[8] = {0, NET_DUEL_HEAD, NET_DUEL_ANSWER_LEN, NET_DUEL_HIT_LEN, NET_DUEL_END_LEN, NET_DUEL_TIME_LEN, NET_DUEL_RING_LEN,
+                                      NET_DUEL_PULL_LEN};
+        if (len < NET_DUEL_HEAD || p[0] < NDO_ASK || p[0] > NDO_PULL || len != DL[p[0]]) return false;
+    } else if (t == NET_LOOT) {  // (s289 loot) the entries are read by net_unpack_loot; here the op, the counts, the names and the exact size
+        if (!net_loot_body_ok(p, len - NET_HDR)) return false;
+    } else if (t == NET_WORLD) {  // (s290 networld) read by net_unpack_world; here the op, the counts, the pages and the exact size
+        if (!net_world_body_ok(p, len - NET_HDR)) return false;
     } else {
         return false;
     }
@@ -810,6 +856,49 @@ static inline bool net_unpack_area(const uint8_t *in, int len, uint8_t *player, 
 // two players are in different areas only when both say where they are and the texts differ ("" = not known = one world)
 static inline bool net_area_apart_txt(const char *a, const char *b) { return a && b && a[0] && b[0] && strcmp(a, b) != 0; }
 
+// ---- (s289 netgear) NET_GEAR: what this player has in his hands, so the other games draw it on his puppet (sora_net_gear.h) ----
+// Packet = hdr (player, seq = this kind's OWN u16 counter) + u8 n (0..NET_GEAR_N) + n x {u8 kind, u8 flags, u8 len (1..31), len
+// letters (no 0)}. kind NGK_MELEE = his BotW melee weapon (the actor name, "Weapon_Sword_001"); NGK_SHIELD / NGK_BOW are kept for
+// later (no build sends them yet); a receiver skips any kind it does not draw. flags NGF_HAND = in his hand now (else equipped
+// and put away). A NEW type, NET_VERSION unchanged: a game without it (0.2.3 and older) finds no such type in net_unpack_ex,
+// counts the packet "bad" and goes on (no log: the version byte is its own, no slot touched), exactly as for AREA. Sent only
+// while `set netgear 1`: on a change (NET_GEAR_GAP_MS apart at least), on a join and every NET_GEAR_MS (Melty:
+// NET_GEAR_MELTY_MS); the receiver keeps the newest (net_esseq_fresh) and forgets it after NET_GEAR_FORGET quiet periods.
+enum { NGK_MELEE = 0, NGK_SHIELD = 1, NGK_BOW = 2 };
+enum { NGF_HAND = 1 };
+typedef struct { uint8_t kind, flags; char name[NET_GEAR_NAME_MAX + 1]; } NetGearItem;
+#define NET_GEAR_PKT (NET_HDR + 1 + NET_GEAR_N * (3 + NET_GEAR_NAME_MAX))  // 144
+static inline int net_pack_gear(uint8_t player, uint16_t seq, const NetGearItem *it, int n, uint8_t *out, int cap) {
+    if (n < 0 || n > NET_GEAR_N || (n && !it) || !out || cap < NET_HDR + 1) return -1;
+    int at = NET_HDR + 1;
+    for (int i = 0; i < n; i++) {
+        int l = 0;
+        while (l <= NET_GEAR_NAME_MAX && it[i].name[l]) l++;
+        if (l < 1 || l > NET_GEAR_NAME_MAX || !net_area_chars(it[i].name, l) || at + 3 + l > cap) return -1;
+        out[at] = it[i].kind, out[at + 1] = it[i].flags, out[at + 2] = (uint8_t)l;
+        memcpy(out + at + 3, it[i].name, (size_t)l);
+        at += 3 + l;
+    }
+    net_hdr(out, NET_GEAR, player, seq);
+    out[NET_HDR] = (uint8_t)n;
+    return at;
+}
+// -> true = a valid NET_GEAR packet; it[0..*n) = its entries (names with their 0)
+static inline bool net_unpack_gear(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, NetGearItem it[NET_GEAR_N], int *n) {
+    int t = 0;
+    if (!in || !it || !n || len < NET_HDR + 1 || in[3] != NET_GEAR || !net_unpack_ex(in, len, &t, player, seq, NULL, NULL, NULL, NULL)) return false;
+    const uint8_t *p = in + NET_HDR;
+    int at = 1;
+    *n = p[0];
+    for (int i = 0; i < *n; i++) {
+        int l = p[at + 2];
+        it[i].kind = p[at], it[i].flags = p[at + 1];
+        memcpy(it[i].name, p + at + 3, (size_t)l), it[i].name[l] = 0;
+        at += 3 + l;
+    }
+    return true;
+}
+
 // ---- (s194) NET_REACT: "play this KH2 hit reaction on your enemy" (recon/s194/S194_REACT_FACTS.md). Sora hit an enemy that is a
 // PUPPET on his game (another game owns it, ESYNC): instead of starting the KH2 slide / hop / blow there (it fought the puppet apply
 // = the jitter) he sends what his ah_hit would have used, and the OWNER runs that ah_hit; its pose stream carries the result.
@@ -1028,33 +1117,44 @@ static inline bool net_unpack_warp(const uint8_t *in, int len, uint8_t *player, 
 //                         between the two at the accept, BotW units), u16 radius cm (friend -> asker)
 //   op 3 HIT    (len 51): u16 hit seq, u16 Power (atkp / spell power, 100 = a plain hit), u16 S (the attacker's Str + Keyblade Str,
 //                         or Mag + Keyblade Mag for a spell), u8 flags (1 spell, 2 finisher), u8 src (0 blade, 1 Fire, 2 Blizzard,
-//                         3 Thunder), u16 boost % (Combo / element Boost, 0 none), u8 reaction class, u8 0, f32 from x y z (his
+//                         3 Thunder; s289: 4 Keyblade throw, 6 Magnet, 7 Reflect's burst; RESERVED 5 BotW weapon throw: the list
+//                         and the names are sora_duel_core.h DU_SRC_* / du_src_name; an older game takes any src as damage, its
+//                         log calls src >= 3 "Thunder"), u16 boost % (Combo / element Boost, 0 none), u8 reaction class, u8 0, f32 from x y z (his
 //                         feet), f32 at x y z (where it met), u16 atkp row (its hit sound; spells: their row) (attacker ->
 //                         victim: the victim's game takes the damage)
 //   op 4 END    (len 17): u8 reason (DUE_*), u8 result as the SENDER sees it (DUR_*), u16 his HP permille (either -> other)
 //   op 5 TIME   (len 15): u16 HP permille at his time limit (either -> other)
 //   op 6 RING   (len 31): u8 player a, u8 player b, u8 phase (0 gone, 1 countdown, 2 fight), u8 0, f32 centre x y z, u16 radius cm
 //                         (each duelist -> every peer, every 2 s: a third player draws the ring)
+//   op 7 PULL   (len 37): (s289 duelmagnet) u16 the hit seq of the Magnet HIT it follows, f32 centre x y z (the sphere's, BotW
+//                         units), u16 sphere radius cm, u16 hold radius cm (rolled at the grab), i16 swirl (cm per KH frame), u16 KH
+//                         frames left in the cast's pull window, u8 tier (0..2), u8 0 (attacker -> victim, right after that HIT;
+//                         sora_duel_magnet.h). An older game counts it "bad" (net_unpack_ex's op range) and still takes the HIT.
 // A NEW type, NET_VERSION unchanged (as NET_WARP): an older game counts it "bad" and goes on; the asker then gets no ANSWER and
-// gives up after 12.5 s ("no answer: duels off there, or an older build"). UDP: ANSWER / HIT / END / TIME go DU_RESENDS more
-// times with the same seq (the receiver drops the copies: per duel id / hit seq); in a Melty room every one is a reliable event.
+// gives up after 12.5 s ("no answer: duels off there, or an older build"). UDP: ANSWER / HIT / END / TIME / PULL go DU_RESENDS
+// more times with the same seq (the receiver drops the copies: per duel id / hit seq; PULL by its own seen list); in a Melty room
+// every one is a reliable event.
 typedef struct {
     uint8_t op, target;
     uint32_t id;
     uint8_t ans, why;                   // ANSWER
-    float c[3];                         // ANSWER / RING: the ring's centre
-    uint16_t radius_cm;                 // ANSWER / RING
-    uint16_t hseq, power, stat, boost, atkp;  // HIT
+    float c[3];                         // ANSWER / RING: the ring's centre; PULL: the sphere's
+    uint16_t radius_cm;                 // ANSWER / RING; PULL: the sphere's
+    uint16_t hseq, power, stat, boost, atkp;  // HIT (PULL: hseq = its HIT's)
     uint8_t flags, src, react;          // HIT
     float from[3], at[3];               // HIT
     uint8_t reason, result;             // END
     uint16_t pm;                        // END / TIME
     uint8_t a, b, phase;                // RING
+    uint16_t hold_cm, frames;           // (s289) PULL: the hold radius, the KH frames left in the window
+    int16_t swirl;                      // PULL: cm per KH frame
+    uint8_t tier;                       // PULL: 0..2
 } NetDuelMsg;
 enum { NDH_SPELL = 1, NDH_FINISH = 2 };
-static const uint8_t NET_DUEL_LEN[7] = {0, NET_DUEL_HEAD, NET_DUEL_ANSWER_LEN, NET_DUEL_HIT_LEN, NET_DUEL_END_LEN, NET_DUEL_TIME_LEN, NET_DUEL_RING_LEN};
+static const uint8_t NET_DUEL_LEN[8] = {0, NET_DUEL_HEAD, NET_DUEL_ANSWER_LEN, NET_DUEL_HIT_LEN, NET_DUEL_END_LEN, NET_DUEL_TIME_LEN, NET_DUEL_RING_LEN,
+                                        NET_DUEL_PULL_LEN};
 static inline int net_pack_duel(uint8_t player, uint16_t seq, const NetDuelMsg *m, uint8_t *out, int cap) {
-    if (!m || !out || !m->id || m->op < NDO_ASK || m->op > NDO_RING) return -1;
+    if (!m || !out || !m->id || m->op < NDO_ASK || m->op > NDO_PULL) return -1;
     int len = NET_DUEL_LEN[m->op];
     if (cap < len) return -1;
     net_hdr(out, NET_DUEL, player, seq);
@@ -1079,6 +1179,11 @@ static inline int net_pack_duel(uint8_t player, uint16_t seq, const NetDuelMsg *
         b[0] = m->a, b[1] = m->b, b[2] = m->phase;
         for (int j = 0; j < 3; j++) net_w32f(b + 4 + 4 * j, m->c[j]);
         net_w16(b + 16, m->radius_cm);
+    } else if (m->op == NDO_PULL) {
+        net_w16(b, m->hseq);
+        for (int j = 0; j < 3; j++) net_w32f(b + 2 + 4 * j, m->c[j]);
+        net_w16(b + 14, m->radius_cm), net_w16(b + 16, m->hold_cm), net_w16(b + 18, (uint16_t)m->swirl), net_w16(b + 20, m->frames);
+        b[22] = m->tier;
     }
     return len;
 }
@@ -1111,6 +1216,690 @@ static inline bool net_unpack_duel(const uint8_t *in, int len, uint8_t *player, 
         m->a = b[0], m->b = b[1], m->phase = b[2];
         for (int j = 0; j < 3; j++) m->c[j] = net_r32f(b + 4 + 4 * j), ok = ok && isfinite(m->c[j]);
         m->radius_cm = net_r16(b + 16);
+    } else if (m->op == NDO_PULL) {  // (s289 duelmagnet: the ranges are judged by sora_duel_magnet.h du_mag_accept)
+        m->hseq = net_r16(b);
+        for (int j = 0; j < 3; j++) m->c[j] = net_r32f(b + 2 + 4 * j), ok = ok && isfinite(m->c[j]);
+        m->radius_cm = net_r16(b + 14), m->hold_cm = net_r16(b + 16), m->swirl = (int16_t)net_r16(b + 18), m->frames = net_r16(b + 20);
+        m->tier = b[22];
     }
+    return ok;
+}
+
+// ---- (s289 loot) NET_LOOT: the room's loot list (runtime/sora_net_loot.h; after Savage Wind PR #294 by byluki, MIT) ----
+// A NEW type (13, enum at the top): no NET_VERSION change; an older game drops it as a "bad" packet without a log line.
+// Reliable path only: a Melty room event (any type but SNAP / ESYNC: reliable, in order, once). Melty rooms only: on UDP netloot
+// sends nothing and drops what comes. Never per frame: an op goes out when something happened (a drop, a pickup, a join).
+// Packet = hdr (player, seq = this kind's own u16 counter) + u8 op + u8 count + count entries:
+//   NLO_ADD (1..8)      u32 gid (its top byte = the player id of the game it came from), u32 src (the HashId of the enemy it dropped
+//                       from, 0 = none), u8 kind (NLK_*), u8 name length (1..47), the actor name (net_area_chars' letters),
+//                       f32 x y z (where it lies), i16 x 9 its rotation rows (x 32767; all 0 = upright)
+//   NLO_TAKE (1..64)    u32 gid: picked up (or taken back by its game): gone in every game
+//   NLO_MAPTAKE (1..12) u32 HashId, u8 name length (1..47), the actor name: an item the MAP placed, picked up in the sender's game
+//   NLO_STATE (1)       u8 bits: 1 = on (the sender's `set netloot 1`), 2 = ask (answer with yours). On + ask goes to each joiner
+//                       and to the room when the key turns on; the answer is on without ask (no ping-pong); 0 when it turns off.
+//                       A friend's kill takes our drops of it away only when his game said on (it shares its own); an older
+//                       build never says it: its kills leave every game its own drops, as before netloot.
+// (NET_WORLD = 14 is s290 networld's (`set networld`): its own block right after this one.)
+enum { NLO_ADD = 1, NLO_TAKE = 2, NLO_MAPTAKE = 3, NLO_STATE = 4 };
+enum { NLK_DROP = 1, NLK_FELL = 2, NLK_THROWN = 3 };  // an enemy's drop / fell to the ground by a player (pouch, ore, tree) / a thrown weapon that landed
+#define NET_LOOT_HEAD (NET_HDR + 2)  // 9: op, count
+#define NET_LOOT_NAME_MAX 47
+#define NET_LOOT_ADD_FIX 40          // one ADD entry without its name's letters
+#define NET_LOOT_ADD_MAX 8
+#define NET_LOOT_TAKE_MAX 64
+#define NET_LOOT_MAP_FIX 5           // one MAPTAKE entry without its name's letters
+#define NET_LOOT_MAP_MAX 12
+#define NET_LOOT_PKT (NET_LOOT_HEAD + NET_LOOT_ADD_MAX * (NET_LOOT_ADD_FIX + NET_LOOT_NAME_MAX))  // 705, the biggest of the three
+_Static_assert(NET_LOOT_PKT <= NET_PKT_MAX && NET_LOOT_HEAD + 4 * NET_LOOT_TAKE_MAX <= NET_PKT_MAX &&
+                   NET_LOOT_HEAD + NET_LOOT_MAP_MAX * (NET_LOOT_MAP_FIX + NET_LOOT_NAME_MAX) <= NET_PKT_MAX,
+               "a full NET_LOOT packet fits a packet and the Melty connector's 1024");
+typedef struct { uint32_t gid, src; uint8_t kind; char name[NET_LOOT_NAME_MAX + 1]; float pos[3]; int16_t rot[9]; } NetLootAdd;
+typedef struct { uint32_t hid; char name[NET_LOOT_NAME_MAX + 1]; } NetLootMap;
+typedef struct {
+    uint8_t op;
+    int n;  // entries in the op's array
+    NetLootAdd add[NET_LOOT_ADD_MAX];
+    uint32_t gid[NET_LOOT_TAKE_MAX];
+    NetLootMap map[NET_LOOT_MAP_MAX];
+    bool on, ask;  // (NLO_STATE)
+} NetLootMsg;
+
+// the body after the header (p = in + NET_HDR, n = its length): op 1..4, count in range, every name 1..47 letters, the length exact
+static inline bool net_loot_body_ok(const uint8_t *p, int n) {
+    if (!p || n < 2) return false;
+    int op = p[0], c = p[1], at = 2;
+    if (op == NLO_ADD) {
+        if (c < 1 || c > NET_LOOT_ADD_MAX) return false;
+        for (int i = 0; i < c; i++) {
+            if (at + NET_LOOT_ADD_FIX > n) return false;
+            int l = p[at + 9];
+            if (l < 1 || l > NET_LOOT_NAME_MAX || at + NET_LOOT_ADD_FIX + l > n || !net_area_chars((const char *)p + at + 10, l)) return false;
+            at += NET_LOOT_ADD_FIX + l;
+        }
+    } else if (op == NLO_TAKE) {
+        if (c < 1 || c > NET_LOOT_TAKE_MAX) return false;
+        at += 4 * c;
+    } else if (op == NLO_MAPTAKE) {
+        if (c < 1 || c > NET_LOOT_MAP_MAX) return false;
+        for (int i = 0; i < c; i++) {
+            if (at + NET_LOOT_MAP_FIX > n) return false;
+            int l = p[at + 4];
+            if (l < 1 || l > NET_LOOT_NAME_MAX || at + NET_LOOT_MAP_FIX + l > n || !net_area_chars((const char *)p + at + 5, l)) return false;
+            at += NET_LOOT_MAP_FIX + l;
+        }
+    } else if (op == NLO_STATE) {
+        if (c != 1 || n < 3 || p[2] > 3) return false;
+        at += 1;
+    } else
+        return false;
+    return at == n;
+}
+
+static inline int net_loot_namelen(const char *s) {
+    int l = 0;
+    while (s && l <= NET_LOOT_NAME_MAX && s[l]) l++;
+    return l;
+}
+// -> the packet length, -1 = refused (no entries / too many / a name of no letters or too long / gid 0 / a float not finite)
+static inline int net_pack_loot_add(uint8_t player, uint16_t seq, const NetLootAdd *a, int n, uint8_t *out, int cap) {
+    if (!a || !out || n < 1 || n > NET_LOOT_ADD_MAX) return -1;
+    int len = NET_LOOT_HEAD;
+    for (int i = 0; i < n; i++) {
+        int l = net_loot_namelen(a[i].name);
+        if (!a[i].gid || l < 1 || l > NET_LOOT_NAME_MAX || !net_area_chars(a[i].name, l)) return -1;
+        for (int j = 0; j < 3; j++) if (!isfinite(a[i].pos[j])) return -1;
+        len += NET_LOOT_ADD_FIX + l;
+    }
+    if (cap < len) return -1;
+    net_hdr(out, NET_LOOT, player, seq);
+    uint8_t *p = out + NET_HDR;
+    p[0] = NLO_ADD, p[1] = (uint8_t)n;
+    p += 2;
+    for (int i = 0; i < n; i++) {
+        int l = net_loot_namelen(a[i].name);
+        net_w32(p, a[i].gid), net_w32(p + 4, a[i].src), p[8] = a[i].kind, p[9] = (uint8_t)l;
+        memcpy(p + 10, a[i].name, (size_t)l);
+        for (int j = 0; j < 3; j++) net_w32f(p + 10 + l + 4 * j, a[i].pos[j]);
+        for (int j = 0; j < 9; j++) net_w16(p + 22 + l + 2 * j, (uint16_t)a[i].rot[j]);
+        p += NET_LOOT_ADD_FIX + l;
+    }
+    return len;
+}
+static inline int net_pack_loot_take(uint8_t player, uint16_t seq, const uint32_t *gid, int n, uint8_t *out, int cap) {
+    if (!gid || !out || n < 1 || n > NET_LOOT_TAKE_MAX) return -1;
+    int len = NET_LOOT_HEAD + 4 * n;
+    if (cap < len) return -1;
+    for (int i = 0; i < n; i++) if (!gid[i]) return -1;
+    net_hdr(out, NET_LOOT, player, seq);
+    uint8_t *p = out + NET_HDR;
+    p[0] = NLO_TAKE, p[1] = (uint8_t)n;
+    for (int i = 0; i < n; i++) net_w32(p + 2 + 4 * i, gid[i]);
+    return len;
+}
+static inline int net_pack_loot_map(uint8_t player, uint16_t seq, const NetLootMap *m, int n, uint8_t *out, int cap) {
+    if (!m || !out || n < 1 || n > NET_LOOT_MAP_MAX) return -1;
+    int len = NET_LOOT_HEAD;
+    for (int i = 0; i < n; i++) {
+        int l = net_loot_namelen(m[i].name);
+        if (!m[i].hid || l < 1 || l > NET_LOOT_NAME_MAX || !net_area_chars(m[i].name, l)) return -1;
+        len += NET_LOOT_MAP_FIX + l;
+    }
+    if (cap < len) return -1;
+    net_hdr(out, NET_LOOT, player, seq);
+    uint8_t *p = out + NET_HDR;
+    p[0] = NLO_MAPTAKE, p[1] = (uint8_t)n;
+    p += 2;
+    for (int i = 0; i < n; i++) {
+        int l = net_loot_namelen(m[i].name);
+        net_w32(p, m[i].hid), p[4] = (uint8_t)l;
+        memcpy(p + 5, m[i].name, (size_t)l);
+        p += NET_LOOT_MAP_FIX + l;
+    }
+    return len;
+}
+// NLO_STATE: our `set netloot` now (on / off); ask = the receivers answer with theirs
+static inline int net_pack_loot_state(uint8_t player, uint16_t seq, bool on, bool ask, uint8_t *out, int cap) {
+    if (!out || cap < NET_LOOT_HEAD + 1) return -1;
+    net_hdr(out, NET_LOOT, player, seq);
+    out[NET_HDR] = NLO_STATE, out[NET_HDR + 1] = 1, out[NET_HDR + 2] = (uint8_t)((on ? 1 : 0) | (ask ? 2 : 0));
+    return NET_LOOT_HEAD + 1;
+}
+// -> true = a valid NET_LOOT packet, m filled; false: not one / a gid or HashId 0 / a kind out of range / a float not finite
+static inline bool net_unpack_loot(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, NetLootMsg *m) {
+    int t = 0;
+    if (!in || !m || len < NET_LOOT_HEAD || in[3] != NET_LOOT || !net_unpack_ex(in, len, &t, player, seq, NULL, NULL, NULL, NULL)) return false;
+    const uint8_t *p = in + NET_HDR;
+    memset(m, 0, sizeof *m);
+    m->op = p[0], m->n = p[1];
+    p += 2;
+    for (int i = 0; i < m->n; i++) {
+        if (m->op == NLO_ADD) {
+            NetLootAdd *a = &m->add[i];
+            int l = p[9];
+            a->gid = net_r32(p), a->src = net_r32(p + 4), a->kind = p[8];
+            memcpy(a->name, p + 10, (size_t)l), a->name[l] = 0;
+            for (int j = 0; j < 3; j++) a->pos[j] = net_r32f(p + 10 + l + 4 * j);
+            for (int j = 0; j < 9; j++) a->rot[j] = (int16_t)net_r16(p + 22 + l + 2 * j);
+            if (!a->gid || a->kind < NLK_DROP || a->kind > NLK_THROWN || !isfinite(a->pos[0]) || !isfinite(a->pos[1]) || !isfinite(a->pos[2])) return false;
+            p += NET_LOOT_ADD_FIX + l;
+        } else if (m->op == NLO_TAKE) {
+            m->gid[i] = net_r32(p + 4 * i);
+            if (!m->gid[i]) return false;
+        } else if (m->op == NLO_STATE) {
+            m->on = (p[0] & 1) != 0, m->ask = (p[0] & 2) != 0;
+        } else {
+            NetLootMap *e = &m->map[i];
+            int l = p[4];
+            e->hid = net_r32(p);
+            memcpy(e->name, p + 5, (size_t)l), e->name[l] = 0;
+            if (!e->hid) return false;
+            p += NET_LOOT_MAP_FIX + l;
+        }
+    }
+    return true;
+}
+
+// ---- (s290 networld) NET_WORLD: the room's world flags (runtime/sora_net_world.h; after Savage Wind PR #294 by byluki, MIT) ----
+// The type was reserved by s289 loot (14, enum at the top): no NET_VERSION change; an older game (no NET_WORLD in its
+// net_unpack_ex) drops it as a "bad" packet. Reliable path only (a Melty room event: in order, once). Never per frame: STATE +
+// PAGEs on a join / an ask / a Blood Moon there, SETs when the sender's own flags changed (looked at every 2 s).
+// An index is a place in the flag list each game builds ITSELF from its own game files (sora_net_world.h nwd_list_build: the
+// GameData bool flags of the allowed families, sorted by hash); fp = that list's fingerprint (crc32 over every entry's hash + family,
+// in order). The receiver refuses a packet whose fp or count is not its own whole, so an index can only ever name a flag of the
+// receiver's own list of allowed families: a packet never picks a flag by name or hash.
+// Packet = hdr (player, seq = this kind's own u16 counter) + u8 op + the op's body:
+//   NWO_STATE (1)  u8 bits (1 = on, 2 = ask: answer with your state + pages), u32 fp, u32 list count, u16 the sender's families
+//                  (NWF_* bits it shares). On + ask goes to the room on a join and when the key turns on; the answer is on without
+//                  ask (no ping-pong); 0 (off) when the key turns off. 14 bytes after the header.
+//   NWO_PAGE  (2)  u32 fp, u16 gen (the sender's snapshot number), u8 page, u8 pages, u32 list count, u16 nbytes, nbytes of bits:
+//                  bit i of byte j = list entry page * NET_WORLD_PAGE_BITS + 8 * j + i is set in the sender's game. pages =
+//                  ceil(count / NET_WORLD_PAGE_BITS); nbytes = NET_WORLD_PAGE_BITS / 8, the last page's ceil(its bits / 8).
+//                  The pages of one gen are the sender's whole set at that moment: they replace what the receiver knew of him
+//                  (a Blood Moon in his game cleared some). 15 + nbytes bytes after the header.
+//   NWO_SET   (3)  u32 fp, u8 n (1..NET_WORLD_SET_MAX), n x u16 index: flags that became set in the sender's game since his last
+//                  pages (his own: not the ones he took from a friend). 6 + 2n bytes after the header.
+enum { NWO_STATE = 1, NWO_PAGE = 2, NWO_SET = 3 };
+#define NET_WORLD_PAGE_BITS 5120    // 640 bytes of bits a page
+#define NET_WORLD_PAGES_MAX 13      // ceil(65535 / 5120): a list holds at most 65535 flags (u16 indices)
+#define NET_WORLD_COUNT_MAX 65535
+#define NET_WORLD_SET_MAX 250
+#define NET_WORLD_STATE_LEN (NET_HDR + 15)
+#define NET_WORLD_PAGE_HEAD (NET_HDR + 15)
+#define NET_WORLD_SET_HEAD (NET_HDR + 6)
+_Static_assert(NET_WORLD_PAGE_HEAD + NET_WORLD_PAGE_BITS / 8 <= NET_PKT_MAX && NET_WORLD_SET_HEAD + 2 * NET_WORLD_SET_MAX <= NET_PKT_MAX,
+               "a full NET_WORLD packet fits a packet and the Melty connector's 1024");
+_Static_assert((NET_WORLD_COUNT_MAX + NET_WORLD_PAGE_BITS - 1) / NET_WORLD_PAGE_BITS == NET_WORLD_PAGES_MAX, "pages for the biggest list");
+typedef struct {
+    uint8_t op;
+    bool on, ask;                  // (STATE)
+    uint32_t fp, count;            // (STATE, PAGE: count; SET: fp only)
+    uint16_t fams;                 // (STATE)
+    uint16_t gen;                  // (PAGE)
+    uint8_t page, pages;           // (PAGE)
+    uint16_t nbytes;               // (PAGE)
+    uint8_t bits[NET_WORLD_PAGE_BITS / 8];  // (PAGE)
+    int n;                         // (SET)
+    uint16_t idx[NET_WORLD_SET_MAX];  // (SET)
+} NetWorldMsg;
+static inline int net_world_pages(uint32_t count) { return (int)((count + NET_WORLD_PAGE_BITS - 1) / NET_WORLD_PAGE_BITS); }
+// the page's bytes: NET_WORLD_PAGE_BITS / 8, the last page's what is left (rounded up); 0 = no such page
+static inline int net_world_page_bytes(uint32_t count, int page) {
+    if (!count || count > NET_WORLD_COUNT_MAX || page < 0 || page >= net_world_pages(count)) return 0;
+    uint32_t left = count - (uint32_t)page * NET_WORLD_PAGE_BITS;
+    return left >= NET_WORLD_PAGE_BITS ? NET_WORLD_PAGE_BITS / 8 : (int)((left + 7) / 8);
+}
+// the body after the header (p = in + NET_HDR, n = its length): op 1..3, the exact length for the op, counts and pages in range
+static inline bool net_world_body_ok(const uint8_t *p, int n) {
+    if (!p || n < 1) return false;
+    if (p[0] == NWO_STATE) return n == 15 && p[1] <= 3 && net_r32(p + 6) >= 1 && net_r32(p + 6) <= NET_WORLD_COUNT_MAX;
+    if (p[0] == NWO_PAGE) {
+        if (n < 16) return false;
+        uint32_t count = net_r32(p + 9);
+        int page = p[7], pages = p[8], nb = net_r16(p + 13);
+        return count >= 1 && count <= NET_WORLD_COUNT_MAX && pages == net_world_pages(count) && page < pages &&
+               nb == net_world_page_bytes(count, page) && n == 15 + nb;
+    }
+    if (p[0] == NWO_SET) return n >= 8 && p[5] >= 1 && p[5] <= NET_WORLD_SET_MAX && n == 6 + 2 * p[5];
+    return false;
+}
+static inline int net_pack_world_state(uint8_t player, uint16_t seq, bool on, bool ask, uint32_t fp, uint32_t count, uint16_t fams,
+                                       uint8_t *out, int cap) {
+    if (!out || cap < NET_WORLD_STATE_LEN || !count || count > NET_WORLD_COUNT_MAX) return -1;
+    net_hdr(out, NET_WORLD, player, seq);
+    uint8_t *p = out + NET_HDR;
+    p[0] = NWO_STATE, p[1] = (uint8_t)((on ? 1 : 0) | (ask ? 2 : 0));
+    net_w32(p + 2, fp), net_w32(p + 6, count), net_w16(p + 10, fams);
+    p[12] = p[13] = p[14] = 0;
+    return NET_WORLD_STATE_LEN;
+}
+// bits = the page's own bytes (net_world_page_bytes of them); -> the packet length, -1 = refused
+static inline int net_pack_world_page(uint8_t player, uint16_t seq, uint32_t fp, uint16_t gen, int page, uint32_t count,
+                                      const uint8_t *bits, uint8_t *out, int cap) {
+    int nb = net_world_page_bytes(count, page);
+    if (!out || !bits || !nb || cap < NET_WORLD_PAGE_HEAD + nb) return -1;
+    net_hdr(out, NET_WORLD, player, seq);
+    uint8_t *p = out + NET_HDR;
+    p[0] = NWO_PAGE;
+    net_w32(p + 1, fp), net_w16(p + 5, gen);
+    p[7] = (uint8_t)page, p[8] = (uint8_t)net_world_pages(count);
+    net_w32(p + 9, count), net_w16(p + 13, (uint16_t)nb);
+    memcpy(p + 15, bits, (size_t)nb);
+    return NET_WORLD_PAGE_HEAD + nb;
+}
+static inline int net_pack_world_set(uint8_t player, uint16_t seq, uint32_t fp, const uint16_t *idx, int n, uint8_t *out, int cap) {
+    if (!out || !idx || n < 1 || n > NET_WORLD_SET_MAX || cap < NET_WORLD_SET_HEAD + 2 * n) return -1;
+    net_hdr(out, NET_WORLD, player, seq);
+    uint8_t *p = out + NET_HDR;
+    p[0] = NWO_SET;
+    net_w32(p + 1, fp);
+    p[5] = (uint8_t)n;
+    for (int i = 0; i < n; i++) net_w16(p + 6 + 2 * i, idx[i]);
+    return NET_WORLD_SET_HEAD + 2 * n;
+}
+// -> true = a valid NET_WORLD packet, m filled (the indices / pages are checked against OUR list by the receiver: net_world_fits)
+static inline bool net_unpack_world(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, NetWorldMsg *m) {
+    int t = 0;
+    if (!in || !m || len < NET_HDR + 1 || in[3] != NET_WORLD || !net_unpack_ex(in, len, &t, player, seq, NULL, NULL, NULL, NULL)) return false;
+    const uint8_t *p = in + NET_HDR;
+    memset(m, 0, sizeof *m);
+    m->op = p[0];
+    if (m->op == NWO_STATE) {
+        m->on = (p[1] & 1) != 0, m->ask = (p[1] & 2) != 0;
+        m->fp = net_r32(p + 2), m->count = net_r32(p + 6), m->fams = net_r16(p + 10);
+    } else if (m->op == NWO_PAGE) {
+        m->fp = net_r32(p + 1), m->gen = net_r16(p + 5), m->page = p[7], m->pages = p[8];
+        m->count = net_r32(p + 9), m->nbytes = net_r16(p + 13);
+        memcpy(m->bits, p + 15, m->nbytes);
+    } else {
+        m->fp = net_r32(p + 1), m->n = p[5];
+        for (int i = 0; i < m->n; i++) m->idx[i] = net_r16(p + 6 + 2 * i);
+    }
+    return true;
+}
+// the receiver's own check: the sender's list is ours (fp, count) and every index is in it -> true; false = refused whole
+static inline bool net_world_fits(const NetWorldMsg *m, uint32_t fp, uint32_t count) {
+    if (!m || !count || m->fp != fp) return false;
+    if (m->op == NWO_STATE || m->op == NWO_PAGE) return m->count == count;
+    for (int i = 0; i < m->n; i++)
+        if (m->idx[i] >= count) return false;
+    return m->op == NWO_SET;
+}
+
+// ---- (s289 shots) NET_SHOTS: the sender's arrows, Remote Bombs and thrown weapon, where they are in his world now (sora_net_shots.h) ----
+// After Savage Wind PR #294 "Online mode" by byluki (fixes by mstampfli), MIT: its OnlineShots (sample_shots), sent as our own packet.
+// Packet = hdr (player, seq = this kind's OWN u16 counter) + u8 n (0..NET_SHOTS_N) + u8 nb (0..NET_SHOTS_BOOMS)
+//   + n x 24 B {u16 id (!= 0, the sender's track number, unique in a packet), u8 kind (NSK_*), u8 flags (NSF_*), f32 x y z (world,
+//     BotW units), i16 qx qy qz qw (its rotation, x 32767; not all 0)}
+//   + nb x 16 B {u16 seq (!= 0), u8 kind (a bomb NSK_*), u8 0, f32 x y z}: a Remote Bomb that went off, in every packet for
+//     NSHOT_BOOM_MS, played once by its seq
+//   + for each entry of kind NSK_THROWN, in entry order: u8 len (1..NET_GEAR_NAME_MAX) + len letters = that weapon's actor name
+// A NEW type, NET_VERSION unchanged: a game without it finds no such type in net_unpack_ex and counts the packet "bad" (as
+// NET_GEAR). 20 Hz state: in a Melty room it rides the snapshot lanes (sora_melty.cpp, the ESYNC case).
+enum { NSK_NORMAL_ARROW = 0, NSK_FIRE_ARROW = 1, NSK_ICE_ARROW = 2, NSK_ELECTRIC_ARROW = 3, NSK_BOMB_ARROW = 4,
+       NSK_ANCIENT_ARROW = 5, NSK_BRIGHT_ARROW = 6, NSK_REMOTE_BOMB = 7, NSK_REMOTE_BOMB_CUBE = 8, NSK_REMOTE_BOMB2 = 9,
+       NSK_REMOTE_BOMB_CUBE2 = 10, NSK_THROWN = 11, NSK_N = 12 };
+enum { NSF_STILL = 1 };  // it has not moved for NSHOT_STILL_HOLD_MS: the receiver holds it there (no extrapolation)
+#define NET_SHOTS_N 8
+#define NET_SHOTS_BOOMS 4
+#define NET_SHOTS_ENT 24
+#define NET_SHOTS_BOOM_ENT 16
+#define NET_SHOTS_PKT (NET_HDR + 2 + NET_SHOTS_N * (NET_SHOTS_ENT + 1 + NET_GEAR_NAME_MAX) + NET_SHOTS_BOOMS * NET_SHOTS_BOOM_ENT)  // 521
+typedef struct { uint16_t id; uint8_t kind, flags; float pos[3], q[4]; char name[NET_GEAR_NAME_MAX + 1]; } NetShot;  // (name: NSK_THROWN only)
+typedef struct { uint16_t seq; uint8_t kind; float pos[3]; } NetBoom;
+static inline bool nshot_kind_arrow(int k) { return k >= NSK_NORMAL_ARROW && k <= NSK_BRIGHT_ARROW; }
+static inline bool nshot_kind_bomb(int k) { return k >= NSK_REMOTE_BOMB && k <= NSK_REMOTE_BOMB_CUBE2; }
+
+// a rotation on the wire: 4 x i16 (q x 32767, rounded, clamped); read back normalised. False = not finite / all 0
+static inline bool net_wq(uint8_t *b, const float q[4]) {
+    float l = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (!(l > 1e-6f) || !isfinite(l)) return false;
+    for (int i = 0; i < 4; i++) {
+        float v = q[i] / l * 32767.0f;
+        v = v > 32767.0f ? 32767.0f : v < -32767.0f ? -32767.0f : v;
+        net_w16(b + 2 * i, (uint16_t)(int16_t)lrintf(v));
+    }
+    return net_r16(b) | net_r16(b + 2) | net_r16(b + 4) | net_r16(b + 6);
+}
+static inline bool net_rq(const uint8_t *b, float q[4]) {
+    float l2 = 0;
+    for (int i = 0; i < 4; i++) q[i] = (float)(int16_t)net_r16(b + 2 * i) / 32767.0f, l2 += q[i] * q[i];
+    if (!(l2 > 0.25f)) return false;  // (|q| ~ 1 on the wire; far below = garbage)
+    float l = sqrtf(l2);
+    for (int i = 0; i < 4; i++) q[i] /= l;
+    return true;
+}
+static inline bool net_f3ok(const uint8_t *b) { return isfinite(net_r32f(b)) && isfinite(net_r32f(b + 4)) && isfinite(net_r32f(b + 8)); }
+
+// ---- (s289 shots) NET_RUNES: what the sender holds with Magnesis / stopped with Stasis, and his Cryonis pillars ----
+// Packet = hdr (player, seq = this kind's OWN u16 counter) + u8 flags (NRF_*) + u8 nice (0..NET_RUNES_ICE)
+//   + (NRF_MAG) 24 B {u32 hashid (the object's map HashId, actor +0x640; 0 = not a map object), f32 x y z, i16 q[4]}
+//   + (NRF_STOP) 24 B {the same, the object Stasis stopped}
+//   + nice x 20 B {f32 x y z, i16 q[4]}: his Cryonis pillars (Obj_IceMakerBlock), nearest first
+// The KH2 Magnet SPELL (duels, sora_duel_magnet.h) is NOT this: these are BotW's runes.
+enum { NRF_MAG = 1, NRF_STOP = 2 };
+#define NET_RUNES_ICE 3
+#define NET_RUNES_OBJ 24
+#define NET_RUNES_ICE_ENT 20
+#define NET_RUNES_PKT (NET_HDR + 2 + 2 * NET_RUNES_OBJ + NET_RUNES_ICE * NET_RUNES_ICE_ENT)  // 117
+typedef struct { uint32_t hashid; float pos[3], q[4]; } NetRuneObj;
+typedef struct { float pos[3], q[4]; } NetRuneIce;
+typedef struct { uint8_t flags, nice; NetRuneObj mag, stop; NetRuneIce ice[NET_RUNES_ICE]; } NetRunes;
+
+static inline bool net_shots_body_ok(int t, const uint8_t *p, int n) {
+    if (!p || n < 2) return false;
+    float q[4];
+    if (t == NET_RUNES) {
+        if ((p[0] & ~(NRF_MAG | NRF_STOP)) || p[1] > NET_RUNES_ICE) return false;
+        int at = 2;
+        for (int f = 0; f < 2; f++) {
+            if (!(p[0] & (f ? NRF_STOP : NRF_MAG))) continue;
+            if (at + NET_RUNES_OBJ > n || !net_f3ok(p + at + 4) || !net_rq(p + at + 16, q)) return false;
+            at += NET_RUNES_OBJ;
+        }
+        for (int i = 0; i < p[1]; i++, at += NET_RUNES_ICE_ENT)
+            if (at + NET_RUNES_ICE_ENT > n || !net_f3ok(p + at) || !net_rq(p + at + 12, q)) return false;
+        return at == n;
+    }
+    if (t != NET_SHOTS || p[0] > NET_SHOTS_N || p[1] > NET_SHOTS_BOOMS) return false;
+    int ns = p[0], nb = p[1], at = 2 + ns * NET_SHOTS_ENT + nb * NET_SHOTS_BOOM_ENT, nthr = 0;
+    if (at > n) return false;
+    for (int i = 0; i < ns; i++) {
+        const uint8_t *e = p + 2 + i * NET_SHOTS_ENT;
+        uint16_t id = net_r16(e);
+        if (!id || e[2] >= NSK_N || !net_f3ok(e + 4) || !net_rq(e + 16, q)) return false;
+        for (int j = 0; j < i; j++)
+            if (net_r16(p + 2 + j * NET_SHOTS_ENT) == id) return false;  // (one track, one entry)
+        nthr += e[2] == NSK_THROWN;
+    }
+    for (int i = 0; i < nb; i++) {
+        const uint8_t *e = p + 2 + ns * NET_SHOTS_ENT + i * NET_SHOTS_BOOM_ENT;
+        if (!net_r16(e) || !nshot_kind_bomb(e[2]) || e[3] || !net_f3ok(e + 4)) return false;
+    }
+    for (int i = 0; i < nthr; i++) {
+        if (at >= n) return false;
+        int l = p[at];
+        if (l < 1 || l > NET_GEAR_NAME_MAX || at + 1 + l > n || !net_area_chars((const char *)p + at + 1, l)) return false;
+        at += 1 + l;
+    }
+    return at == n;
+}
+
+// -> bytes written, -1 = bad input (n / nb out of range, an id 0 or twice, a bad kind, a thrown entry without a name the wire takes,
+// a float not finite) or no room
+static inline int net_pack_shots(uint8_t player, uint16_t seq, const NetShot *s, int n, const NetBoom *b, int nb, uint8_t *out, int cap) {
+    if (n < 0 || n > NET_SHOTS_N || nb < 0 || nb > NET_SHOTS_BOOMS || (n && !s) || (nb && !b) || !out) return -1;
+    int at = NET_HDR + 2 + n * NET_SHOTS_ENT + nb * NET_SHOTS_BOOM_ENT, need = at;
+    if (cap < at) return -1;
+    for (int i = 0; i < n; i++)  // (an id twice: refused, as net_shots_body_ok would refuse it)
+        for (int j = 0; j < i; j++)
+            if (s[i].id == s[j].id) return -1;
+    for (int i = 0; i < n; i++) {
+        uint8_t *e = out + NET_HDR + 2 + i * NET_SHOTS_ENT;
+        if (!s[i].id || s[i].kind >= NSK_N) return -1;
+        net_w16(e, s[i].id), e[2] = s[i].kind, e[3] = s[i].flags;
+        for (int j = 0; j < 3; j++) {
+            if (!isfinite(s[i].pos[j])) return -1;
+            net_w32f(e + 4 + 4 * j, s[i].pos[j]);
+        }
+        if (!net_wq(e + 16, s[i].q)) return -1;
+        if (s[i].kind != NSK_THROWN) continue;
+        int l = 0;
+        while (l <= NET_GEAR_NAME_MAX && s[i].name[l]) l++;
+        if (l < 1 || l > NET_GEAR_NAME_MAX || !net_area_chars(s[i].name, l) || (need += 1 + l) > cap) return -1;  // (all the names: room)
+    }
+    for (int i = 0; i < nb; i++) {
+        uint8_t *e = out + NET_HDR + 2 + n * NET_SHOTS_ENT + i * NET_SHOTS_BOOM_ENT;
+        if (!b[i].seq || !nshot_kind_bomb(b[i].kind)) return -1;
+        net_w16(e, b[i].seq), e[2] = b[i].kind, e[3] = 0;
+        for (int j = 0; j < 3; j++) {
+            if (!isfinite(b[i].pos[j])) return -1;
+            net_w32f(e + 4 + 4 * j, b[i].pos[j]);
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        if (s[i].kind != NSK_THROWN) continue;
+        int l = (int)strlen(s[i].name);
+        out[at] = (uint8_t)l, memcpy(out + at + 1, s[i].name, (size_t)l), at += 1 + l;
+    }
+    net_hdr(out, NET_SHOTS, player, seq);
+    out[NET_HDR] = (uint8_t)n, out[NET_HDR + 1] = (uint8_t)nb;
+    return at;
+}
+static inline bool net_unpack_shots(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, NetShot s[NET_SHOTS_N], int *n,
+                                    NetBoom b[NET_SHOTS_BOOMS], int *nb) {
+    int t = 0;
+    if (!in || !s || !n || !b || !nb || len < NET_HDR + 2 || in[3] != NET_SHOTS || !net_unpack_ex(in, len, &t, player, seq, NULL, NULL, NULL, NULL))
+        return false;
+    const uint8_t *p = in + NET_HDR;
+    *n = p[0], *nb = p[1];
+    int at = 2 + *n * NET_SHOTS_ENT + *nb * NET_SHOTS_BOOM_ENT;
+    for (int i = 0; i < *n; i++) {
+        const uint8_t *e = p + 2 + i * NET_SHOTS_ENT;
+        memset(&s[i], 0, sizeof s[i]);
+        s[i].id = net_r16(e), s[i].kind = e[2], s[i].flags = e[3];
+        for (int j = 0; j < 3; j++) s[i].pos[j] = net_r32f(e + 4 + 4 * j);
+        net_rq(e + 16, s[i].q);
+    }
+    for (int i = 0; i < *nb; i++) {
+        const uint8_t *e = p + 2 + *n * NET_SHOTS_ENT + i * NET_SHOTS_BOOM_ENT;
+        b[i].seq = net_r16(e), b[i].kind = e[2];
+        for (int j = 0; j < 3; j++) b[i].pos[j] = net_r32f(e + 4 + 4 * j);
+    }
+    for (int i = 0; i < *n; i++) {
+        if (s[i].kind != NSK_THROWN) continue;
+        int l = p[at];
+        memcpy(s[i].name, p + at + 1, (size_t)l), s[i].name[l] = 0, at += 1 + l;
+    }
+    return true;
+}
+
+static inline int net_pack_runes(uint8_t player, uint16_t seq, const NetRunes *r, uint8_t *out, int cap) {
+    if (!r || !out || (r->flags & ~(NRF_MAG | NRF_STOP)) || r->nice > NET_RUNES_ICE || cap < NET_RUNES_PKT) return -1;
+    uint8_t *b = out + NET_HDR + 2;
+    for (int f = 0; f < 2; f++) {
+        if (!(r->flags & (f ? NRF_STOP : NRF_MAG))) continue;
+        const NetRuneObj *o = f ? &r->stop : &r->mag;
+        net_w32(b, o->hashid);
+        for (int j = 0; j < 3; j++) {
+            if (!isfinite(o->pos[j])) return -1;
+            net_w32f(b + 4 + 4 * j, o->pos[j]);
+        }
+        if (!net_wq(b + 16, o->q)) return -1;
+        b += NET_RUNES_OBJ;
+    }
+    for (int i = 0; i < r->nice; i++, b += NET_RUNES_ICE_ENT) {
+        for (int j = 0; j < 3; j++) {
+            if (!isfinite(r->ice[i].pos[j])) return -1;
+            net_w32f(b + 4 * j, r->ice[i].pos[j]);
+        }
+        if (!net_wq(b + 12, r->ice[i].q)) return -1;
+    }
+    net_hdr(out, NET_RUNES, player, seq);
+    out[NET_HDR] = r->flags, out[NET_HDR + 1] = r->nice;
+    return (int)(b - out);
+}
+static inline bool net_unpack_runes(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, NetRunes *r) {
+    int t = 0;
+    if (!in || !r || len < NET_HDR + 2 || in[3] != NET_RUNES || !net_unpack_ex(in, len, &t, player, seq, NULL, NULL, NULL, NULL)) return false;
+    const uint8_t *p = in + NET_HDR, *b = p + 2;
+    memset(r, 0, sizeof *r);
+    r->flags = p[0], r->nice = p[1];
+    for (int f = 0; f < 2; f++) {
+        if (!(r->flags & (f ? NRF_STOP : NRF_MAG))) continue;
+        NetRuneObj *o = f ? &r->stop : &r->mag;
+        o->hashid = net_r32(b);
+        for (int j = 0; j < 3; j++) o->pos[j] = net_r32f(b + 4 + 4 * j);
+        net_rq(b + 16, o->q);
+        b += NET_RUNES_OBJ;
+    }
+    for (int i = 0; i < r->nice; i++, b += NET_RUNES_ICE_ENT) {
+        for (int j = 0; j < 3; j++) r->ice[i].pos[j] = net_r32f(b + 4 * j);
+        net_rq(b + 12, r->ice[i].q);
+    }
+    return true;
+}
+
+// ---- (s289 objs) NET_OBJS 17 / NET_OBJEV 18: map objects that move / break the same in every world (sora_net_objs.h) ----
+// NET_OBJS (state: 20 Hz while something moves; a Melty room carries it on the ESYNC lanes as a snapshot, latest wins):
+//   u8 n (1..12), n x 58 bytes, by kind:
+//   kind 1 (an object): u8 kind, u8 flags (1 REST = the last one: it came to rest, 2 HELD = the sender holds it), u32 map
+//     HashId, f32 m[12] (its actor's matrix, BotW units, row-major 3x4 as actor +0x398), u32 extra (0)
+//   kind 2 (a mover: netmovers) / kind 3 (a horse: nethorse), "pose records" (s289 objs parts 3-4): u8 kind, u8 flags,
+//     u32 h, f32 qx qy qz (its rotation as a unit quaternion with w >= 0, w = sqrt(1 - x2 - y2 - z2)), f32 tx ty tz (its
+//     place), char as[28] (the AS its actor plays in slot 0, NUL-padded, "" = none / not known)
+//     kind 2: h = its map HashId, flags 1 REST
+//     kind 3: h = crc32 of its actor's name (GameRomHorse12, GameRomHorseSaddle_00, GameROMMotorcycle, ...), flags & 0x0c:
+//       0 the horse the sender rides now (= he rides), 4 its saddle, 8 its reins (their as "")
+//     (s291 horsefix) kind 3, the horse: as[27] (the AS field's last byte: no older build writes it (0) or reads it, a name has
+//       27 letters at most) = its coat (sora_net_objs_core.h nh_coat_byte: 0 not known / live nethorsecoat 0)
+// NET_OBJEV (one-offs: a Melty room's reliable event "sora.18"): u8 op (1 BREAK = it broke in the sender's world just now,
+//   2 TOLD = one of the session's broken list, re-told for a late joiner), u8 kind (1 breakable, 2 tree), u32 HashId,
+//   f32 x y z (where it stood), i8 fall x, z (a tree's, x 127; 0 0 = not known), u16 0
+// NEW types, NET_VERSION unchanged (as NET_WARP / NET_GEAR): an older game counts them "bad" (net_unpack_ex) and goes on.
+enum { NOR_OBJ = 1, NOR_MOVER = 2, NOR_HORSE = 3 };
+enum { NORF_REST = 1, NORF_HELD = 2 };
+enum { NORH_PART = 0x0c, NORH_HORSE = 0, NORH_SADDLE = 4, NORH_REINS = 8 };  // (kind 3: flags & NORH_PART)
+enum { NOE_BREAK = 1, NOE_TOLD = 2 };
+#define NET_OBJS_AS 28  // (kinds 2 / 3: the AS name's bytes, its NUL included: 27 letters at most)
+typedef struct { uint8_t kind, flags; uint32_t h; float m[12]; uint32_t extra; char as[NET_OBJS_AS]; uint8_t coat; } NetObjRec;  // (as: kinds 2, 3; coat: kind 3, s291)
+typedef struct { uint8_t op, kind; uint32_t h; float pos[3]; int8_t dir[2]; } NetObjEv;
+
+// (s289 objs parts 3-4) a row-major 3x4 matrix's rotation <-> a unit quaternion x y z w (w >= 0); the rows are BotW's
+// Matrix34f (actor +0x398: v' = R v + t, t at 3, 7, 11). -> false = not finite (q = the identity then)
+static inline bool net_q_from_m(const float m[12], float q[4]) {
+    double r00 = m[0], r01 = m[1], r02 = m[2], r10 = m[4], r11 = m[5], r12 = m[6], r20 = m[8], r21 = m[9], r22 = m[10];
+    double tr = r00 + r11 + r22, x, y, z, w, s;
+    if (tr > 0) s = sqrt(tr + 1) * 2, w = s / 4, x = (r21 - r12) / s, y = (r02 - r20) / s, z = (r10 - r01) / s;
+    else if (r00 > r11 && r00 > r22) s = sqrt(1 + r00 - r11 - r22) * 2, w = (r21 - r12) / s, x = s / 4, y = (r01 + r10) / s, z = (r02 + r20) / s;
+    else if (r11 > r22) s = sqrt(1 + r11 - r00 - r22) * 2, w = (r02 - r20) / s, x = (r01 + r10) / s, y = s / 4, z = (r12 + r21) / s;
+    else s = sqrt(1 + r22 - r00 - r11) * 2, w = (r10 - r01) / s, x = (r02 + r20) / s, y = (r12 + r21) / s, z = s / 4;
+    double L = sqrt(x * x + y * y + z * z + w * w);
+    if (!(L > 1e-6) || !isfinite(L)) { q[0] = q[1] = q[2] = 0, q[3] = 1; return false; }
+    if (w < 0) L = -L;
+    q[0] = (float)(x / L), q[1] = (float)(y / L), q[2] = (float)(z / L), q[3] = (float)(w / L);
+    return true;
+}
+static inline void net_m_from_q(const float q[4], const float t[3], float m[12]) {
+    double x = q[0], y = q[1], z = q[2], w = q[3];
+    m[0] = (float)(1 - 2 * (y * y + z * z)), m[1] = (float)(2 * (x * y - z * w)), m[2] = (float)(2 * (x * z + y * w)), m[3] = t[0];
+    m[4] = (float)(2 * (x * y + z * w)), m[5] = (float)(1 - 2 * (x * x + z * z)), m[6] = (float)(2 * (y * z - x * w)), m[7] = t[1];
+    m[8] = (float)(2 * (x * z - y * w)), m[9] = (float)(2 * (y * z + x * w)), m[10] = (float)(1 - 2 * (x * x + y * y)), m[11] = t[2];
+}
+
+static inline int net_pack_objs(uint8_t player, uint16_t seq, const NetObjRec *r, int n, uint8_t *out, int cap) {
+    if (!r || !out || n < 1 || n > NET_OBJS_N) return -1;
+    int len = NET_HDR + 1 + n * NET_OBJS_REC;
+    if (cap < len) return -1;
+    net_hdr(out, NET_OBJS, player, seq);
+    uint8_t *p = out + NET_HDR, *q = p + 1;
+    p[0] = (uint8_t)n;
+    for (int i = 0; i < n; i++, q += NET_OBJS_REC) {
+        q[0] = r[i].kind, q[1] = r[i].flags;
+        net_w32(q + 2, r[i].h);
+        if (r[i].kind == NOR_MOVER || r[i].kind == NOR_HORSE) {  // (a pose record)
+            float qq[4];
+            net_q_from_m(r[i].m, qq);
+            for (int j = 0; j < 3; j++) net_w32f(q + 6 + 4 * j, qq[j]), net_w32f(q + 18 + 4 * j, r[i].m[3 + 4 * j]);
+            memset(q + 30, 0, NET_OBJS_AS);
+            for (int j = 0; j < NET_OBJS_AS - 1 && r[i].as[j]; j++) q[30 + j] = (uint8_t)r[i].as[j];
+            if (r[i].kind == NOR_HORSE) q[30 + NET_OBJS_AS - 1] = r[i].coat;  // (s291 horsefix: 0 = as before)
+            continue;
+        }
+        for (int j = 0; j < 12; j++) net_w32f(q + 6 + 4 * j, r[i].m[j]);
+        net_w32(q + 54, r[i].extra);
+    }
+    return len;
+}
+// (s290 rv3fix, review 3 #3) a row-major 3x4 matrix whose 3x3 part (m[0..2] / m[4..6] / m[8..10]) is a rotation: every row's length
+// within NET_ROT_LEN of 1, every pair of rows within NET_ROT_DOT of orthogonal (dot product), the determinant within NET_ROT_DET
+// of +1. The tolerances are a GUESS (a game matrix drifts ~1e-6; these allow a few percent of rounding / a slight scale and
+// still refuse a zero or flipped or sheared one, which a body asked to reach in one step turns into NaN speed).
+#define NET_ROT_LEN 0.1f
+#define NET_ROT_DOT 0.1f
+#define NET_ROT_DET 0.2f
+static inline bool net_rot_ok(const float m[12]) {
+    const float *r0 = m, *r1 = m + 4, *r2 = m + 8;
+    const float *r[3] = {r0, r1, r2};
+    for (int i = 0; i < 3; i++) {
+        float l = sqrtf(r[i][0] * r[i][0] + r[i][1] * r[i][1] + r[i][2] * r[i][2]);
+        if (!(fabsf(l - 1.0f) <= NET_ROT_LEN)) return false;  // (NaN fails too)
+    }
+    for (int i = 0; i < 3; i++)
+        for (int j = i + 1; j < 3; j++)
+            if (!(fabsf(r[i][0] * r[j][0] + r[i][1] * r[j][1] + r[i][2] * r[j][2]) <= NET_ROT_DOT)) return false;
+    float det = r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) + r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
+    return fabsf(det - 1.0f) <= NET_ROT_DET;
+}
+// -> false = not a good NET_OBJS. A record with HashId 0, a kind this build does not take (not 1..3; kind 3 with part 12), or a
+// non-finite / huge (> 1e6) value or (kind 1, s290) a 3x3 part that is not a rotation (net_rot_ok) is dropped alone; a pose record's AS name with a letter outside ' '..'~' is emptied (its pose
+// kept); *n = the good ones (in r[0..*n-1], at most NET_OBJS_N)
+static inline bool net_unpack_objs(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, NetObjRec *r, int *n) {
+    int t = 0;
+    if (n) *n = 0;
+    if (!in || !r || !n || len < NET_HDR || in[3] != NET_OBJS || !net_unpack_ex(in, len, &t, player, seq, NULL, NULL, NULL, NULL)) return false;
+    const uint8_t *p = in + NET_HDR, *q = p + 1;
+    int k = 0;
+    for (int i = 0; i < p[0]; i++, q += NET_OBJS_REC) {
+        NetObjRec *o = &r[k];
+        memset(o, 0, sizeof *o);
+        o->kind = q[0], o->flags = q[1], o->h = net_r32(q + 2);
+        bool ok = o->h != 0;
+        if (o->kind == NOR_OBJ) {
+            o->extra = net_r32(q + 54);
+            for (int j = 0; j < 12; j++) o->m[j] = net_r32f(q + 6 + 4 * j), ok = ok && isfinite(o->m[j]) && fabsf(o->m[j]) < 1e6f;
+            ok = ok && net_rot_ok(o->m);  // (s290 rv3fix: NaN fails it, so the finite test above stays the first)
+        } else if (o->kind == NOR_MOVER || o->kind == NOR_HORSE) {
+            if (o->kind == NOR_HORSE && (o->flags & NORH_PART) == NORH_PART) ok = false;
+            float qq[4], tt[3];
+            double s = 0;
+            for (int j = 0; j < 3; j++) {
+                qq[j] = net_r32f(q + 6 + 4 * j), tt[j] = net_r32f(q + 18 + 4 * j);
+                ok = ok && isfinite(qq[j]) && isfinite(tt[j]) && fabsf(tt[j]) < 1e6f;
+                s += (double)qq[j] * qq[j];
+            }
+            ok = ok && s <= 1.001;
+            if (ok) {
+                qq[3] = (float)sqrt(s < 1 ? 1 - s : 0);
+                double L = sqrt(s + (double)qq[3] * qq[3]);
+                if (!(L > 0.5)) ok = false;
+                else for (int j = 0; j < 4; j++) qq[j] = (float)(qq[j] / L);
+            }
+            if (ok) net_m_from_q(qq, tt, o->m);
+            bool name_ok = true;
+            for (int j = 0; j < NET_OBJS_AS - 1; j++) {
+                uint8_t c = q[30 + j];
+                if (!c) break;
+                if (c < 0x20 || c > 0x7e) name_ok = false;
+                o->as[j] = (char)c;
+            }
+            if (!name_ok) memset(o->as, 0, sizeof o->as);
+            if (o->kind == NOR_HORSE) o->coat = q[30 + NET_OBJS_AS - 1];  // (s291 horsefix: the coat byte, 0 from an older build)
+        } else ok = false;
+        if (ok) k++;
+    }
+    *n = k;
+    return true;
+}
+static inline int net_pack_objev(uint8_t player, uint16_t seq, const NetObjEv *e, uint8_t *out, int cap) {
+    if (!e || !out || cap < NET_OBJEV_LEN || !e->h || (e->op != NOE_BREAK && e->op != NOE_TOLD) || (e->kind != 1 && e->kind != 2)) return -1;
+    net_hdr(out, NET_OBJEV, player, seq);
+    uint8_t *p = out + NET_HDR;
+    memset(p, 0, NET_OBJEV_LEN - NET_HDR);
+    p[0] = e->op, p[1] = e->kind;
+    net_w32(p + 2, e->h);
+    for (int j = 0; j < 3; j++) net_w32f(p + 6 + 4 * j, e->pos[j]);
+    p[18] = (uint8_t)e->dir[0], p[19] = (uint8_t)e->dir[1];
+    return NET_OBJEV_LEN;
+}
+// -> false = not a good NET_OBJEV (HashId 0, a non-finite / huge place)
+static inline bool net_unpack_objev(const uint8_t *in, int len, uint8_t *player, uint16_t *seq, NetObjEv *e) {
+    int t = 0;
+    if (!in || !e || len < NET_HDR || in[3] != NET_OBJEV || !net_unpack_ex(in, len, &t, player, seq, NULL, NULL, NULL, NULL)) return false;
+    const uint8_t *p = in + NET_HDR;
+    memset(e, 0, sizeof *e);
+    e->op = p[0], e->kind = p[1], e->h = net_r32(p + 2);
+    bool ok = e->h != 0;
+    for (int j = 0; j < 3; j++) e->pos[j] = net_r32f(p + 6 + 4 * j), ok = ok && isfinite(e->pos[j]) && fabsf(e->pos[j]) < 1e6f;
+    e->dir[0] = (int8_t)p[18], e->dir[1] = (int8_t)p[19];
     return ok;
 }

@@ -119,6 +119,7 @@ static inline void mod_update_set(const VkWriteDescriptorSet *w) {
 #include "ui_layout.h"        // (s269: ui_layout_map_mode)
 float output_view_shape(void);  // (nvn/output_scale.c: > 1 wider than 16:9, < 1 taller)
 #include "items.h"  // (botwpic: items_icon_actor)
+#include "sora_hud_bi.h"  // (s289 b9fix: botwpic's picture state)
 
 VkImageView vk_frame_view(void);
 VkExtent2D vk_frame_extent(void);
@@ -644,26 +645,19 @@ bool sora_hud_itempic_ready(void) { return g_ip_state == 1; }
 // the whole picture) draw it.
 //   sora_hud_botw_icon: 1 = that picture is in texture 15 (draw it), 0 = decoded, not uploaded yet, -1 = no picture for it
 static pthread_mutex_t g_bi_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct { char want[72], have[72], up[72]; uint8_t *px; int w, h, pend, failed; int tw, th; } BI;
+static BiState BI;  // (s289 b9fix: the state's rules moved to sora_hud_bi.h, host-tested; every bi_*_ call holds g_bi_lock)
 static volatile int g_bi_asked;  // (s288 port) 0 until the DLL asks the first time (its botwpic key on): camp_draw's bi_upload returns at once
 int sora_hud_botw_icon(const char *actor) {
     if (!actor || !*actor || strlen(actor) >= sizeof BI.want) return -1;
     if (!g_bi_asked) __atomic_store_n(&g_bi_asked, 1, __ATOMIC_RELEASE);
     pthread_mutex_lock(&g_bi_lock);
-    int r = !strcmp(actor, BI.have) ? 1 : !strcmp(actor, BI.want) ? (BI.failed ? -1 : 0) : 2;
-    if (r == 1 && BI.pend) {  // (s288 port) back to the picture in texture 15 while another one waits: drop that one, else the next
-        free(BI.px);          // camp draw would upload it under this frame's quad (one frame of the wrong picture)
-        BI.px = NULL, BI.pend = 0, BI.failed = 0;
-        snprintf(BI.want, sizeof BI.want, "%s", BI.have);
-    }
+    int r = bi_ask_(&BI, actor);
     pthread_mutex_unlock(&g_bi_lock);
     if (r != 2) return r;
     int w = 0, h = 0;
     uint8_t *px = items_icon_actor(actor, &w, &h);
     pthread_mutex_lock(&g_bi_lock);
-    free(BI.px);
-    BI.px = px, BI.w = w, BI.h = h, BI.pend = px != NULL, BI.failed = px == NULL;
-    snprintf(BI.want, sizeof BI.want, "%s", actor);
+    bi_decoded_(&BI, actor, px, w, h);
     pthread_mutex_unlock(&g_bi_lock);
     LOG("[sora-hud] botwpic: %s -> %s (%dx%d)\n", actor, px ? "decoded" : "no picture", w, h);
     return px ? 0 : -1;
@@ -2132,12 +2126,10 @@ static bool bi_drawable(void) { return G.tex_view[15] != VK_NULL_HANDLE && BI.tw
 // (render thread, camp_draw) the pending picture into texture 15; a new size makes a new image (the old one: deferred destroy)
 static void bi_upload(void) {
     if (!__atomic_load_n(&g_bi_asked, __ATOMIC_ACQUIRE)) return;  // (s288 port: botwpic never used = not even the lock, as before #62)
-    pthread_mutex_lock(&g_bi_lock);
-    uint8_t *px = BI.pend ? BI.px : NULL;
-    int w = BI.w, h = BI.h;
     char name[72];
-    snprintf(name, sizeof name, "%s", BI.want);
-    if (px) BI.px = NULL, BI.pend = 0;
+    int w, h;
+    pthread_mutex_lock(&g_bi_lock);
+    uint8_t *px = bi_take_(&BI, name, &w, &h);  // (s289 b9fix: taking one clears BI.have = the old picture answers 0 during the upload)
     pthread_mutex_unlock(&g_bi_lock);
     if (!px) return;
     VkCommandBuffer ucb = vk_upload_cmd();
@@ -2153,6 +2145,7 @@ static void bi_upload(void) {
         if (vmaCreateImage(g_vk.vma, &ic, &ai, &G.tex[15], &G.tex_mem[15], NULL) != VK_SUCCESS) {
             LOG("[sora-hud] botwpic: could not make a %dx%d image for %s\n", w, h, name);
             G.tex[15] = VK_NULL_HANDLE, free(px);
+            pthread_mutex_lock(&g_bi_lock), bi_fail_(&BI, name), pthread_mutex_unlock(&g_bi_lock);  // (s289 b9fix: no picture now, never stuck at 1 / 0)
             return;
         }
         vk_image_init_layout(ucb, G.tex[15], VK_IMAGE_ASPECT_COLOR_BIT);
@@ -2161,6 +2154,7 @@ static void bi_upload(void) {
         if (vkCreateImageView(g_vk.dev, &vc, NULL, &G.tex_view[15]) != VK_SUCCESS) {
             LOG("[sora-hud] botwpic: could not make the image view for %s\n", name);
             vk_defer_image(G.tex[15], G.tex_mem[15]), G.tex[15] = VK_NULL_HANDLE, G.tex_view[15] = VK_NULL_HANDLE, free(px);
+            pthread_mutex_lock(&g_bi_lock), bi_fail_(&BI, name), pthread_mutex_unlock(&g_bi_lock);  // (s289 b9fix)
             return;
         }
     }
@@ -2172,7 +2166,7 @@ static void bi_upload(void) {
     vk_full_barrier(ucb);
     BI.tw = w, BI.th = h;
     pthread_mutex_lock(&g_bi_lock);
-    snprintf(BI.have, sizeof BI.have, "%s", name);
+    bi_done_(&BI, name);
     pthread_mutex_unlock(&g_bi_lock);
     LOG("[sora-hud] botwpic: %s uploaded (%dx%d)\n", name, w, h);
 }

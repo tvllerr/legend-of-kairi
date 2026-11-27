@@ -98,7 +98,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     base = os.path.abspath(a.base)
     bk = json.load(open(os.path.join(base, "kit.json"), encoding="utf-8"))
-    stale = [t for t in sb.KIT_SRC if bk.get("src", {}).get(t) != sb.src_hash(t)]
+    stale = sb.kit_stale(bk)
     if stale:
         raise SystemExit("mklinuxkit: the base kit's %s were built from other sources than this checkout" % ", ".join(stale))
     bfiles = bk["files"]

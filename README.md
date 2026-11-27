@@ -4,7 +4,7 @@
 
 > [!WARNING]
 > **Early alpha:** bugs and crashes are likely. Back up your Savage Wind saves (`Savage Wind/save`) before you play.
-> **0.2.3-alpha plays on your own.** Co-op is in 0.1.4-alpha only for now (see [Which version do I need?](#which-version-do-i-need)).
+> **0.2.4-alpha plays on your own.** Co-op is in 0.1.4-alpha only for now (see [Which version do I need?](#which-version-do-i-need)).
 
 Play **The Legend of Zelda: Breath of the Wild** (on the [Savage Wind](https://github.com/Revivedx/SavageWindRecomp) PC
 recompilation) as **Sora from Kingdom Hearts II Final Mix**, with Roxas, Mickey, Donald and Goofy, KH2's combos,
@@ -51,10 +51,10 @@ magic, Drive Forms and summons, and KH2's own menus and HUD.
 
 | You want to | Legend of Kairi | Savage Wind |
 |---|---|---|
-| Play on your own (newest) | **0.2.3-alpha** | **0.6.0-alpha.6** (a 0.5.3-alpha.5 folder is upgraded for you) |
+| Play on your own (newest) | **0.2.4-alpha** | **0.6.0-alpha.6** (a 0.5.3-alpha.5 folder is upgraded for you) |
 | Play co-op with friends (up to 4) | **[0.1.4-alpha](https://github.com/tvllerr/legend-of-kairi/releases/tag/v0.1.4-alpha)** | **0.4.1-alpha.4** |
 
-Co-op is not in 0.2.3-alpha yet. Everybody in a co-op game needs the very same release, so co-op players stay on 0.1.4.
+Co-op is not in 0.2.4-alpha yet. Everybody in a co-op game needs the very same release, so co-op players stay on 0.1.4.
 
 ## Requirements
 
@@ -68,7 +68,7 @@ Co-op is not in 0.2.3-alpha yet. Everybody in a co-op game needs the very same r
 
 ## Install
 
-1. Download `Legend-of-Kairi-0.2.3-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
+1. Download `Legend-of-Kairi-0.2.4-alpha.zip` from [Releases](https://github.com/tvllerr/legend-of-kairi/releases/latest).
 2. Right-click it > **Extract All...** into an empty folder (not inside the Savage Wind folder).
 3. Double-click **Install Legend of Kairi.cmd**.
 4. Click **Choose...** next to *Savage Wind folder* and pick the `Savage Wind` folder (the one with `extracted` inside).
@@ -77,6 +77,9 @@ Co-op is not in 0.2.3-alpha yet. Everybody in a co-op game needs the very same r
 
 **Updating:** double-click **Update Legend of Kairi.bat** in your install folder: it fetches the newest release, checks
 its signature and opens the installer on Update. Your saves are kept.
+
+The update from 0.2.3 to 0.2.4 leaves your Savage Wind folder as it is. On Windows it builds Sora's data again (about
+20-25 minutes); on the Steam Deck it takes a few seconds. Let it finish: the game can not start until the update is done.
 
 The update from 0.2.2 to 0.2.3 leaves your Savage Wind folder as it is and builds Sora's data again from the start (about
 20-25 minutes, like a new install: new chest motions, footsteps and splashes). Let it finish: the game can not start until
@@ -107,7 +110,7 @@ that version, or unzip Savage Wind 0.6.0-alpha.6 over it again and run the insta
 <img src="docs/sora_coop.gif" width="100%" alt="Co-op: one player's Sora in a blue outfit walks and swings, then the other player's Sora (from a Steam Deck, in another outfit) moves around next to him, each with Donald and Goofy">
 
 > [!NOTE]
-> Multiplayer is in **0.1.4-alpha** only (with Savage Wind 0.4.1-alpha.4); 0.2.3-alpha has no Multiplayer launcher.
+> Multiplayer is in **0.1.4-alpha** only (with Savage Wind 0.4.1-alpha.4); 0.2.4-alpha has no Multiplayer launcher.
 > Multiplayer works, but it is still glitchy and needs more development: enemy positions and copied enemy attacks can be
 > late or out of sync, and a hit may not land now and then. Please report what you see.
 
@@ -122,8 +125,8 @@ that version, or unzip Savage Wind 0.6.0-alpha.6 over it again and run the insta
 
 ## Steam Deck / Linux
 
-A native Linux build is on the [0.2.3-alpha release](https://github.com/tvllerr/legend-of-kairi/releases/tag/v0.2.3-alpha):
-`Legend-of-Kairi-0.2.3-alpha-linux-x86_64.tar.gz`. Single player, Savage Wind 0.6.0-alpha.6. **No Windows PC needed:**
+A native Linux build is on the [0.2.4-alpha release](https://github.com/tvllerr/legend-of-kairi/releases/tag/v0.2.4-alpha):
+`Legend-of-Kairi-0.2.4-alpha-linux-x86_64.tar.gz`. Single player, Savage Wind 0.6.0-alpha.6. **No Windows PC needed:**
 it builds the mod's data on the Deck itself.
 
 - **You need:** your own BotW 1.9.0 game files (a folder with `exefs/` and `romfs/`), the Steam KINGDOM HEARTS HD
@@ -162,6 +165,11 @@ it builds the mod's data on the Deck itself.
 - **The game misbehaves:** the game's log is in `logs/last.log` next to the launchers (the run before is `prev.log`).
 
 ## Download check
+
+`Legend-of-Kairi-0.2.4-alpha.zip` sha256: `fc2a5fa64b571eab571dab665f7179e9a1aa1ed893e69540a91824a049ee04a5`
+
+`Legend-of-Kairi-0.2.4-alpha-linux-x86_64.tar.gz` (Steam Deck / Linux) sha256:
+`7954575eb8f2c4aeecd781b9487a12dae7c717f0d3aa20a4eabcda0bde497ce6`
 
 `Legend-of-Kairi-0.2.3-alpha.zip` sha256: `d37a0be567c26a9df37516f47b48607bdcc83b82977d6f56b2dfe1870c1f97d9`
 

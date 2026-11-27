@@ -128,6 +128,7 @@ typedef struct {
     MgPull pull[8];
     float next_diag;
     bool from_lock;
+    bool du_hit;  // (s289 duelmagnet) this cast grabbed the duel opponent (once per cast: Interval 0)
 } MgMagnet;
 static MgMagnet MGN;
 
@@ -180,6 +181,9 @@ static int mg_hit(const char *name, uint64_t actor, const float epos[3], const f
     return d;
 }
 
+// (s289 duelmagnet, sora_duel.h: included later) the duel opponent as the lock target / grabbed + pulled; duelmagnet 0 = nothing
+static bool du_magnet_lock(uint64_t target, float p[3]);
+static void du_magnet_pull(MgMagnet *m, int T, float left, float to_u);
 static void mg_magnet_spawn(const float feet[3], float face, uint64_t target, float to_u) {
     MgMagnet *m = &MGN;
     mg_magnet_end(m, "recast");
@@ -194,6 +198,7 @@ static void mg_magnet_spawn(const float feet[3], float face, uint64_t target, fl
     bool lock = false;
     for (int i = 0; i < n && !lock; i++)
         if (target && actor[i] == target && life[i] > 0) memcpy(p, pos[i], sizeof p), lock = true;
+    if (!lock && du_magnet_lock(target, p)) lock = true;  // (s289 duelmagnet: locked on the duel opponent = his feet)
     if (!lock) cast_tip(feet, to_u, p);  // KH2: element 1's position = the Keyblade tip (GUESS cast_tip, as the other casts)
     float h = MG_MAG_H[m->tier] * to_u, a[3] = {p[0], p[1] + h, p[2]}, b[3] = {p[0], p[1] - h, p[2]}, hit[3], nr[3];  // from (pos + h) down 2 h
     if (linkpos_raycast(a, b, hit, nr)) m->c[0] = hit[0], m->c[1] = hit[1] + h, m->c[2] = hit[2];
@@ -261,6 +266,7 @@ static void mg_magnet_tick(float kh, float to_u) {
             m->npulled++;
             LOG("[magic] magnet: pulling %llx, hold radius %.0f cm, swirl %.0f cm/frame\n", (unsigned long long)actor[i], m->pull[slot].hold, m->pull[slot].swirl);
         }
+        du_magnet_pull(m, T, t_pull_end - m->t, to_u);  // (s289 duelmagnet: the duel opponent, grabbed once a cast: HIT + PULL)
         // one velocity per pulled enemy per frame (the controller override persists until set again / released)
         for (int k = 0; k < 8; k++) {
             MgPull *pl = &m->pull[k];
@@ -358,6 +364,8 @@ static bool mg_rehit_due(MgReflect *r, uint64_t actor, float iv) {  // an attack
     return true;
 }
 
+// (s289 duelreflect, sora_duel.h: included later) the burst against the duel opponent; live duelreflect 0 = nothing
+static void du_reflect_burst(float bt, bool second, int B, int T, const float feet[3], float R, float H, float to_u);
 static void mg_reflect_burst_hits(MgReflect *r, const float feet[3], float to_u, bool second) {
     int B = r->btier, T = r->tier;
     float R = (MG_REF_R[B][T] + (second ? 20 : 0)) * to_u, H = (MG_REF_H[B] + (second ? 20 : 0)) * to_u;
@@ -377,6 +385,7 @@ static void mg_reflect_burst_hits(MgReflect *r, const float feet[3], float to_u,
             mg_hit("reflect", actor[i], pos[i], feet, MG_REF_POW_A, MG_REF_ROW_A[B], MG_REF_REACT_A[B], MG_REF_KB_A[B], 0, MG_REF_REACT_A[B] == 4 ? 0x14 : 0x0f, to_u);
         }
     }
+    du_reflect_burst(r->bt, second, B, T, feet, R, H, to_u);  // (s289: the duel opponent, as an enemy: same cylinder, same burst clock)
 }
 
 static void mg_reflect_tick(float kh, float to_u, const float feet[3]) {

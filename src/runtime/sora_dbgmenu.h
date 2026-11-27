@@ -272,8 +272,14 @@ static void dbm_ab_tick(void) {
 // God: the exe's hit drop (linkpos_guard_set 1, the Guard / Mickey drop: every addDamage on Link dropped, falls too through its own branch)
 // is held on via mk_drops_hits() (sora_guard.h / sora_plimit.h send it each frame), and Link's life is refilled to g_hud_life_max each
 // frame as the backup for anything that does not come through addDamage (GUESS: burning / cold / drowning ticks). HP only, not MP.
+// (s289 3c, live duelgod 1) the refill waits while a duel runs on this game (du_god_wait: sora_net_duel.h, included by sora_net.h
+// long before this file), so the duel's hits count; it is back by itself after the duel (sora_duel_core.h du_god_waits). The row,
+// the exe's hit drop and the save stay as set. DUS is written at the end of sora_duel.h du_frame, which runs after the frame body
+// (sora_mod_frame: ab_tick -> here first), so this reads the last frame's: one frame late at each edge. Every duel hit is taken
+// inside du_frame (du_on_msg / du_fake_tick), and a KO keeps the wait (the KO hold) in that same du_frame, so no refill slips in.
+static bool g_dbm_god_dw;  // the refill waits now (for the two log lines only)
 static void dbm_god_tick_(void) {
-    if (!g_dbm_god) return;
+    if (!g_dbm_god) { g_dbm_god_dw = false; return; }
     guard_bind();  // every world frame, driven or not (a climb / swim / event frame must not let the exe's hit drop go stale); mk_tick runs later and wins for Mickey
     if (G.exe_ok && p_guard_set) p_guard_set(1);
     static int hv_cached;  // a FRESH BotW MaxHartValue (g_hud_life_max only grows: it holds the largest life ever seen / yellow hearts)
@@ -285,6 +291,10 @@ static void dbm_god_tick_(void) {
     int target = hv_cached > 0 ? hv_cached : g_hud_life_max;
     if (target > g_hud_life_max) target = g_hud_life_max;  // (link_heal caps there)
     int life = linkpos_link_life();
+    int e = du_god_edge(&g_dbm_god_dw, du_god_wait());
+    if (e > 0) LOG("[dbgmenu] god mode: paused for the duel (no life refill until it is over; life %d / %d)\n", life, target);
+    else if (e < 0) LOG("[dbgmenu] god mode: back after the duel (the life refill runs again; life %d / %d)\n", life, target);
+    if (g_dbm_god_dw) return;
     if (life > 0 && life < target) link_heal(target - life);
 }
 // No Clip: Sora's own pad (stick, jump, roll) is taken in pad_tap (g_nc_*), the body is moved by position (linkpos_move, the goto hold's
@@ -914,7 +924,8 @@ static bool dbm_set_key(const char *key, int v) {
 // byte the old one; a "dbgmenu" line an earlier run left in it is ignored, and dropped by the next save).
 // WRITE: sl_sidecar_write (every BotW save of slot N, manual or autosave) puts dbm_save_str's line into <save>/<N>/sora_kh2.json,
 //   the same temp file + rename as the rest of the sidecar. The text format is sora_dbgsave.h. Mickey Rescue's one-shot "Now"
-//   is written as its Any Enemy value (Off / Any Enemy only), so a load never starts a rescue.
+//   is written as its Any Enemy value (Off / Any Enemy only), so a load never starts a rescue. (s289 fix3b) A Party row that
+//   the co-op room's rule made None is written as the member the room's end gives back (dbm_save_val_, dbs_party_val).
 // READ: sl_slot_load (BotW read slot N: Continue / Load) calls dbm_slot_load AFTER the slot's real values are in and the
 //   Debug Menu layers are back on (dbm_resume): each row that differs goes through dbm_set, the same path as a pick in the menu,
 //   so every row snapshots / layers as usual and the sidecar's real EXP / Keyblades / abilities stay real. Not read: a missing
@@ -925,7 +936,15 @@ _Static_assert(DBS_NROWS == DBM_NROWS, "sora_dbgsave.h has one name per Debug Me
 // (what the row is worth in the save: Mickey Rescue Off / Any Enemy only; a Party row's None = -1, not PCH_NONE, whose number
 // grows when a character is added; dbm_set takes any value < 0 as None)
 static int dbm_save_party_(int r, int v) { return (r == DBM_R_PARTY1 || r == DBM_R_PARTY2) && v == PCH_NONE ? -1 : v; }
-static int dbm_save_val_(int r) { return r == DBM_R_MICKEY ? DMK.any : dbm_save_party_(r, dbm_state(r)); }
+// (s289 fix3b) a None the co-op room's rule made (g_coop_auto) is written as the member under it (g_pchar: dbm_party_none_ put the
+// slot's own member there before the None, party_swap refuses while the slot is None, and dbm_coop_tick_ gives back exactly him at
+// the room's end), so a save made in a room never takes him away from single player. The player's own None stays -1. dbm_slot_load
+// compares with this value too: a line just written loads as no change.
+static int dbm_save_val_(int r) {
+    int v = r == DBM_R_MICKEY ? DMK.any : dbm_save_party_(r, dbm_state(r));
+    if (r == DBM_R_PARTY1 || r == DBM_R_PARTY2) v = dbs_party_val(v, g_coop_auto[r - DBM_R_PARTY1], g_pchar[r - DBM_R_PARTY1]);
+    return v;
+}
 // -> the line's length, 0 = no line (key off, or it did not fit: logged)
 static int dbm_save_str(char *o, size_t cap) {
     if (o && cap) o[0] = 0;

@@ -672,6 +672,8 @@ static void servo_frame(void) {
 #define STATE_GROUND 0x08000000u
 #define STATE_AIR 0x80000000u
 enum { LINK_NONE, LINK_GROUND, LINK_AIR, LINK_OTHER };
+#include "linkpos_t0.h"  // (s291 ridestart: when g_t0 is set)
+uint32_t linkpos_link_state_word(void);
 
 static struct {
     int blocked;     // frames in a row without free motion
@@ -720,6 +722,17 @@ void linkpos_block_link_input(bool on) { g_block_input = on; }
 
 uint64_t linkpos_world_frame(void) { return g_t0; }
 
+// (s291 ridestart, linkpos_t0.h) a save loaded on a horse: g_t0 also on the riding bit. Set by sora_mod.dll at its start
+// (SAVAGEWIND_SORA_T0_RIDE / its compiled default; an older DLL never calls it = 0 = the old ground-only rule).
+// 2 = also log Link's state word changes before g_t0 (at most 16 lines), for the lab.
+static volatile int g_t0_ride;
+void linkpos_set_t0_ride(int on) {
+    if (on == g_t0_ride) return;
+    g_t0_ride = on;
+    LOG("[linkpos] t0ride %d: Link in the world %s%s\n", on, on ? "on the ground OR riding (state bit 0x100000)" : "on the ground only (as before)",
+        on >= 2 ? ", state words before it logged" : "");
+}
+
 // The pad as the player holds it, before the filter (runtime/sora.c reads Sora's input here), on whatever thread polls.
 void (*g_link_pad_tap)(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 void linkpos_set_pad_tap(void (*fn)(uint64_t *, int32_t *, int32_t *, int32_t *, int32_t *)) { g_link_pad_tap = fn; }  // (sora_mod.dll)
@@ -740,7 +753,7 @@ static void link_input_filter(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx
     if (g_autocontinue && g_t0) {
         int life = linkpos_link_life();
         if (!game_over && life <= 0) game_over = true, LOG("[linkpos] Game Over (life %d): auto-Continue\n", life);
-        else if (game_over && life > 0 && linkpos_link_state() == LINK_GROUND)
+        else if (game_over && life > 0 && (linkpos_link_state() == LINK_GROUND || (g_t0_ride && (linkpos_link_state_word() & T0_SW_RIDING))))  // (s291: + riding, t0ride)
             game_over = false, LOG("[linkpos] back in the world after Continue\n");
     }
     if (g_autocontinue && (!g_t0 || game_over)) {
@@ -1220,9 +1233,19 @@ static void vel_frame(void) {
     if (g_step.kick) g_vel_kicks++;
     extern uint64_t vk_frame_counter(void);
     uint64_t present = vk_frame_counter();
-    if (!g_t0 && g_vel_head && state_of(g_vel_actor) == LINK_GROUND) {
-        g_t0 = present;
-        LOG("[linkpos] Link in the world at presented frame %llu\n", (unsigned long long)present);
+    if (!g_t0 && g_vel_head) {
+        uint32_t sw = g_vel_actor ? *(const uint32_t *)(uintptr_t)(g_vel_actor + ACTOR_STATE) : 0;
+        int kind = t0_start_kind(g_vel_actor != 0, sw, g_t0_ride);  // (ride 0: = the old state_of(g_vel_actor) == LINK_GROUND)
+        static uint32_t sw_was = ~0u;
+        static int said;
+        if (g_t0_ride >= 2 && sw != sw_was && said < 16)
+            said++, LOG("[linkpos] t0ride: before the world: state word %#x at presented frame %llu\n", sw, (unsigned long long)present);
+        sw_was = sw;
+        if (kind) {
+            g_t0 = present;
+            if (kind == T0_RIDING) LOG("[linkpos] Link in the world at presented frame %llu (riding: state %#x, t0ride)\n", (unsigned long long)present, sw);
+            else LOG("[linkpos] Link in the world at presented frame %llu\n", (unsigned long long)present);
+        }
     }
     if (!spec || !*spec) return;
     if (present / 60 != (present - 1) / 60 && present > 2000)
@@ -3265,6 +3288,37 @@ static bool carry_show_name(const char *n) {
     // (the pack scan stopped at 600 KB packs: every town pot "TwnObj_*Pot_*_Act_*" counts, not only the 19 it listed)
     return !strncmp(n, "TwnObj_", 7) && strstr(n, "Pot_") && strstr(n, "_Act_");
 }
+// (s291 popin) the held-only rule (linkpos_carryshow.h): while the DLL asks (live carryheld 1, every frame) only the object in Link
+// +0x88 (+ the last one for CARRYSHOW_GRACE frames) is kept visible; other liftables near hidden Link keep BotW's fades. Not asked = old.
+#include "linkpos_carryshow.h"
+static volatile uint64_t g_carryheld_ask;
+static volatile int g_carryheld_log;
+static CarryShowMem g_carryshow;
+void linkpos_carry_show_held(int log) { exe_ask(&g_carryheld_ask); g_carryheld_log = log; }  // (DLL, every frame while carryheld 1)
+static bool carry_held_only(uint64_t a, const char *n, float d) {  // false = leave this one to BotW (only while asked)
+    static volatile int was = -1;
+    int on = exe_asked(&g_carryheld_ask);
+    if (on != was) {
+        static volatile long said;
+        bool say = was >= 0 || on;  // (never asked = no line: key off logs exactly as before)
+        was = on;
+        if (say && __atomic_fetch_add(&said, 1, __ATOMIC_RELAXED) < 8)
+            LOG("[linkpos] carryheld: %s\n", on ? "on: only the object Link holds (+0x88) is kept visible" : "off: every lowered liftable near hidden Link kept visible (old)");
+    }
+    if (!on) return true;
+    uint64_t sv = g_servo_actor, h = sv && in_guest(sv + 0x88) ? *(const uint64_t *)(uintptr_t)(sv + 0x88) : 0;
+    if (!in_guest(h) || !in_guest(h + 0x68) || h == sv || *(const uint8_t *)(uintptr_t)(h + 0x64) == 3) h = 0;  // (state 3 = being deleted)
+    if (carryshow_keep(&g_carryshow, a, h, g_vel_frame_id)) return true;
+    static volatile uint64_t last;
+    static volatile long logged;
+    if (g_carryheld_log && last != a) {
+        last = a;
+        if (__atomic_fetch_add(&logged, 1, __ATOMIC_RELAXED) < 16)
+            LOG("[linkpos] carryheld: %s %llx not held (Link +0x88 = %llx), %.2f m from Link: BotW's own fade (opacity factors %.2f %.2f %.2f)\n", n,
+                (unsigned long long)a, (unsigned long long)h, d, opac(a, ACTOR_OPACITY), opac(a, ACTOR_START_OPACITY), opac(a, ACTOR_FINAL_OPACITY));
+    }
+    return false;
+}
 static bool carry_obj_shown(uint64_t a) {  // (opacity hook, any thread: reads only, like rune_obj_shown)
     static int off = -1;
     if (off < 0) off = env_int("SAVAGEWIND_LINK_CARRY_HIDE", 0) ? 1 : 0;
@@ -3275,6 +3329,7 @@ static bool carry_obj_shown(uint64_t a) {  // (opacity hook, any thread: reads o
     if (s >= 0.95f && f >= 0.95f) return false;  // (not being lowered: BotW's own value stays)
     float d = link_dist(a);
     if (d > CARRY_SHOW_DIST) return false;
+    if (!carry_held_only(a, n, d)) return false;  // (s291 popin: live carryheld 1 only)
     static volatile uint64_t last;  // (one line per newly carried actor, 16 in all; a racy check on draw threads = at worst a 2nd line)
     static volatile long logged;
     if (last != a) {
@@ -5490,15 +5545,21 @@ int linkpos_fire_burst(const float p[3]) {
 // manager's (actor+0x840) first 0x400 bytes, with this+0x10 = the actor AND a vtable holding the base react itself. Only such a
 // verified object is called (test 2 crash: dm + 8 also has +0x10 = the actor - the damage manager's own mActor - but is not it).
 // A class that overrides react is not matched (nothing sent). Guest call inside linkpos_frame only (fire_cpu).
+// (s289 b9fix) The place is cached PER CLASS (the actor's vtable, linkpos_ercache.h: 32 entries, least recently used
+// replaced), "none found" included: was one global place for every class, so until the first success every hit rescanned
+// ~1,500 candidates (VirtualQuery for pointers readable() had not cached = a possible hitch), and after it a class that keeps
+// the object elsewhere never reacted. One log line per class found / not found.
 // 1 = sent, 0 = no reaction object, -1 refused.
 #define ELEM_REACT (SS->elem_react)
 #define ER_SLOTS 128
-static int g_er_base = -1, g_er_ptr, g_er_off, g_er_slot = -1;  // (cached: base 0 actor / 1 damage manager, pointer or embedded, offset, vtable slot)
-static int er_slot_of(uint64_t p, uint64_t actor) {  // the react slot in p's vtable, -1 = p is not a reaction object of this actor
+#include "linkpos_ercache.h"
+static ErCache g_erc;  // (game thread only: linkpos_enemy_element runs inside linkpos_frame)
+// the react slot in p's vtable (want >= 0: only that slot is checked), -1 = p is not a reaction object of this actor
+static int er_slot_of(uint64_t p, uint64_t actor, int want) {
     if (!in_guest(p) || (p & 7) || readable(p, 0x18) != 0x18 || *(const uint64_t *)(uintptr_t)(p + 0x10) != actor) return -1;
     uint64_t vt = *(const uint64_t *)(uintptr_t)p;
     if (!in_guest(vt) || readable(vt, 8 * ER_SLOTS) != 8 * ER_SLOTS) return -1;
-    if (g_er_slot >= 0) return *(const uint64_t *)(uintptr_t)(vt + 8 * (uint64_t)g_er_slot) == ELEM_REACT ? g_er_slot : -1;
+    if (want >= 0) return want < ER_SLOTS && *(const uint64_t *)(uintptr_t)(vt + 8 * (uint64_t)want) == ELEM_REACT ? want : -1;
     for (int k = 0; k < ER_SLOTS; k++)
         if (*(const uint64_t *)(uintptr_t)(vt + 8 * (uint64_t)k) == ELEM_REACT) return k;
     return -1;
@@ -5509,26 +5570,51 @@ static uint64_t er_at(uint64_t base, int ptr, int off) {
     if (!ptr) return q;
     return readable(q, 8) == 8 ? *(const uint64_t *)(uintptr_t)q : 0;
 }
-static uint64_t er_obj(uint64_t a) {
+// the actor's reaction object, 0 = none; *why (when 0): 0 searched now, nothing; 1 the class is cached as "none"; 2 the class's
+// cached place did not check out on this actor; 3 not searched (the actor's bytes not readable)
+static uint64_t er_obj(uint64_t a, int *why) {
     uint64_t dm = readable(a + ACTOR_DAMAGE_MGR, 8) == 8 ? *(const uint64_t *)(uintptr_t)(a + ACTOR_DAMAGE_MGR) : 0;
-    if (g_er_base >= 0) {
-        uint64_t p = er_at(g_er_base ? dm : a, g_er_ptr, g_er_off);
-        return er_slot_of(p, a) >= 0 ? p : 0;
+    uint64_t avt = readable(a, 8) == 8 ? *(const uint64_t *)(uintptr_t)a : 0;
+    if (!in_guest(avt)) avt = 0;  // (no class key: searched, never cached)
+    ErcEnt *ce = erc_find(&g_erc, avt);
+    if (ce) {
+        if (ce->slot < 0) { *why = 1; return 0; }
+        uint64_t p = er_at(ce->base ? dm : a, ce->ptr, ce->off);
+        if (er_slot_of(p, a, ce->slot) >= 0) return p;
+        *why = 2;
+        return 0;
     }
+    int searched = 0;  // bit 0 the actor, bit 1 the damage manager
     for (int base = 0; base < 2; base++) {
         uint64_t b = base ? dm : a;
         int lim = base ? 0x400 : 0x1000;
         if (!in_guest(b) || readable(b, (size_t)lim) != (size_t)lim) continue;
+        searched |= 1 << base;
         for (int ptr = 1; ptr >= 0; ptr--)
             for (int o = 0; o < lim; o += 8) {
                 uint64_t p = er_at(b, ptr, o);
-                int k = er_slot_of(p, a);
+                int k = er_slot_of(p, a, -1);
                 if (k < 0) continue;
-                g_er_base = base, g_er_ptr = ptr, g_er_off = o, g_er_slot = k;
-                LOG("[linkpos] mgelem: reaction object = %s %s+%#x (%llx, vtable %llx slot %d)\n", ptr ? "pointer at" : "inside",
-                    base ? "damage manager" : "actor", o, (unsigned long long)p, (unsigned long long)*(const uint64_t *)(uintptr_t)p, k);
+                uint64_t ev = 0;
+                if (avt) erc_put(&g_erc, avt, base, ptr, o, k, &ev);
+                const char *nm = actor_name(a);
+                LOG("[linkpos] mgelem: class %s (vtable %llx): reaction object = %s %s+%#x (%llx, vtable %llx slot %d)%s\n",
+                    nm ? nm : "?", (unsigned long long)avt, ptr ? "pointer at" : "inside", base ? "damage manager" : "actor", o,
+                    (unsigned long long)p, (unsigned long long)*(const uint64_t *)(uintptr_t)p, k,
+                    !avt ? " (no class key: not cached)" : ev ? " (cache full: the least used class dropped)" : "");
                 return p;
             }
+    }
+    // cached as "none" only after a real search: the actor's block read, and the damage manager's too unless it has none
+    bool full = (searched & 1) && ((searched & 2) || !dm);
+    *why = full ? 0 : 3;
+    if (full && avt) {
+        uint64_t ev = 0;
+        erc_put(&g_erc, avt, -1, 0, 0, -1, &ev);
+        const char *nm = actor_name(a);
+        LOG("[linkpos] mgelem: class %s (vtable %llx): no element-reaction object (actor 0x1000%s): not searched again%s\n",
+            nm ? nm : "?", (unsigned long long)avt, dm ? " + damage manager 0x400" : ", no damage manager",
+            ev ? " (cache full: the least used class dropped)" : "");
     }
     return 0;
 }
@@ -5536,12 +5622,14 @@ int linkpos_enemy_element(uint64_t actor, int el) {
     if (!in_guest(actor) || !fire_actor_ok(actor)) return -1;
     Cpu *c = fire_cpu("element", ELEM_REACT);
     if (!c) return -1;
-    uint64_t p = er_obj(actor);
+    int why = 0;
+    uint64_t p = er_obj(actor, &why);
     const char *nm = actor_name(actor);
     if (!p) {
         static int n;
-        if (n++ < 8) LOG("[linkpos] mgelem: %s %llx: no element-reaction object found (search %s)\n", nm ? nm : "?",
-                         (unsigned long long)actor, g_er_base >= 0 ? "cached" : "found nothing");
+        if (n++ < 8) LOG("[linkpos] mgelem: %s %llx: no element-reaction object found (%s)\n", nm ? nm : "?", (unsigned long long)actor,
+                         why == 1 ? "its class has none (cached)" : why == 2 ? "its class's cached place did not check out" :
+                         why == 3 ? "not searched: its bytes not readable" : "search found nothing");
         return 0;
     }
     Cpu save = *c;

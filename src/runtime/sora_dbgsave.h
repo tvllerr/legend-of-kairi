@@ -35,6 +35,16 @@ static int dbs_write(char *o, size_t cap, const int v[DBS_NROWS]) {
     return (int)n;
 }
 
+// (s289 fix3b, recon/s289/S289_HELPER_COOPCHECK.md 3b) a Party row (party1 / party2) under the co-op room's one-member rule. The
+// rule empties a slot with the Debug Menu's None (sora_dbgmenu.h dbm_coop_drop_, marked in sora_party.h g_coop_auto) and leaving
+// the room fills it again with the member the slot kept under it (dbm_coop_tick_: nobody is swapped in). Written as None (-1), a
+// save made in the room (an autosave too) took that member away from single player: the next solo Continue (dbm_slot_load) ran
+// the -1 as the player's OWN None, which the room's end never gives back.
+// row = the row's value as the line had it before (a character id, -1 = None), rule = the rule made this None (g_coop_auto[slot]),
+// under = the character the slot keeps (g_pchar[slot]). -> the value for the line: the rule's None = under; else row, unchanged
+// (the player's own None stays -1; single player never sets rule, so its line is byte for byte the old one).
+static int dbs_party_val(int row, bool rule, int under) { return rule ? under : row; }
+
 // The line out of the sidecar text b (NUL-terminated). -> -1 = no "dbgmenu" key (a save from before dbgsave, or written with it
 // off), -2 = the key is there but its value is not a closed "..." string on that line (a broken file: nothing of it is used),
 // else the number of rows read (have[r] = true, v[r] = the value). *bad = items not understood (an unknown name, no number).

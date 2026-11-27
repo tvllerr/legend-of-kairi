@@ -32,6 +32,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import meltycheck  # noqa: E402  (s223: nothing of Melty's in the GitHub release)
 import gameside    # noqa: E402  (s254: its SW_WANT must be swsetup's)
 import swsetup     # noqa: E402  (s254: the Savage Wind version + game code ids this release is for)
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sorabuild"))
+import sb          # noqa: E402  (s291: sb.kit_stale, the same kit source check a player's build makes at cs_build)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
@@ -95,6 +97,7 @@ STOCK_RESOURCES = ["FiraSans-Medium.ttf", "FiraSans-SemiBold.ttf", "FiraSans-OFL
                    # (s250, Savage Wind 0.6.0) AMD's FSR API: fsr_api.cpp loads amd_fidelityfx_loader_vk.dll from the exe's folder
                    # (stock ships both + AMD's licence there; the bigger 0.6.0 vk_pipelines.seed comes from the same folder)
                    "amd_fidelityfx_loader_vk.dll", "amd_fidelityfx_upscaler_vk.dll", "AMD-FidelityFX-DLL-LICENSE.txt"]
+COLOUR_LUTS = ["Dormant.cube", "Ember.cube", "Savage_Wind.cube", "README.md"]   # (s227) stock's colour-luts/ folder, CC0
 # (s212) license texts of stock files that the kit's LICENSES/ lacks (FidelityFX: the FSR 1 code built into savagewind.exe)
 STOCK_LICENSES = ["NotoSansThai-OFL.txt", "NotoSansHebrew-OFL.txt", "FidelityFX-LICENSE.txt", "AMD-FidelityFX-DLL-LICENSE.txt"]
 # (s212, review R1) bin/kairi_env.txt (runtime/kairi_env.h, read first in main): a plain start of bin/savagewind.exe is the mod with
@@ -114,9 +117,10 @@ SKIP_TOOLS = {"tools/installer/mkzip.py", "tools/sorabuild/config.thispc.json", 
               "tools/installer/test_gameside.py", "tools/installer/test_recover.py", "tools/installer/test_lock.py",
               "tools/installer/test_update.py", "tools/installer/test_precheck.py", "tools/installer/test_selfupdate.py", "tools/installer/test_uisfx.py",
               "tools/installer/test_shortcut.py", "tools/installer/test_play.py", "tools/installer/test_server.py", "tools/installer/signrel.py",
-              "tools/installer/test_swsetup.py", "tools/installer/test_swinstall.py", "tools/installer/meltycheck.py",
+              "tools/installer/test_swsetup.py", "tools/installer/test_swinstall.py", "tools/installer/test_luts.py", "tools/installer/meltycheck.py",
               "tools/installer/test_meltycheck.py", "tools/installer/build_github_dll.sh", "tools/sorabuild/kit/rebuild_tools.py",   # (s223)
               "tools/installer/test_amdclean.py",   # (s241)
+              "tools/installer/test_kitdrop.py",    # (s291) host test of kitdrop.py
               "tools/sorabuild/test_pesig.py",   # (s201) host test of pesig.py (reads the dev kit + Melty's signed copy)
               "tools/sorabuild/logo/dev/gen_layers.py", "tools/sorabuild/logo/dev/README.md",
               "tools/sorabuild/ragmap/dev/dump_old.c", "tools/sorabuild/ragmap/dev/dump_new.c", "tools/sorabuild/ragmap/dev/proof.sh",
@@ -192,6 +196,21 @@ def forbidden_files(out):
             for d, dirs, fs in os.walk(out) for n in dirs + fs if n.lower() in FORBIDDEN]
 
 
+def kit_mismatch(kit):
+    """(s291, the s291 review's finding 1) the kit's tools must be built from THIS tree's sources (sb.kit_stale, the very check
+    sb.kit_tool makes on the player's PC): a zip with a stale kit packs fine and then stops at cs_build on every PC"""
+    try:
+        kj = json.load(open(os.path.join(kit, "kit.json"), encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return ["%s/kit.json cannot be read (%s)" % (kit, e)]
+    stale = sb.kit_stale(kj)
+    src = kj.get("src") if isinstance(kj, dict) and isinstance(kj.get("src"), dict) else {}
+    if stale:
+        return ["kit tool %s was built from other sources (kit %s, tree %s)" % (
+            t, str(src.get(t) or "none")[:12], sb.src_hash(t)[:12]) for t in stale]
+    return []
+
+
 def version_mismatch(exe, stock_dir):
     """(s254, the s252 review's finding 4) -> the reasons this package would not fit ONE Savage Wind version ([] = fine): the
     installer (swsetup.SW_WANT + its pinned stock zip), the launcher's check (gameside.SW_WANT), the stock folder the runtime
@@ -244,6 +263,10 @@ def main():
     for p in (a.exe, a.dll, os.path.join(a.kit, "kit.json")):
         if not os.path.isfile(p):
             raise SystemExit("mkzip: missing %s" % p)
+    stale = kit_mismatch(a.kit)                       # (s291) before anything is written
+    if stale:
+        raise SystemExit("mkzip: the kit %s does not fit this tree, nothing was packed (make a full kit with "
+                         "tools/sorabuild/kit/mkkit.py):\n  " % a.kit + "\n  ".join(stale))
     mism = version_mismatch(a.exe, a.runtime_dlls)   # (s254) before anything is written
     if mism:
         raise SystemExit("mkzip: Savage Wind version mismatch, nothing was packed:\n  " + "\n  ".join(mism))
@@ -317,10 +340,22 @@ def main():
         if not os.path.isfile(src):
             raise SystemExit("mkzip: %s not found in %s (the stock Savage Wind folder)" % (name, a.runtime_dlls))
         shutil.copy2(src, os.path.join(bd, name))
+    # (s227) the colour grades: runtime/color_grade.c asks rt_resource("colour-luts") = <exe folder>/colour-luts, and the exe runs
+    # from <install>/bin (both tracks), so without this folder the log says: [colour] LUT "sw:Savage_Wind.cube" not used.
+    # Listed in the manifest as "colour-luts/<file>" (the installers copy those names, making the folder).
+    luts = os.path.join(a.runtime_dlls, "colour-luts")
+    if not os.path.isdir(luts) or not all(os.path.isfile(os.path.join(luts, n)) for n in COLOUR_LUTS):
+        raise SystemExit("mkzip: %s is missing or lacks one of %s (the stock Savage Wind folder)" % (luts, ", ".join(COLOUR_LUTS)))
+    shutil.copytree(luts, os.path.join(bd, "colour-luts"))
     with open(os.path.join(bd, "kairi_env.txt"), "w", encoding="utf-8", newline="\n") as f:  # (s212, R1)
         f.write(KAIRI_ENV_GITHUB if a.track == "github" else KAIRI_ENV)
     # (the mod DLL's live copies and anything else must never get in)
-    binfiles = {f: {"size": os.path.getsize(os.path.join(bd, f)), "sha256": sha256(os.path.join(bd, f))} for f in sorted(os.listdir(bd))}
+    binfiles = {}
+    for d, dirs, fs in os.walk(bd):
+        for n in fs:
+            p = os.path.join(d, n)
+            binfiles[os.path.relpath(p, bd).replace(os.sep, "/")] = {"size": os.path.getsize(p), "sha256": sha256(p)}
+    binfiles = dict(sorted(binfiles.items()))
 
     dm = json.load(open(os.path.join(REPO, "tools", "sorabuild", "manifest.thispc.json"), encoding="utf-8"))
     man = {"release": NAME, "version": a.version, "track": a.track, "made": time.strftime("%Y-%m-%d %H:%M:%S"),

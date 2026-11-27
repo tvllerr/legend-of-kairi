@@ -820,6 +820,7 @@ def install_game_side(root, sw_dir, log=print, release=RELEASE):
         os.makedirs(dst, exist_ok=True)
         for n in names:
             tmp = os.path.join(dst, n + ".new")
+            os.makedirs(os.path.dirname(tmp), exist_ok=True)   # (s227) "colour-luts/x.cube": savagewind.exe looks beside itself
             try:
                 shutil.copy2(os.path.join(src, n), tmp)
                 os.replace(tmp, os.path.join(dst, n))

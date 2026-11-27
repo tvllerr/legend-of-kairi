@@ -84,7 +84,9 @@ static void lm_request(int i) { if (i >= 0 && i < LM_N) LM.req = i, LOG("[limit]
 // (the flights) Strike Raid's Keyblade (one) and Infinity's shots: KH cm / KH frames, BotW units for positions
 typedef struct { bool on, back; int kind, atkp, power, pct, nhit; float t, life, speed, turn, r, spin, pos[3], dir[3];
                  uint64_t target, hit[16]; int fx;
-                 bool base; int out; int body; } LmShot;  // (s261 kbthrow: base = base Sora's own blade, out = KH frames out (0 = 24), body = the draw actor it left)
+                 bool base; int out; int body; uint8_t du_legs; } LmShot;  // (s261 kbthrow: base = base Sora's own blade, out = KH frames out (0 = 24), body = the draw actor it left)
+// (s289 kbthrow) du_legs = the duel opponent was hit on the way out (1) / back (2): sora_duel.h du_throw, defined further down
+static int du_throw(const float prev[3], const float pos[3], bool back, uint8_t *legs, int power, int pct, int atkp, float to_u);
 #define LM_SHOTS 32
 static LmShot g_lms[LM_SHOTS];
 static void (*g_lm_weapon_at)(int, const float *, int, const float *, float, float);
@@ -315,6 +317,7 @@ static void lm_frame(float kh, float to_u, const float feet[3]) {
                 }
             }
         }
+        float prev[3] = {o->pos[0], o->pos[1], o->pos[2]};  // (s289 kbthrow: the blade one frame before, a duel hit's "from")
         for (int c = 0; c < 3; c++) o->pos[c] += o->dir[c] * o->speed * kh * to_u;
         if (o->fx >= 0) sora_fx_move(o->fx, o->pos, atan2f(o->dir[0], o->dir[2]));
         float r = o->r * to_u;
@@ -330,6 +333,8 @@ static void lm_frame(float kh, float to_u, const float feet[3]) {
             else if (actor[i] == o->target && !o->back) o->back = true, o->nhit = 0;  // (the Keyblade turns back at its target)
         }
         if (!o->on) continue;
+        if (o->base && du_throw(prev, o->pos, o->back, &o->du_legs, o->power, o->pct, o->atkp, to_u) == DUT_OUT)
+            o->back = true, o->nhit = 0;  // (s289 kbthrow, duelthrow 1: the duel opponent; a hit on the way out turns the blade back, as at an enemy target)
         if (blade && !o->back && o->t >= (o->out > 0 ? o->out : 24)) o->back = true, o->nhit = 0;  // (no target reached: back after 24 frames, GUESS)
         if (!blade && o->t >= o->life) { o->on = false; if (o->fx >= 0) sora_fx_kill(o->fx); continue; }
         if (blade) {

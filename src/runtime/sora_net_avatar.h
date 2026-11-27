@@ -100,6 +100,8 @@ static int av_used(void) {
     for (int i = 0; i < cap && AV.bones && AV.bones(i) > 0; i++) n++;
     return n;
 }
+#include "sora_net_gear_draw.h"  // (s289 netgear: a friend's BotW weapon in his Sora's hand; needs AV, av_dot_pathn, av_used)
+#include "sora_net_shots_game.h"  // (s289 shots: our shots sampled, a friend's drawn; needs the same + ngd_get, link_actor, rd_ok)
 
 // slot k's remote draw actor for body <body> (lazy load, cached for the session); -1 = failed / refused
 static int avatar_actor_for_body(int k, int body) {
@@ -333,6 +335,8 @@ static void avatar_slot_off(int k) {
     avrib_tick(k, false, 0, -1, 0, (float[3]){0, 0, 0}, 0, 1, 0, 0, 0);
     if (AVS[k].shown && AV.off && AVS[k].cur > 0) AV.off(AVS[k].cur);
     AVS[k].shown = false;
+    ngd_off(k);  // (s289 netgear)
+    nsg_off(k);  // (s289 shots)
     avatar_plate_off(k);
 }
 static void avatar_off(void) { for (int k = 0; k < NET_MAX_PEERS; k++) avatar_slot_off(k); }
@@ -494,7 +498,8 @@ static void av_slot_tick(int k, uint64_t now) {
     }
     float gh = q.alpha < 1 ? q.alpha : (q.flags & NF_GHOST) ? g_swim_ghost / 100.0f : 0;
     if (gh != AVS[k].gh) AV.ghost(id, gh), AVS[k].gh = gh;
-    int w = (q.flags & NF_WEAPON) != 0;
+    NgdAct *gear = skate || bone ? NULL : ngd_pick(k, body, id, slot, clock, now);  // (s289 netgear: his BotW weapon; NULL = as before)
+    int w = (q.flags & NF_WEAPON) != 0 && !gear;
     if (skate) {}  // (s172: the rider actor has no Keyblade; the local rider never sets one either)
     else if (w != AVS[k].w) AV.weapon(id, w != 0), AVS[k].w = w;
     if (!skate && (q.kb_chain != AVS[k].kb0 || q.kb_alt != AVS[k].kb1)) {
@@ -508,6 +513,7 @@ static void av_slot_tick(int k, uint64_t now) {
         else g_net_bone_fb++;
     }
     if (!bdrawn) AV.pose(id, slot, clock, feet, q.yaw, 0.01f * g_k);
+    ngd_draw(k, gear, feet, q.yaw, gh);  // (s289 netgear: at his grip as just posed; NULL = a weapon shown before goes off)
     avrib_tick(k, !bone && !skate, body, slot, clock, feet, q.yaw, 0.01f * g_k, q.kb_chain, q.kb_alt, now);
     AVS[k].shown = true;
     av_note_drawn(sl, feet, skate || m != NULL || bdrawn, now);  // (s209: Melty's FRAME note counts him; sora_net_note.h)
@@ -586,9 +592,11 @@ static void av_slot_tick(int k, uint64_t now) {
 }
 
 static void avatar_tick(uint64_t now) {
+    nsg_sample(now);  // (s289 shots: our arrows / bombs / thrown weapon / runes for the friends; reads only, needs no draw actor)
     if (!NET.on || !g_av_local_ok || AV.dead) { avatar_off(); av_drop_events(); return; }
     if (!av_init()) { AV.dead = true; avatar_off(); av_drop_events(); return; }
     for (int k = 0; k < NET_MAX_PEERS; k++) av_slot_tick(k, now);
+    nsg_draw(now);  // (s289 shots: the friends' shots, after their bodies and netgear's weapons)
 }
 
 static void avatar_diag(void) {
@@ -600,4 +608,5 @@ static void avatar_diag(void) {
             AVS[k].actor[7], AVS[k].actor[8]);
     for (int k = 0; k < NET_MAX_PEERS; k++)
         if (AVS[k].skact[0] || AVS[k].skact[1]) LOG("[net]   slot %d skate rider actors Sora %d Roxas %d\n", k + 1, AVS[k].skact[0], AVS[k].skact[1]);
+    ngd_diag();  // (s289 netgear)
 }

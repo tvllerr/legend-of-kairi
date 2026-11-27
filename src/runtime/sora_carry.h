@@ -150,6 +150,20 @@ static const struct { uint64_t vt; const char *name; } CARRY_LEAF[] = {
 static int g_carry = CARRY_DEFAULT;  // live carry
 static int g_carry_log = 0;          // live carrylog
 static int g_carry_max = CARRY_MAX_DEF;
+// (s291 popin) live carryheld 0/1 (default 1 since s292): 1 = the exe keeps only the object Link holds visible while he is hidden, other pots /
+// barrels near him keep BotW's own fades (exe linkpos_carryshow.h; asked every frame through linkpos_carry_show_held, its per-actor
+// lines with carrylog 1). 0, or an exe linked before s291 (no export) = the old rule: every lowered liftable within 3 u kept visible.
+static int g_carry_held = 1;  // (default ON since s292: lab s291 (g) B + C PASS (held objects stay visible), the user: "turn it on, I'll watch")
+static void carry_held_tick(void) {
+    if (!g_carry_held) return;
+    static void (*ask)(int);
+    static int tried;
+    if (!tried) {
+        tried = 1, ask = (void (*)(int))(void *)GetProcAddress(GetModuleHandleA(NULL), "linkpos_carry_show_held");
+        if (!ask) LOG("[carry] carryheld: not in this exe (needs the s291 relink): old rule\n");
+    }
+    if (ask) ask(g_carry_log);
+}
 static struct {
     int gate;        // 0 not checked, 1 ok, -1 refused (other version), -2 refused (chain)
     int bad_n;
@@ -303,6 +317,7 @@ static const char *carry_actor_name(uint64_t h) {  // (BaseProc +0x10 = mName's 
 // sora.c tick, right after sk_tick: returns LINK_OTHER while carry mode is on (carry 1)
 static int carry_tick(uint64_t present, int st, uint32_t sw, bool dead, bool loading, bool swim) {
     if (CARRY.dump) carry_dump_tick(present, loading);  // (s217 follow-up: live carrydump, reads only)
+    carry_held_tick();  // (s291 popin: live carryheld, nothing while it is 0)
     if (!g_carry && !CARRY.m.on) return st;  // (default: no scan at all)
     CarryWalk w;
     memset(&w, 0, sizeof w);
@@ -380,6 +395,8 @@ static bool carry_live_set(const char *key, int v) {
         CARRY.dump = v == 1 || v == 2 ? v : 0, CARRY.dump_at[0] = CARRY.dump_at[1] = 0, CARRY.nox_was = false;
         LOG("[carrydump] %s\n", CARRY.dump == 1 ? "Link's AI tree now (next frame)" : CARRY.dump == 2 ? "armed: two dumps after the next no-wall Triangle (lift +30, +120 presents)" : "off");
     }
+    else if (!strcmp(key, "carryheld")) g_carry_held = v != 0, LOG("[carry] carryheld %d: %s\n", g_carry_held,
+        g_carry_held ? "only the object Link holds stays visible while he is hidden (other pots / barrels keep BotW's fades)" : "old rule (every lowered liftable near hidden Link kept visible)");
     else if (!strcmp(key, "carrymax")) g_carry_max = v < 60 ? 60 : v, LOG("[carry] timeout %d presents\n", g_carry_max);
     else return false;
     return true;

@@ -1083,6 +1083,41 @@ static bool test_equip_scroll_layout(void) {
     return ok && cp_eq_vis_rows() == 9 && g_eqtx == 51 && g_eqvx == 22 && cp_eq_colx() == 44.5f && cp_eq_cx() == 0 && cp_eq_cy() == 0;
 }
 
+// (s289 b9fix) eqlayout flipped while the picker is open: the next present re-clamps eq_top (the cursor never sits on the hidden
+// 9th row) and rebuilds the picker with the new row count; back again = 9 rows, the cursor still shown
+static bool eq_flip_(void) {
+    ge_(KB_KINGDOM_KEY, KB_STAR_SEEKER);
+    GE.kb_own = 0xfffffffu;
+    CHECK(equip_open_());
+    pt_(2, CP_BTN_A); CHECK(P.sub == 2 && P.eq_pick == 0 && P.eq_top == 0 && P.eq_vis == 9);
+    for (int i = 0; i < 8; i++) pt_(2, CP_BTN_DOWN);  // the cursor on the 9th row (list position 8)
+    int l[CP_EQ_LMAX], n = cp_eq_plist(PV, P.kb, P.eq_slot, l), e = cp_eq_pos(l, n, P.eq_pick);
+    CHECK(n > 9 && e == 8 && P.eq_top == 0);
+    CHECK(P.tree.n[P.tree.n[P.root[2]].kid0].nkids == 2 * 9);
+    g_eqlayout = 1, eq_layout_apply();
+    pt_(2, 0);
+    CHECK(PO.log && !strcmp(PO.log, "equip picker rows changed (eqlayout)") && PO.se == CP_SE_NONE);
+    CHECK(P.eq_vis == 8 && P.eq_top == e - 8 + 1 && P.sub == 2);
+    CHECK(P.tree.n[P.tree.n[P.root[2]].kid0].nkids == 2 * 8);
+    pt_(2, 0); CHECK(!PO.log);  // once only
+    pt_(2, CP_BTN_UP); CHECK(P.eq_top == 1);  // list position 7: still inside rows 1..8
+    pt_(2, CP_BTN_DOWN);
+    g_eqlayout = 0, eq_layout_apply();
+    pt_(2, 0);
+    CHECK(PO.log && P.eq_vis == 9 && P.eq_top == 1 && P.tree.n[P.tree.n[P.root[2]].kid0].nkids == 2 * 9);
+    CHECK(cp_eq_top_clamp(-1, 3, 8) == 3 && cp_eq_top_clamp(2, 3, 8) == 2 && cp_eq_top_clamp(11, 3, 8) == 4 && cp_eq_top_clamp(10, 3, 8) == 3);
+    PV = &GV;
+    return true;
+}
+static bool test_equip_eqlayout_flip_open(void) {
+    int keep = g_eqlayout;
+    g_eqlayout = 0, eq_layout_apply();
+    bool ok = eq_flip_();
+    g_eqlayout = keep, eq_layout_apply();
+    PV = &GV;
+    return ok;
+}
+
 #define RUN(t) do { bool ok_ = t(); printf("%s %s\n", ok_ ? "PASS" : "FAIL", #t); if (!ok_) fails++; } while (0)
 
 int main(int argc, char **argv) {
@@ -1155,6 +1190,7 @@ int main(int argc, char **argv) {
     RUN(test_equip_owned_only);
     RUN(test_equip_scroll);
     RUN(test_equip_scroll_layout);
+    RUN(test_equip_eqlayout_flip_open);
     RUN(test_eqlook_text_keys);
     RUN(test_eqlook_rows_armor);
     RUN(test_eqlook_panel_keyblade);

@@ -546,6 +546,7 @@ static void meal_hud(SoraHudMenu *m) {
     if (txt) text(mq, o.n);
 }
 
+static int dum_top_text(SoraHudQuad *q, int n, int cap, int ns);  // (s289 duelmenu, sora_duelmenu.h)
 // (s98) the same text rows for another sub page (the Slate page: "Magnesis" instead of the cmd.bin placeholder label
 // "Thunder"). Returns false when the exe export / font table is missing (the caller keeps its atlas labels).
 static bool sub_text_rows(SoraHudMenu *m, const char *const *rows, int ns, int sel_row) {
@@ -575,6 +576,7 @@ static bool sub_text_rows(SoraHudMenu *m, const char *const *rows, int ns, int s
         uint32_t col = m->sub_state[i] >= 4 ? 0x80787878 : sel ? 0x80E6E6E6 : 0x80B4B4B4;  // (greyed rune: dim, GUESS shade)
         for (int q = q0; q < o.n; q++) for (int c = 0; c < 4; c++) sq[q].col[c] = col;
     }
+    o.n = dum_top_text(sq, o.n, 256, ns);  // (s289 duelmenu) page 2's "Duel" text while a one-row page leaves slot 2 in view (key off: none)
     text(sq, o.n);
     return true;
 }

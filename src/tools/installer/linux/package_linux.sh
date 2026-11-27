@@ -31,6 +31,10 @@ TREE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)
 GAME_ID=ec4042eb255e81b4      # extracted/swgame.so.id that the stock 0.6.0-alpha.6 AppImage's Set up builds (AVX2 CPUs)
 C=$(git -C "$TREE" rev-parse --short=7 HEAD)
 [ -z "$(git -C "$TREE" status --porcelain)" ] || { echo "package_linux: $TREE is not clean" >&2; exit 1; }
+# (s291 review3 F1) the kit's tools must be built from THIS tree's sources (sb.kit_stale, the check sb.kit_tool makes on the
+# Deck; mkzip.kit_mismatch on Windows): a stale kit packs fine and then stops at cs_build on every Deck
+STALE=$("$KIT/python/bin/python3" -E -B -c 'import sys, json; sys.path.insert(0, sys.argv[1]); import sb; print(" ".join(sb.kit_stale(json.load(open(sys.argv[2], encoding="utf-8")))))' "$TREE/tools/sorabuild" "$KIT/kit.json") || { echo "package_linux: the kit check failed to run" >&2; exit 1; }
+[ -z "$STALE" ] || { echo "package_linux: the kit $KIT does not fit this tree (tool(s) built from other sources: $STALE): nothing was packed" >&2; exit 1; }
 DM=$TREE/tools/sorabuild/manifest.deck.json
 [ -f "$DM" ] || { echo "package_linux: no $DM" >&2; exit 1; }
 

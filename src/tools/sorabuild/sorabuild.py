@@ -34,7 +34,8 @@ def hold_run_lock(work):
     _RUN_LOCK = fd
 
 
-def load_steps():
+def load_steps(cfg=None):
+    """every step of steps/*.py; (s292) a step with opt=<key> only when cfg[<key>] is true"""
     steps = {}
     for f in sorted(glob.glob(os.path.join(sb.HERE, "steps", "*.py"))):
         g = os.path.splitext(os.path.basename(f))[0]
@@ -45,6 +46,8 @@ def load_steps():
         spec.loader.exec_module(m)
         for s in getattr(m, "STEPS", []):
             s.group = s.group or g
+            if getattr(s, "opt", None) and not (cfg or {}).get(s.opt):
+                continue
             if s.name in steps:
                 raise SystemExit("[sorabuild] step %s defined twice (%s, %s)" % (s.name, steps[s.name].group, g))
             steps[s.name] = s
@@ -100,7 +103,7 @@ def main():
     elif cfg.get("kh2img") and not cfg.get("kh2"):
         cfg["kh2"] = os.path.join(cfg["work"], "kh2")
     ctx = sb.Ctx(cfg)
-    steps = load_steps()
+    steps = load_steps(cfg)
 
     if a.list:
         for n in order(steps, list(steps)):

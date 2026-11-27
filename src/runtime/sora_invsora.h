@@ -7,7 +7,7 @@
 // menu Link's units, default 0), isopa (1 = also the preview actor's opacity), isreq (1 = draw only on the plain item pages).
 #pragma once
 
-static int g_is_x = 790, g_is_y = 860, g_is_h = 58, g_is_face = 15, g_is_yaw = 1, g_is_opa = 1, g_is_req = 1;
+static int g_is_x = 790, g_is_y = 860, g_is_h = 58, g_is_face = -15 /* (s292: the user's verified value, was 15) */, g_is_yaw = 1, g_is_opa = 1, g_is_req = 1;
 // (s105 islayer) 1 = Sora is not drawn inside the description panel's rect (isl0..isl3 = x0 y0 x1 y1, 1/1000 of the game image),
 // so he looks to stand behind it; 0 = old (over everything). Needs the exe export sora_draw_screen_mask (else logged once, = 0).
 // (s105 menupuppet) invsora 3: Sora is drawn like the WORLD puppet (BotW's camera, scene depth, the ui-boundary pass under the 2D UI) at the

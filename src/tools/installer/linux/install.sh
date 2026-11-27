@@ -82,6 +82,9 @@ KIT="$HERE/kit"
 KPY="$KIT/python/bin/python3"
 SB="$HERE/tools/sorabuild"
 BUILD="$ROOT/build"            # the data build's scratch: out/ (the new data), work/, the wine prefix. Gone after a good build.
+# A failed KH2 check (before any long step) removes build/ again, but only when THIS run made it. After a failed data build it
+# must stay: the next run goes on where it stopped (and bad.txt tells a rebuild from a machine that builds differently).
+drop_build() { [ "${BUILD_NEW:-0}" = 1 ] && [ "$BUILD" = "$ROOT/build" ] && rm -rf -- "$BUILD"; return 0; }
 OLDOK=""; [ -n "$OLD" ] && OLDOK=" Your $OLD install still works as it was."
 
 # ---- 2. is the installed data already this version's? (a re-run: then no KH2 / Proton / build is needed)
@@ -170,6 +173,7 @@ EOF
     [ -x "$PROTON/files/bin/wine" ] || die "$PROTON is not a Proton folder (no files/bin/wine)"
     case "$(basename "$PROTON")" in "Proton 11.0") ;; *) note "(the data was checked with Proton 11.0; $(basename "$PROTON") should work the same)" ;; esac
 
+    BUILD_NEW=0; [ -e "$BUILD" ] || BUILD_NEW=1     # 1 = this run makes the build folder (only then may a failed KH2 check remove it)
     mkdir -p "$BUILD/out" "$BUILD/work" || die "cannot write in $BUILD"
     cat > "$BUILD/wine.sh" <<EOF
 #!/bin/sh
@@ -191,12 +195,15 @@ EOF
     rc=$?
     grep -a "kh2pick" "$ROOT/logs/kh2pick.log" >> "$LOG"
     if grep -aq "kh2pick: your KH2 files differ" "$ROOT/logs/kh2pick.log"; then
+        drop_build
         die "your KINGDOM HEARTS II files are MODDED (a KH2 mod changed the kh2_*.pkg files in $KH2/Image/dt), or not the Steam release.
 Legend of Kairi is built from the unmodded Steam files. Nothing was changed in your KH2 folder.$OLDOK
 To go on: uninstall that KH2 mod (or Steam > KINGDOM HEARTS HD 1.5+2.5 ReMIX > Properties > Installed Files > Verify
-integrity, which removes KH2 mods), or point install.sh at an unmodded copy of the folder with --kh2 DIR."
+integrity, which removes KH2 mods), or point install.sh at an unmodded copy of the folder with --kh2 DIR.
+Installed 0.2.1 with update.sh? Then run:  $ROOT/update.sh --kh2 DIR   (DIR = the clean KINGDOM HEARTS folder;
+add --force if it says you are up to date)."
     fi
-    [ $rc = 0 ] || die "reading the KINGDOM HEARTS II files failed (exit $rc, log: $ROOT/logs/kh2pick.log).$OLDOK"
+    [ $rc = 0 ] || { drop_build; die "reading the KINGDOM HEARTS II files failed (exit $rc, log: $ROOT/logs/kh2pick.log).$OLDOK"; }
     echo "$KH2" > "$ROOT/kh2.path"
 fi
 

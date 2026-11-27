@@ -9,6 +9,8 @@
 //   (s223) D:/SoraBotW/sb/s223/cloud/sbuild/out/party: cloud_*.bin)
 // build (worktree root, UCRT64 clang): clang -O1 -g -Wall -Wextra -Wno-unused-function -Wno-missing-field-initializers
 //        -Iruntime runtime/test/party_test.c -o <out>/party_test.exe
+// (s289: the default bake dirs above were scratch and are gone; run on the installed bakes, the members as <root>/<key>/ copies:
+//   party_test.exe D:/SoraBotW/data/party D:/SoraBotW/data/party <root: auron/ mulan/ aladdin/ sparrow/> D:/SoraBotW/data/party)
 #include <stdarg.h>
 #include <stdio.h>
 static int g_verbose;
@@ -585,6 +587,17 @@ int main(int argc, char **argv) {
         party_pick_tail_fmt(tail, sizeof tail);
         CHECK(!strcmp(tail, " off=11 auto=11"));
         g_pslot_off[0] = sv_off[0], g_pslot_off[1] = sv_off[1], g_coop_auto[0] = sv_au[0], g_coop_auto[1] = sv_au[1];
+    }
+
+    {   // (s289 revive) a DOWNED Sora is never a Cure target (a KO is past Cure in KH2): his friend revives him
+        PIn in = {{0, 0, 0}, 0, true, 2.0f, 0.01f, 1, ray, NULL, 0, 0.5f, 1.6f, 1, 16, &HK};
+        CHECK(pc_heal_target(0, &in) == 0 && pc_cure_who(0, &in, 0.5f) == 0);  // life 1 of 16: Sora first
+        in.sora_down = true;
+        CHECK(pc_heal_target(0, &in) != 0 && pc_cure_who(0, &in, 0.5f) != 0);  // DOWNED: never Sora
+        float mx = 0;
+        CHECK(pc_hp_of(&in, 0, &mx) == 16 && mx == 16);
+        in.sora_down = false, in.sora_hp = 16;
+        CHECK(pc_heal_target(0, &in) != 0 && pc_cure_who(0, &in, 0.5f) != 0);  // full life: not Sora (as before)
     }
 
     printf("%s: %d/%d checks passed\n", fails ? "FAILED" : "OK", runs - fails, runs);

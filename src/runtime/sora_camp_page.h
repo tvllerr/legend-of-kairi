@@ -67,6 +67,7 @@ enum { CP_SE_NONE, CP_SE_OPEN, CP_SE_CURSOR, CP_SE_DECIDE, CP_SE_CANCEL, CP_SE_E
 typedef struct { int state, row, timer, held, layout_l2, layout_f, page, who, next, nroot, sub, ab_row, ab_top, pop_row, cu_slot, cu_pick, eq_slot, eq_pick;
                  int eq_wpnrow;  // (s128 wpnmenu) 1 = the Weapons row shows Link's BotW weapon (set before each equip tree build)
                  int eq_top;  // (s89 kb) the picker's first shown entry (owned list position)
+                 int eq_vis;  // (s289 b9fix) cp_eq_vis_rows() at the picker's last build: eqlayout flipped while it is open = re-clamp + rebuild
                  int db_row, db_top, db_v[CP_DB_ROWS], db_rebuild, db_rep;  // (s140 dbgmenu; s146: db_row = SHOWN row, db_v by BACKEND row) the Debug page: cursor row, the values (test level 0 = Off, toggles, Outfit), rebuild asked by the glue, hold-repeat count
                  uint64_t held_btn;  // (s140) the buttons held this present (set by the glue before cp_tick; the Debug page's hold-to-repeat)
                  abm_t ab_on; int sc[CUST_SLOTS]; int kb[KB_SLOTS]; CsTree tree; int root[7]; } CampPage;  // zero = CLOSED
@@ -173,7 +174,7 @@ static bool cp_built_(const CampPage *p) { for (int k = 0; k < cp_nroot_(p); k++
 static void cp_build_(CampPage *p, const CpVals *v) {
     if (p->page == 5) cp_build_dbg(&p->tree, p, v, p->root), p->nroot = 4;
     else if (p->page == 4 && p->sub == 0) cp_build_equip_member(&p->tree, p->who, v, p->root), p->nroot = 4;
-    else if (p->page == 4) p->eq_wpnrow = cp_eq_wpn_row(v), p->nroot = cp_build_equip_list(&p->tree, p->kb, v, p->eq_slot, p->sub == 2 ? p->eq_pick : -1, p->eq_top, p->root);
+    else if (p->page == 4) p->eq_wpnrow = cp_eq_wpn_row(v), p->eq_vis = cp_eq_vis_rows(), p->nroot = cp_build_equip_list(&p->tree, p->kb, v, p->eq_slot, p->sub == 2 ? p->eq_pick : -1, p->eq_top, p->root);
     else if (p->page == 3 && p->sub == 0) cp_build_cust_member(&p->tree, p->who, v, p->root), p->nroot = 4;
     else if (p->page == 3) p->nroot = cp_build_cust_list(&p->tree, p->sc, v, p->cu_slot, p->sub == 2 ? p->cu_pick : -1, p->root);
     else if (p->page == 2 && p->sub == 0) cp_build_abil_member(&p->tree, p->who, v, p->ab_on, p->root), p->nroot = 5;
@@ -406,6 +407,13 @@ static void cp_cust_input_(CampPage *p, const CampSeq *s, uint64_t press, float 
 // ---- the Equipment page (slice 5): Customize's flow (cp_cust_go_ rebuilds any page 3 / 4 sub-state) ----
 // A on Donald / Goofy = error (Sora only); L2 / R2 = error; up / down clamp. A on a picker entry = kb_set (one copy: the
 // other slot's Keyblade = error SE, the picker stays), back to the list on the same slot
+// (s289 b9fix) the picker's first shown entry so list position e (the cursor) is inside the vis-row window; e < 0 = top kept
+static int cp_eq_top_clamp(int e, int top, int vis) {
+    if (e < 0) return top < 0 ? 0 : top;
+    if (e < top) top = e;
+    if (e >= top + vis) top = e - vis + 1;
+    return top < 0 ? 0 : top;
+}
 static void cp_equip_input_(CampPage *p, const CampSeq *s, uint64_t press, float stick_y, const CpVals *v, CpOut *out) {
     if (p->sub == 0) {
         if (press & CP_BTN_B) { cp_switch_(p, 0); out->se = CP_SE_CANCEL; out->log = "equipment back"; return; }
@@ -461,6 +469,13 @@ static void cp_equip_input_(CampPage *p, const CampSeq *s, uint64_t press, float
         p->eq_slot = vs[r];
         cp_cust_go_(p, s, v, 1, false);
         out->se = CP_SE_CURSOR; out->log_row = r;
+        return;
+    }
+    if (p->eq_vis != cp_eq_vis_rows()) {  // (s289 b9fix) eqlayout flipped with the picker open: the cursor back inside the new window, rebuilt
+        int l[CP_EQ_LMAX], n = cp_eq_plist(v, p->kb, p->eq_slot, l);
+        p->eq_top = cp_eq_top_clamp(cp_eq_pos(l, n, p->eq_pick), p->eq_top, cp_eq_vis_rows());
+        cp_cust_go_(p, s, v, 2, false);
+        out->log = "equip picker rows changed (eqlayout)";
         return;
     }
     if (press & CP_BTN_B) { cp_cust_go_(p, s, v, 1, false); out->se = CP_SE_CANCEL; out->log = "equip picker back"; return; }
@@ -545,8 +560,7 @@ static void cp_equip_input_(CampPage *p, const CampSeq *s, uint64_t press, float
     int l[CP_EQ_LMAX], n = cp_eq_plist(v, p->kb, p->eq_slot, l), d = cp_dir_(p, press, stick_y), e = cp_eq_pos(l, n, p->eq_pick) + d, r;
     if (!d || e < 0 || e >= n) return;  // (s89 kb) moves over the owned list, clamped
     p->eq_pick = r = l[e];
-    if (e < p->eq_top) p->eq_top = e;
-    if (e >= p->eq_top + cp_eq_vis_rows()) p->eq_top = e - cp_eq_vis_rows() + 1;
+    p->eq_top = cp_eq_top_clamp(e, p->eq_top, cp_eq_vis_rows());
     cp_cust_go_(p, s, v, 2, false);
     out->se = CP_SE_CURSOR; out->log_row = r;
 }

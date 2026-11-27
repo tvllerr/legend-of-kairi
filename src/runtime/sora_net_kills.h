@@ -599,7 +599,7 @@ static void net_kills_recv(int k, const uint8_t *buf, int n, uint64_t now) {
     if (r == KSP_DONE) {
         NETK.st.ask_done++;
         LOG("[kills] catch-up from peer %d \"%s\": %u kill(s) in %d part(s), %u new to us, %u from before our last Blood Moon (dropped), %llu ms (%u ask(s)); "
-            "list %d, %d waiting for their enemy here\n", k + 1, sl->p.name, a->hids, a->n, a->fresh, a->old, (unsigned long long)(now >= a->t0 ? now - a->t0 : 0),
+            "list %d, %d waiting for their enemy here (not seen alive here yet; one already dead here waits until it comes back)\n", k + 1, sl->p.name, a->hids, a->n, a->fresh, a->old, (unsigned long long)(now >= a->t0 ? now - a->t0 : 0),
             a->tries, NETK.L.n, NETK.L.nwait);
     }
 }

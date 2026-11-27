@@ -655,6 +655,7 @@ void rt_vfr_update(uint64_t vfr) {
     clock_probe(vfr);
     log_screens();
     { extern void linkpos_frame(void); linkpos_frame(); }  // recon: Link's position per frame (runtime/linkpos.c)
+    { extern void rt_nopause_vfr(void); rt_nopause_vfr(); }  // (s289 nopause, runtime/nopause.c: nothing unless the DLL lets the world run behind a menu)
     extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
     if (!framepace_on()) {
         g_frame_ratio = VF(float, vfr, VFR_RATIO);
@@ -679,7 +680,8 @@ void rt_vfr_update(uint64_t vfr) {
     bool paused = *(uint32_t *)(uintptr_t)PAUSE_STATE != 0;
     if (paused) {
         // paused (it updates twice a frame): the frame's length between presents, nothing owed
-        ratio = g_step;
+        extern float rt_nopause_paused_step(float step);  // (s289 nopause, runtime/nopause.c: g_step as ever unless the world runs behind a menu with netnopausestep 2)
+        ratio = rt_nopause_paused_step(g_step);
         real = given = 0;
         last_target = -1;
     } else {

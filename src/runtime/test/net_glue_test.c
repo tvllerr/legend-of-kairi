@@ -66,6 +66,9 @@ static void net_fill(NetSnap *s);
 #define NET_ESYNC_NO_EXE
 #define ESA_NO_EXE
 #include "sora_net.h"
+// (s289 nopause: sora_nopause.h is the sora.c part of the DLL: here the world never runs behind a menu, as with the key 0)
+static bool np_frame(uint64_t now, float feet[3]) { (void)now, (void)feet; return false; }
+static bool np_live_set(const char *key, int v) { (void)key, (void)v; return false; }
 static void net_fill(NetSnap *s) { (void)s; }
 static void av_drop_events(void) {  // (as sora_net_avatar.h)
     g_drops++;
@@ -1536,6 +1539,114 @@ static void test_eshit_react(void) {
     g_net_esync = false, g_net_react = false, NETES.active = false;
 }
 
+// ---- (s289 fix 3a) mgelem's hit claim: the real sora_mgelem.h on the real esync / netreact glue above; sora.c's parts stubbed ----
+// spell_hit calls mgelem_hit BEFORE ah_hit, and ah_hit makes the ESYNC hit claim: the FIRST Blizzard / Thunder on an enemy a friend's
+// game runs saw his puppet and sent nothing to BotW. mgelemclaim 1: mgelem_hit makes that claim first. The calls in test_mgelem_claim
+// are spell_hit's order: mgelem_hit, then ah_hit's net_esync_note_hit + net_react_hit.
+enum { SPELL_FIRE, SPELL_BLIZZARD, SPELL_THUNDER, SPELL_CURE };
+static const struct { const char *name; } KH_SPELLS[] = {{"fire"}, {"blizzard"}, {"thunder"}, {"cure"}};  // (sora.c's names)
+static uint32_t ah_actor_hid(uint64_t a) { return a > 0x5000 && a < 0x6000 ? (uint32_t)(a - 0x5000) : 0; }  // (actor = 0x5000 + hid)
+static struct { int n, el, owner, brain; uint64_t actor; } g_mel;  // the linkpos_enemy_element calls: what ESYNC said AT the call
+static int fake_element(uint64_t actor, int el) {
+    const EsEnt *e = es_find(&NETES.c, ah_actor_hid(actor));
+    g_mel.n++, g_mel.el = el, g_mel.actor = actor, g_mel.owner = e ? e->owner : -2, g_mel.brain = e ? e->brain : -2;
+    return 1;
+}
+#define GetModuleHandleA(n) NULL
+#define GetProcAddress(m, n) (strcmp((n), "linkpos_enemy_element") ? NULL : (void *)fake_element)
+#include "sora_mgelem.h"
+#undef GetProcAddress
+#undef GetModuleHandleA
+static void test_mgelem_claim(void) {
+    reset_all();
+    memset(&g_mel, 0, sizeof g_mel);
+    NET.on = true, NET.me = 5, snprintf(NET.name, sizeof NET.name, "Alpha");
+    g_net_esync = true, NETES.active = true, NETES.c.me = 5, g_net_react = true;
+    g_net_eshit = true, NETES.c.hit_on = true;  // (net_esync_tick copies the key; no tick here)
+    EsPlayer pl[2];
+    memset(pl, 0, sizeof pl);
+    pl[0].id = 5, snprintf(pl[0].name, sizeof pl[0].name, "Alpha"), pl[0].pos[0] = 40;
+    pl[1].id = 77, snprintf(pl[1].name, sizeof pl[1].name, "Zed"), pl[1].pos[0] = 18;
+    es_set_players(&NETES.c, pl, 2);
+    uint64_t now = GetTickCount64();
+    EsEnt *a = es_put(0x88, true, 77, 0), *b = es_put(0xaa, true, 77, 0), *h = es_put(0x99, true, 77, 0), *q = es_put(0xbb, true, 77, 0);
+    a->have_pos = b->have_pos = h->have_pos = q->have_pos = true;
+    a->alive_ms = b->alive_ms = h->alive_ms = q->alive_ms = now;
+    h->o_hot = h->o_held = true;  // (Zed keeps hitting 0x99)
+    float from[3] = {1, 2, 3};
+    // the compiled defaults: mgelem on, its lines on, mgelemclaim on (s290 flip); then the key off for the old-calls block
+    CHECK(g_mgelem == 1 && g_mgelem_log == 1 && g_mgelem_claim == 1);
+    CHECK(mgelem_live_set("mgelemclaim", 0) && g_mgelem_claim == 0 && strstr(g_log, "[sora] live: mgelemclaim 0 ("));
+    // key off = the old calls exactly (bug 3a): a puppet, no note from mgelem, no exe call, the old line ...
+    mgelem_hit(SPELL_BLIZZARD, 0x5088);
+    CHECK(g_mel.n == 0 && a->owner == 77 && a->brain == 0 && a->hit_ms == 0 && NETES.c.st.hit_notes == 0);
+    CHECK(strstr(g_log, "[sora] mgelem: blizzard hit 5088: puppet here (another game owns it): no BotW freeze reaction\n") != NULL);
+    // ... then ah_hit's note claims it (local reaction, no NET_REACT): only the NEXT cast reaches BotW
+    CHECK(net_esync_note_hit(0x88) && a->owner == 5 && a->brain == 1 && !net_react_hit(0x88, from, 3, 50, 0, 0x11, "blizzard", false));
+    mgelem_hit(SPELL_BLIZZARD, 0x5088);
+    CHECK(g_mel.n == 1 && g_mel.el == 3 && g_mel.actor == 0x5088 && strstr(g_log, "[sora] mgelem: blizzard hit 5088 -> BotW freeze reaction sent\n"));
+    // the live key: one line when it changes, none on a rewrite; mgelem / mgelemlog stay sora.c's
+    g_log[0] = 0;
+    CHECK(mgelem_live_set("mgelemclaim", 1) && g_mgelem_claim == 1 && strstr(g_log, "[sora] live: mgelemclaim 1 ("));
+    g_log[0] = 0;
+    CHECK(mgelem_live_set("mgelemclaim", 7) && g_mgelem_claim == 1 && !g_log[0]);
+    CHECK(!mgelem_live_set("mgelem", 0) && !mgelem_live_set("mgelemlog", 0) && !mgelem_live_set("mgelemclaimx", 1) && g_mgelem == 1 && g_mgelem_log == 1);
+    // key on: the FIRST Thunder on 0xaa claims it inside mgelem_hit; ours + brain on BEFORE the exe call, the lines in that order
+    uint32_t notes = NETES.c.st.hit_notes;
+    g_log[0] = 0;
+    mgelem_hit(SPELL_THUNDER, 0x50aa);
+    CHECK(g_mel.n == 2 && g_mel.el == 4 && g_mel.actor == 0x50aa && g_mel.owner == 5 && g_mel.brain == 1);
+    CHECK(b->owner == 5 && b->brain == 1 && g_es_brain_last == 1 && b->claim_from == 77 && NETES.c.st.hit_notes == notes + 1 && NETES.c.st.hit_sync == 2);
+    const char *l1 = strstr(g_log, "[esync] hid=000000aa owner Zed -> Alpha (hit: claim)\n");
+    const char *l2 = strstr(g_log, "[sora] mgelem: thunder hit 50aa: hit claim made here first (hid=000000aa was another game's, now ours): BotW shock here\n");
+    const char *l3 = strstr(g_log, "[sora] mgelem: thunder hit 50aa -> BotW shock reaction sent\n");
+    CHECK(l1 && l2 && l3 && l1 < l2 && l2 < l3);
+    // ... ah_hit right after: its note is a no-op (ours), netreact says local: no NET_REACT, no second claim
+    CHECK(!net_esync_note_hit(0xaa) && !net_react_hit(0xaa, from, 4, 30, 0, 0x14, "thunder", false));
+    CHECK(NETR.tx.n == 0 && NETES.c.st.claims == 2 && NETES.c.st.hit_claims == 2 && NETES.c.st.hit_notes == notes + 2);
+    // owner HOT (Zed keeps hitting 0x99): no claim = a puppet hit as before (no exe call), the reason in the line; ah_hit sends it to him
+    g_log[0] = 0;
+    mgelem_hit(SPELL_BLIZZARD, 0x5099);
+    CHECK(g_mel.n == 2 && h->owner == 77 && h->brain == 0 && h->hit_ms != 0);
+    CHECK(strstr(g_log, "[sora] mgelem: blizzard hit 5099: puppet here (another game owns it): no BotW freeze reaction (no hit claim: the owner still hits it (HOT))\n") != NULL);
+    CHECK(!net_esync_note_hit(0x99) && net_react_hit(0x99, from, 3, 50, 0, 0x11, "blizzard", false) && NETR.tx.n == 1);
+    // eshit 0: no claim either
+    g_net_eshit = false, NETES.c.hit_on = false;
+    g_log[0] = 0;
+    mgelem_hit(SPELL_THUNDER, 0x50bb);
+    CHECK(g_mel.n == 2 && q->owner == 77 && strstr(g_log, "no BotW shock reaction (no hit claim: eshit 0)\n"));
+    g_net_eshit = true, NETES.c.hit_on = true;
+    // banned (we yielded 0xbb to a claim a moment ago): no claim
+    q->yield_ms = GetTickCount64();
+    g_log[0] = 0;
+    mgelem_hit(SPELL_THUNDER, 0x50bb);
+    CHECK(g_mel.n == 2 && q->owner == 77 && strstr(g_log, "(no hit claim: a claim of it was refused / yielded lately)\n"));
+    // mgelemlog 0: the same decision, no mgelem line (the [esync] claim line is esync's own)
+    q->yield_ms = 0;
+    g_mgelem_log = 0, g_log[0] = 0;
+    mgelem_hit(SPELL_BLIZZARD, 0x50bb);
+    CHECK(g_mel.n == 3 && g_mel.owner == 5 && q->owner == 5 && !strstr(g_log, "[sora] mgelem") && strstr(g_log, "(hit: claim)"));
+    g_mgelem_log = 1;
+    // single player (esync off, net off): no table read, no note, the exe call at once - the very same calls with the key off or on
+    g_net_esync = false, NETES.active = false, NET.on = false;
+    notes = NETES.c.st.hit_notes;
+    for (int k = 0; k < 2; k++) {
+        g_mgelem_claim = k;
+        g_log[0] = 0;
+        mgelem_hit(SPELL_BLIZZARD, 0x5077);
+        CHECK(g_mel.n == 4 + k && g_mel.el == 3 && g_mel.actor == 0x5077 && NETES.c.st.hit_notes == notes);
+        CHECK(!strcmp(g_log, "[sora] mgelem: blizzard hit 5077 -> BotW freeze reaction sent\n"));
+    }
+    // mgelem 0, Fire, Cure: nothing at all
+    g_mgelem = 0;
+    mgelem_hit(SPELL_BLIZZARD, 0x5077);
+    g_mgelem = 1;
+    mgelem_hit(SPELL_FIRE, 0x5077), mgelem_hit(SPELL_CURE, 0x5077);
+    CHECK(g_mel.n == 5);
+    es_release_all(&NETES.c);
+    g_net_esync = false, g_net_react = false, NETES.active = false, g_net_eshit = false, g_mgelem_claim = 1;  // (s291) back to the compiled default
+}
+
 // ---- (s196) killsync: the kill list, catch-up asks / answers over real sockets, the apply scan (sora_net_kills.h) ----
 static uint32_t g_kl_hids[64];
 static int g_kl_n, g_kl_calls, g_moons_v = -1;
@@ -2145,6 +2256,7 @@ int main(void) {
     test_react_owner();
     test_eshit_glue();
     test_eshit_react();
+    test_mgelem_claim();  // (s289 fix 3a)
     test_kills_off();
     test_kills_default_on();
     test_kills_glue();

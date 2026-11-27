@@ -12,6 +12,18 @@
 // Live keys: smenu 0|1 (default 1; 0 = no menu entry, live keys only), sown -1|0|1 (-1 auto = paraglider, 0 / 1 force), sgauge 0|1|2 (see smn_gauge_state).
 #pragma once
 #include "sora_summon_fps_stub.h"
+// (s289 duelmenu) runtime/sora_duelmenu.h (after sora_duel.h): "Duel" in page 2's slot 2 while a friend is in the room (live duelmenu,
+// default 0 = every hook below leaves this page as it was)
+#define DU_SUB 9  // M.sub of the Duel list (sora.c: 1 Magic, 2 Drive, 3 Limit, 4 meals, 5 Slate, 7 party Limits, 8 Summon)
+static bool dum_row(void);
+static bool dum_slot2(void);
+static void dum_pending_tick(void);
+static int dum_sub_tick(uint64_t *press);
+static bool dum_open(void);
+static void dum_hud_slot(SoraHudMenu *m);
+static void dum_hud(SoraHudMenu *m);
+static void dum_hud_off(void);
+static bool dum_live_set(const char *key, int v);
 
 // cmd.bin labels (s137 bake, out_s137menu/cmd.bin; tools_s119/hudbake LabelNames)
 enum { SMN_L_SUMMON = 44, SMN_L_CHICKEN, SMN_L_FPS, SMN_L_BALLS, SMN_L_FIRECRACKER, SMN_L_END, SMN_L_DISMISS, SMN_L_LIMIT = 23,
@@ -47,7 +59,8 @@ static bool smn_owned(void) {
     int r[SM_NDEF];
     return smn_owned_rows(r) > 0;
 }
-static bool smn_menu_ok(void) { return SMN.menu && SM.on && smn_owned() && !IN_GUEST && !fm_in_form() && !g_loading; }
+static bool smn_summon_ok(void) { return SMN.menu && SM.on && smn_owned(); }  // (s289 duelmenu: page 2's old rule = now the Summon row's)
+static bool smn_menu_ok(void) { return (smn_summon_ok() || dum_row()) && !IN_GUEST && !fm_in_form() && !g_loading; }  // (s289: "Duel" opens page 2 too)
 static bool smn_page2(void) { return SMN.page2 && smn_menu_ok(); }
 
 // KH2 entry states (FUN_140401d60): the Summon entry is 5 (grey) when the Drive gauge < Cost 3, a party member is missing / KO'd (FUN_1404005e0), airborne (ground-only flag)
@@ -65,7 +78,7 @@ static bool gl_menu(void);
 static void gl_hud_prompt(void);
 static int gl_switch_state(void);
 static bool gl_switch(int v);
-static bool smn_slate_row(void) { return (g_sk && g_sk_left) || gl_menu(); }   // (s139 genielim) slot 2 is KH2's Party slot: while Genie is out it is his version menu (cmd 605, exe FUN_1403f3860), else the Slate  // (s137 user) the Slate on page 2 slot 2
+static bool smn_slate_row(void) { return (g_sk && g_sk_left) || gl_menu() || dum_row(); }  // (s289 duelmenu: or "Duel")   // (s139 genielim) slot 2 is KH2's Party slot: while Genie is out it is his version menu (cmd 605, exe FUN_1403f3860), else the Slate  // (s137 user) the Slate on page 2 slot 2
 static bool smn_fps_pane(void) { return SMN.menu && sm_out() && sm_fps_on(); }
 
 // ---- input (menu_tick)
@@ -75,11 +88,12 @@ static bool smn_toggle(void) {
     SMN.page2 = true;
     if (M.cursor == 2) M.cursor = 1;
     sora_sfx_event("page", 1);
-    LOG("[summon] menu: page 2 (Attack / Summon / Limit)\n");
+    if (dum_slot2()) LOG("[summon] menu: page 2 (Attack / Summon%s / Duel / Limit)\n", smn_summon_ok() ? "" : " greyed");  // (s289 duelmenu)
+    else LOG("[summon] menu: page 2 (Attack / Summon / Limit)\n");
     return true;
 }
 static int smn_sub_tick(uint64_t *press) {
-    if (!smn_menu_ok()) { M.sub = -1, M.cursor = 0; return -1; }
+    if (!smn_menu_ok() || !smn_summon_ok()) { M.sub = -1, M.cursor = 0; return -1; }  // (s289 review nit 1: page 2 up for "Duel" alone keeps no Summon / Genie list open)
     if (*press & (BTN_JUMP | BTN_LEFT)) {
         *press &= ~(BTN_JUMP | BTN_LEFT);
         M.sub = -1, M.cursor = SMN.glist ? 2 : 1, SMN.glist = false;
@@ -118,7 +132,9 @@ static int smn_sub_tick(uint64_t *press) {
 // menu_tick, before the top page: returns 1 when handled (ret = the cast code or -1)
 static int smn_top_tick(uint64_t *press, int *ret) {
     *ret = -1;
+    dum_pending_tick();  // (s289 duelmenu) a Duel-list pick from the frame before makes its du_* call now, with the list closed
     if (smn_fps_pane()) { M.sub = -1, M.cursor = 0; return 1; }
+    if (M.sub == DU_SUB) return dum_sub_tick(press);  // (s289 duelmenu) the Duel list (it closes itself when the row goes)
     if (!smn_page2()) { SMN.page2 = false; return 0; }
     if (M.sub >= 0) return 0;
     int SL[4] = {0, 1, 3, 0}, n = 3;  // (s137 user: the Slate takes page 2's spare slot 2, KH2's Party slot)
@@ -134,11 +150,16 @@ static int smn_top_tick(uint64_t *press, int *ret) {
         return 1;
     }
     bool dec = (*press & BTN_ATTACK) != 0, go = (*press & BTN_RIGHT) || (dec && M.cursor != 0);
+    if ((*press & BTN_RIGHT) && M.cursor == 0 && dum_slot2() && sk_open_left()) { *press &= ~BTN_RIGHT; return 1; }  // (s289 duelmenu: Duel has the Slate's slot: d-pad Right on Attack = the Slate, as page 1)
     if (!go) return 1;
     *press &= ~(BTN_ATTACK | BTN_RIGHT);
     if (M.cursor == 2 && gl_menu()) {   // (s139 genielim) Genie's version list
         if (gl_switch_state() == 0) M.sub = SMN_SUB, M.sub_cursor = 0, SMN.glist = true, sora_sfx_event("submenu", 1), LOG("[summon] menu: Genie version list open\n");
         else sora_sfx_event("error", 1);
+        return 1;
+    }
+    if (M.cursor == 2 && dum_slot2()) {  // (s289 duelmenu) the Duel list (A or Right)
+        if (!dum_open()) sora_sfx_event("error", 1);
         return 1;
     }
     if (M.cursor == 2) {  // the Slate page (a submenu: A or Right)
@@ -150,7 +171,7 @@ static int smn_top_tick(uint64_t *press, int *ret) {
             if (!dec) return 1;
             if (M.dead > 0 || smn_dismiss_state() != 0) sora_sfx_event("error", 1);
             else *ret = CMD_SUMMON_DISMISS;
-        } else if (smn_state() == 0) M.sub = SMN_SUB, M.sub_cursor = 0, sora_sfx_event("submenu", 1), LOG("[summon] menu: Summon list open\n");
+        } else if (smn_summon_ok() && smn_state() == 0) M.sub = SMN_SUB, M.sub_cursor = 0, sora_sfx_event("submenu", 1), LOG("[summon] menu: Summon list open\n");  // (s289: page 2 can be up for Duel alone)
         else sora_sfx_event("error", 1), LOG("[summon] menu: Summon greyed\n");
     } else if (M.cursor == 3) {
         if (sm_out()) {
@@ -233,6 +254,7 @@ static void smn_hud(SoraHudMenu *m) {
     if (!smn_page2()) {
         SMN.glist = false;
         if (M.sub == SMN_SUB) M.sub = -1;
+        dum_hud_off();  // (s289 duelmenu) the Duel list closed, slot 2's label back to "Items" after "Duel"
         return;
     }
     static void (*top)(int, int);
@@ -241,8 +263,10 @@ static void smn_hud(SoraHudMenu *m) {
     bool out = sm_out();
     if (top) top(0, 0), top(1, out ? SMN_L_DISMISS : SMN_L_SUMMON), top(3, smn_limit_label());
     if (top && gl_menu()) top(2, 58), m->top_state[2] = (uint8_t)gl_switch_state();   // (s139 genielim) cmd.bin label 58 "Genie" (cmd 605's slot)
+    else if (dum_slot2()) dum_hud_slot(m);  // (s289 duelmenu) "Duel": label 56 (blank) + the DLL's text (dum_hud)
     else if (top && smn_slate_row()) top(2, SK_PLACEHOLDER_TOP), m->top_state[2] = (uint8_t)sk_top_state();  // (s137 user: the Slate on page 2; same label page 1 shows)
-    m->top_state[0] = 0, m->top_state[1] = (uint8_t)(out ? smn_dismiss_state() : smn_state()), m->top_state[3] = (uint8_t)smn_limit_state();
+    m->top_state[0] = 0, m->top_state[1] = (uint8_t)(out ? smn_dismiss_state() : smn_summon_ok() ? smn_state() : 5), m->top_state[3] = (uint8_t)smn_limit_state();
+    dum_hud(m);  // (s289 duelmenu) the "Duel" text over slot 2 / the Duel list (M.sub DU_SUB)
     if (M.sub == SMN_SUB && SMN.glist) {   // (s139 genielim) the versions; (s139 review) as cmd.bin labels 64..67 = KH2's own "Valor Genie" .. "Final Genie" (msgs 17078..17081, in the s138 cmd.bin)
         int nv = 0;
         for (int v = 1; v <= 4; v++) if (smx_ver_owned(v)) m->sub_label[nv] = (uint8_t)(63 + v), m->sub_state[nv] = (uint8_t)gl_switch_state(), m->sub_cost[nv] = 0, nv++;
@@ -273,6 +297,6 @@ static bool smn_live_set(const char *key, int v) {
     else if (!strcmp(key, "sownpp")) SMN.owned_mask_last = -1, smn_own_x[3] = v < 0 ? -1 : v != 0;  // Peter Pan: -1 = Vah Medoh, 0 / 1 = forced
     else if (!strcmp(key, "sface")) g_sface = v != 0, LOG("[summon] sface %d (orb plate portrait %s)\n", g_sface, g_sface ? "on" : "off");
     else if (!strcmp(key, "sgauge")) SMN.gauge = v < 0 ? 0 : v > 2 ? 2 : v, LOG("[summon] gauge %d (%s)\n", SMN.gauge, SMN.gauge == 1 ? "old Drive-plate fallback" : "KH2 summon plate (needs the s137 exe + drive.bin)");
-    else return false;
+    else return dum_live_set(key, v);  // (s289 duelmenu: duelmenu / duelmenux / duelmenuy)
     return true;
 }

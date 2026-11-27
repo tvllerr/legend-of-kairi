@@ -200,7 +200,63 @@
     /* s288 port of #61 mgelem: this row goes at the END (a row in the middle moves the struct offsets an older DLL / exe reads). */ \
     /* The enemies' element reaction react(this, el) = S59_HELPER_FIRE.md "0x7100a73ec4" slot 12, S61_HELPER_SITES.md */ \
     /* enemy_fire_reaction (1.8.2 0x7000a73ec4 / 1.9.0 0x7000b873d4, 2 anchors). */ \
-    X(elem_react,              0x7000a73ec4ull, 0x7000b873d4ull)
+    X(elem_react,              0x7000a73ec4ull, 0x7000b873d4ull)    \
+    /* s289 noauto: these rows go at the END (a row in the middle moves the struct offsets an older DLL / exe reads). */ \
+    /* BotW's AutoPlacementMgr (recon/s289/S289_HELPER_SPAWNED.md Q1 / Q2): the u64 singleton pointer (the GOT entry 1.9.0 */ \
+    /* 0x7101d66e60 points there; NoAutoPlacementEnemyDeadlyQuest::oneShot_ 0x71005bc574 / 1.8.2 0x71004a9044 loads it), the */ \
+    /* vtable its ctor stores at +0 (1.9.0 0x7100b145bc / 1.8.2 0x7100a010ac: str x9, [x0]), and the forbid setter */ \
+    /* (mgr, type, on) (only for a counter route: sora_net_noauto.h never calls it). Both versions VERIFIED static. */ \
+    X(autoplace_mgr_ptr,       0x7001caae20ull, 0x7001e0c680ull)    \
+    X(autoplace_forbid,        0x7000a05f14ull, 0x7000b19424ull)    \
+    X(autoplace_mgr_vt,        0x7001b47b68ull, 0x7001ca8ab0ull)    \
+    /* (s289 objs) netobjs' moves (sora_net_objs.h, via api->site): 1.9.0 = Savage Wind PR #294's online_actors.c (byluki, */ \
+    /* MIT; same address space as ours: its FN_MAPOBJ_GONE 0x7000bdc1f0 = our drop_request). objs_body_to (rigid body, */ \
+    /* Matrix34f*): the body's velocities set to reach that place in a step (PR FN_BODY_TO); objs_set_mtx (actor, */ \
+    /* Matrix34f*): put there (PR FN_SET_MTX); objs_wake (actor): woken, state +0x64 = 1 (PR FN_ACTOR_WAKE). 1.8.2 NOT */ \
+    /* FOUND (0): netobjs' moves stay off there, its breaks (the exe's lists) work on both. */ \
+    X(objs_body_to,            0,               0x70012d4e18ull)    \
+    X(objs_set_mtx,            0,               0x700152261cull)    \
+    X(objs_wake,               0,               0x7001515988ull)    \
+    /* (s289 loot) netloot (runtime/sora_net_loot.h), after Savage Wind PR #294 by byluki, MIT (runtime/online_actors.c): these */ \
+    /* rows go at the END (a row in the middle moves the struct offsets an older DLL / exe reads). 1.9.0 = the PR's addresses */ \
+    /* (tested in its game; NOT re-checked with our Ghidra); 1.8.2 not looked up = 0 (netloot stays off there). The DLL finds them */ \
+    /* by name (api->site): an exe without them = "NEEDS EXE RELINK" in the key's line. request(creator, name, heap, handle, */ \
+    /* params 0, 0, 1) / handle_take / handle_release / delete(actor, 0) / take_out (mode 0) / the actor creator's + its heap */ \
+    /* owner's GOT entries / GameDataMgr's flag handle(buf, hash, 0) + setBool(mgr, 1, handle). It also uses objs_set_mtx, */ \
+    /* objs_wake (above: the same functions) and drop_request (= the PR's FN_MAPOBJ_GONE). */ \
+    X(loot_request,            0x0ull,          0x7001535b10ull)    \
+    X(loot_handle_take,        0x0ull,          0x7001516b74ull)    \
+    X(loot_handle_release,     0x0ull,          0x70015168a8ull)    \
+    X(loot_delete,             0x0ull,          0x7001514bacull)    \
+    X(loot_take_out,           0x0ull,          0x7001524598ull)    \
+    X(loot_creator_got,        0x0ull,          0x7001d66550ull)    \
+    X(loot_heap_got,           0x0ull,          0x7001d66558ull)    \
+    X(loot_gdt_handle,         0x0ull,          0x7001143950ull)    \
+    X(loot_gdt_set_bool,       0x0ull,          0x7000730148ull)    \
+    /* (s289 objs) parts 3-4, netmovers / nethorse (sora_net_movers.h / sora_net_horse.h, via api->site), the same source; */ \
+    /* after the loot rows (a row in the middle moves the struct offsets an older DLL / exe reads): objs_as_in_slot (AS */ \
+    /* manager = actor +0x560, slot, bank): the AS playing there, its name char* at +8 (PR FN_AS_IN_SLOT); objs_play_as */ \
+    /* (a {0, actor} action, name, w2 again ? 0 : 1, slot, bank, s0 blend -1) (PR FN_PLAY_AS). nethorse also uses */ \
+    /* loot_request / loot_handle_take / loot_handle_release / loot_delete / loot_creator_got / loot_heap_got (above: */ \
+    /* the same functions, as loot uses objs_set_mtx / objs_wake). 1.8.2 NOT FOUND (0): both stay off there. */ \
+    X(objs_as_in_slot,         0,               0x70014a0040ull)    \
+    X(objs_play_as,            0,               0x700151e42cull)    \
+    /* (s289 nopause) these rows go at the END, after the loot + objs rows (theirs keep sora-a41's offsets). "The world */ \
+    /* runs in menus" (runtime/sora_nopause.h; after Savage Wind PR #294 by byluki, MIT), 1.9.0 only (no 1.8.2 main on disk: */ \
+    /* 0 = the feature stays off there). The BaseProcMgr pointer (its u16 +0x168 = the actors' pause bits), its bit set / clear */ \
+    /* (mgr, bits: ldrh / orr|bic / strh) and procs (mgr: strb wzr, +0x163), the physics pause (system, on, 0: strb w1, +0x60; */ \
+    /* the system = [[phys_system_got]]), the GOT of the game scene ([[it]] +0x8b8 = its paused byte); the exe's half */ \
+    /* (runtime/nopause.c, no game-code patch): the game scene's state word (stored only by 0x7001281100, which only the pause */ \
+    /* manager's calc 0x7000d46940 calls; 1 while a menu is up) and the pause manager's singleton pointer (the object's +0x28 = */ \
+    /* the value it stored there last). VERIFIED static: the words at each address in the 1.9.0 main (sb/s289/nopause). */ \
+    X(np_bpm_ptr,              0x0ull,          0x7001e937f8ull)    \
+    X(np_bits_set,             0x0ull,          0x70015195d0ull)    \
+    X(np_bits_clear,           0x0ull,          0x70015195e0ull)    \
+    X(np_procs,                0x0ull,          0x7001519720ull)    \
+    X(np_phys_pause,           0x0ull,          0x700156f61cull)    \
+    X(np_scene_got,            0x0ull,          0x7001d66b80ull)    \
+    X(np_scene_state,          0x0ull,          0x7001e44ef0ull)    \
+    X(np_pause_mgr,            0x0ull,          0x7001e16128ull)        /* (s290 networld) these rows go at the END, after the nopause rows (every earlier row keeps its offset). The room's */     /* world flags (runtime/sora_net_world.h; after Savage Wind PR #294 by byluki, MIT), 1.9.0 only (no 1.8.2 main on disk: */     /* 0 = networld stays off there). What comes with a flag set from a friend: the pouch's can-get / get (SafeString *name, */     /* count) and the special get (0, SafeString *name: a heart container), the three import thunks */     /* EventIncreasePorchItemAction 0x7001187e3c calls (PR FN_CAN_GET / FN_GET / FN_GET_SPECIAL); a Korok's own cutscene: the */     /* event start (mgr, meta, actor, 0), its metadata init (meta) / name (meta, flow, entry, "") / free (meta), and the */     /* event manager's pointer (one load: x0 of the start), as the game's own Korok trigger 0x70008f682c uses them (PR */     /* korok_event). VERIFIED with Ghidra headless on the 1.9.0 main (sb/s290/networld/ghidra/out). */     X(world_pouch_can_get,     0x0ull,          0x700120af80ull)        X(world_pouch_get,         0x0ull,          0x700120af98ull)        X(world_get_special,       0x0ull,          0x7001211520ull)        X(world_evt_start,         0x0ull,          0x700110d500ull)        X(world_evt_meta_init,     0x0ull,          0x7001112508ull)        X(world_evt_meta_name,     0x0ull,          0x7001112794ull)        X(world_evt_meta_free,     0x0ull,          0x70011128b4ull)        X(world_korok_evt_mgr,     0x0ull,          0x7001e3a638ull)
 
 typedef struct {
 #define SORA_SITE_FIELD(n, a, b) uint64_t n;

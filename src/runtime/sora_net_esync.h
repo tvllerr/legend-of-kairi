@@ -626,14 +626,14 @@ static void net_esync_tick(const float link_pos[3], uint64_t now) {
     memset(pl, 0, sizeof pl);  // (s191: away 0 unless set)
     int np = 0;
     pl[np].id = NET.me, snprintf(pl[np].name, sizeof pl[np].name, "%s", NET.name), memcpy(pl[np].pos, NET.feet, sizeof NET.feet);
-    pl[np++].away = g_net_esdead && NET.dead;  // (s195 esdead: dead = never nearest / closer; what we own we keep sending until claimed)
+    pl[np++].away = g_net_esdead && (NET.dead || NET.downed);  // (s195 esdead: dead = never nearest / closer; what we own we keep sending until claimed; s289 revive: DOWNED too)
     for (int k = 0; k < NET_MAX_PEERS && !g_net_loop && np < ES_PLAYERS; k++) {
         const NetPeerSlot *sl = &NET.slot[k];
         if (!sl->used || sl->p.st != PEER_LIVE || sl->p.n <= 0) continue;
         const NetSnap *s = &sl->p.ring[sl->p.n - 1];
         if (s->flags & NF_LOADING) continue;
         pl[np].id = sl->p.player, snprintf(pl[np].name, sizeof pl[np].name, "%s", sl->p.name), memcpy(pl[np].pos, s->feet, sizeof s->feet);
-        pl[np++].away = sl->hidden || (g_net_esdead && (s->flags & NF_DEAD));  // (s191: on another map; s195 esdead: dead): never nearest / closer here
+        pl[np++].away = sl->hidden || (g_net_esdead && (s->flags & (NF_DEAD | NF_DOWNED)));  // (s191: on another map; s195 esdead: dead; s289 revive: DOWNED, his hits are dropped): never nearest / closer here
     }
     es_set_players(c, pl, np);
     static EsOut out;

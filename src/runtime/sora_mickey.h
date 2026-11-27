@@ -163,7 +163,7 @@ static int mk_survive_mask(void) {
     }
     return g_mickey && !MK.doomed && !RX.on && (MK.active || MK.nearb || MK.force || MK.choosing) ? 4 : 0;
 }
-static bool mk_drops_hits(void) { return MK.active || MK.choosing; }  // (s117 review: + the choice screen; sora_guard.h ran after mk_tick and cleared its drop)
+static bool mk_drops_hits(void) { return MK.active || MK.choosing || rv_drops_hits(); }  // (s117 review: + the choice screen; sora_guard.h ran after mk_tick and cleared its drop; s289 revive: + DOWNED and its 3 s after)
 
 static int mk_chance_pct(void) {
     if (g_mk_chance >= 0) return g_mk_chance > 100 ? 100 : g_mk_chance;
@@ -540,7 +540,7 @@ static void mk_tick(int life, uint64_t present) {
     bool ko = false, chose = false;  // (chose: s117 review - the roll after "I won't give up!", not the font-missing fallback)
     if (MK.surv_count) {
         int what = 0, n = MK.surv_count(&what);
-        if (n != MK.seen_surv) MK.seen_surv = n, ko = what == 3 && !MK.active && !du_floor_on();  // (s272 duel: the duel's KO floor is not a Mickey KO)
+        if (n != MK.seen_surv) MK.seen_surv = n, ko = what == 3 && !MK.active && !du_floor_on() && !rv_ko_mine();  // (s272 duel: the duel's KO floor is not a Mickey KO; s289 revive: nor revive's clamp)
     }
     if (MK.force && !MK.active) ko = true;
     MK.force = false;
@@ -556,7 +556,7 @@ static void mk_tick(int life, uint64_t present) {
             else if (r == 2) {
                 LOG("[mickey] choice: \"It's all over...\" -> KH2 Game Over\n");
                 MK.rescues++, MK.doomed = true;
-                mc_kill_link();
+                if (!rv_take_ko("Mickey: \"It's all over...\"")) mc_kill_link();  // (s289 revive: a live friend in the room = DOWNED instead)
             } else {
                 LOG("[mickey] choice: \"I won't give up!\"\n");
                 ko = chose = true;  // (falls into the roll below: the KH2 chance, then Mickey or the Game Over)
@@ -592,7 +592,7 @@ static void mk_tick(int life, uint64_t present) {
             LOG("[mickey] KH2 rule: hit enemies / HOLD Triangle (D-Charge) to fill the Drive gauge (3 bars), then Triangle = Healing Light; Square = Pearl (%d MP)\n", MK_PEARL_MP);
         } else {
             MK.doomed = true;
-            if (chose) mc_kill_link();  // (s117) the lost roll after the choice: Game Over now, not at the next hit
+            if (!rv_take_ko(chose ? "Mickey's roll lost" : "Mickey's roll lost, no choice screen") && chose) mc_kill_link();  // (s117) the lost roll after the choice: Game Over now, not at the next hit; (s289 revive) a live friend in the room = DOWNED instead
         }
     }
     if (!MK.active) return;

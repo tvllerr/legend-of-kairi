@@ -40,10 +40,29 @@ CFG_KEYS = {
 KIT_SRC = {
     "sorabake": "cs/sorabake", "partybake": "cs/partybake", "gobake": "cs/gobake", "skatebake": "cs/skatebake",
     "hudbake": "hud/hudbake", "trigjson": "fx/trigjson", "fxrec_boot": "fxrec", "kh2pick": "cs/kh2pick",
+    "kh2mot": "fxrec",   # (config pose = kh2) KH2's own motion poses, on the fxrec loader (fxrec/fxrec_mot.c)
+}
+# (s291) the steps that USE each kit tool (copy it into work/ with take_kit_tool, or run it from the kit via kit_tool). An update
+# whose new kit changes only these tools re-runs only these steps + the steps after them (installer/kitdrop.py); a new kit tool
+# MUST get a line here (installer/test_kitdrop.py checks every take_kit_tool / kit_tool call), a tool missing here = every step again. kh2pick: none (pick_kh2 runs it from the kit, every file it writes is sha256-checked
+# against kit/kh2_files.json, and its "_kh2pick" marker stayed through the old drop-all too).
+KIT_STEPS = {
+    "sorabake": ["cs_build"], "partybake": ["cs_build"], "gobake": ["cs_build"], "skatebake": ["cs_build"],
+    "hudbake": ["hud_build"], "trigjson": ["fx_trigjson"], "fxrec_boot": ["fxrec_build"], "kh2pick": [],
+    "kh2mot": ["kh2mot"],   # (s291 PR #64 port) step kh2mot copies it (pose = kh2 only; pose = emu re-runs it harmlessly)
 }
 FXREC_SRC = ["fxrec_boot.c", "fxrec_s2.c", "fxrec_ldr.c", "fxrec_ldr.h"]
 FXREC_FLAGS = ["-O1", "-g", "-Wall", "-Wno-unused-function", "-Wl,--image-base,0x10000000", "-Wl,--disable-dynamicbase",
                "-Wl,--disable-high-entropy-va", "-Wl,--stack,0x4000000", "-lbcrypt"]
+
+
+KH2MOT_SRC = ["fxrec_mot.c", "fxrec_ldr.c", "fxrec_ldr.h"]
+
+
+def kh2mot_cmd(clang, exe):
+    """the one clang command for kh2mot.exe (step kh2mot and kit/mkkit.py): fxrec_boot's flags (KH2 is mapped at 0x140000000)"""
+    return [clang] + FXREC_FLAGS[:4] + ["-o", exe] + [os.path.join(HERE, "fxrec", n) for n in KH2MOT_SRC if n.endswith(".c")] + \
+        FXREC_FLAGS[4:]
 
 
 def fxrec_cmd(clang, exe):
@@ -56,6 +75,8 @@ def src_files(tool):
     d = os.path.join(HERE, KIT_SRC[tool])
     if tool == "fxrec_boot":
         return [os.path.join(d, n) for n in FXREC_SRC]
+    if tool == "kh2mot":
+        return [os.path.join(d, n) for n in KH2MOT_SRC]
     return sorted(os.path.join(d, n) for n in os.listdir(d) if os.path.isfile(os.path.join(d, n)))
 
 
@@ -64,9 +85,17 @@ def src_hash(tool):
     h = hashlib.sha256()
     for p in src_files(tool):
         h.update(os.path.basename(p).encode() + b"\0" + open(p, "rb").read().replace(b"\r\n", b"\n") + b"\0")
-    if tool == "fxrec_boot":
+    if tool in ("fxrec_boot", "kh2mot"):
         h.update(" ".join(FXREC_FLAGS).encode())
     return h.hexdigest()
+
+
+def kit_stale(kj, tools=None):
+    """(s291) the kit tools whose kit.json "src" hash is not src_hash() of this tree. The ONE rule: kit_tool (a player's build),
+    mkkit --refresh-host, mklinuxkit and mkzip (a zip with a stale kit fails at cs_build on every player's PC) all use it"""
+    src = kj.get("src") if isinstance(kj, dict) else None
+    src = src if isinstance(src, dict) else {}
+    return [t for t in (KIT_SRC if tools is None else tools) if src.get(t) != src_hash(t)]
 
 
 def kit_tool(ctx, tool):
@@ -78,7 +107,7 @@ def kit_tool(ctx, tool):
     except OSError:
         raise SystemExit("[sorabuild] kit %s has no kit.json (make it with kit/mkkit.py)" % ctx.kit)
     want, got = src_hash(tool), kj.get("src", {}).get(tool)
-    if got != want:
+    if kit_stale(kj, [tool]):
         raise SystemExit("[sorabuild] kit tool %s was built from other sources (kit %s, repo %s): rebuild the kit with kit/mkkit.py"
                          % (tool, (got or "none")[:12], want[:12]))
     d = os.path.join(ctx.kit, "tools", tool)
@@ -161,8 +190,10 @@ PROBES = {"kh2": "kh2_first/original/00battle.bin", "fxcache": "kh2_fx.json", "r
 
 
 class Step:
-    def __init__(self, name, run, outputs=(), deps=(), work_outputs=(), group="", chain=None):
-        self.name, self.run, self.deps, self.chain = name, run, list(deps), chain
+    # (s292) opt = a config key: the step exists (all / --list / named) only when the config sets it true; default builds never
+    # see it (nethorse: off until the multiplayer build turns it on, steps/nethorse.py)
+    def __init__(self, name, run, outputs=(), deps=(), work_outputs=(), group="", chain=None, opt=None):
+        self.name, self.run, self.deps, self.chain, self.opt = name, run, list(deps), chain, opt
         self.outputs, self.work_outputs, self.group = list(outputs), list(work_outputs), group
 
 
@@ -194,6 +225,16 @@ class Ctx:
         m = self.cfg.get("fx", "phh")
         if m not in ("phh", "fxrec"):
             raise SystemExit("[sorabuild] config 'fx' must be 'phh' or 'fxrec', not %r" % (m,))
+        return m
+
+    # pose switch: config "pose": "emu" (default) = every body pose / hit bake from OpenKH's Kh2AnimEmu as before; "kh2" = the motions
+    # whose constraint switches change a constraint (KH2's ConstraintActivations, which the emulator ignores: e.g. the Guard's left hand
+    # lets go of the Keyblade) come from KH2's OWN motion code (step kh2mot: kh2mot.exe on the player's KH2 exe, needs "kh2exe")
+    @property
+    def pose_mode(self):
+        m = self.cfg.get("pose", "emu")
+        if m not in ("emu", "kh2"):
+            raise SystemExit("[sorabuild] config 'pose' must be 'emu' or 'kh2', not %r" % (m,))
         return m
 
     # fx_keep (s166): "used" (default) = the fxrec recorder records only the KH2 effects the fx chain tools read (keep list derived from our

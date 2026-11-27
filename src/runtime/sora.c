@@ -120,6 +120,7 @@ static bool warp_live_line(const char *ln);
 static bool fmw_live_key(const char *key, int v);  // (s272 4b: sora_fmwarp.h, included further down)
 static bool du_live_key(const char *key, int v);  // (s272 duel, co-op item 6: sora_duel.h, included further down)
 static bool du_live_line(const char *ln);
+static bool lh_live_line(const char *ln);  // (s291 labhorse: sora_labhorse.h, included further down; LAB-ONLY one-shot lines)
 static bool du_spell(int kind, int power, const float c[3], float r, float lo, float hi);
 static void du_thunder_aim(uint64_t target, const float pos[3], const float dir[2], float at[3]);
 #include "sora_sfx.h"  // (KH2 sound effects, helper A: S35_HELPER_A_SFX.md)
@@ -600,7 +601,7 @@ static int g_bstance = 1;  // live "set bstance 0 / 1"
 // free frames; the next tick came first, so he never got out. With this on, a hit whose BotW call was malice's (exe
 // linkpos_player_dmg_last: a2 6, f54 0 = no reaction size; within MALNF_AGE frames of the life drop) takes the life but
 // plays no flinch. SAVAGEWIND_SORA_MALICE_NOFLINCH=1 / live "set malnoflinch 0/1"; default 1 (user tested, on by default). Log '[sora] malice: ...'.
-static int g_malnoflinch = 0;  /* (s288 port: OFF until the user plays it) */
+static int g_malnoflinch = 1;  /* (default ON since s292: the user plays with it every session; release audit s292) */
 #define MALNF_AGE 20
 static bool malice_hit(void) {  // (the hit just seen was a malice tick)
     static int (*fn)(int *);
@@ -2080,6 +2081,8 @@ static bool mc_input(uint64_t *press, uint64_t *held);  // (s117 mkchoice, sora_
 // (s117 review) GetTickCount64 of the last frame the KO choice screen drew: pad_tap keeps A / B / X / Y / the shoulders / the
 // left stick from BotW while it is fresh (Link has the pad while climbing / swimming); stale = released on every exit path.
 static volatile uint64_t g_mc_pad_ms;
+static int rv_survive_mask(int mk_mask, int life);  // (s289 revive, runtime/sora_revive.h: ca_survive / mk_tick / mk_drops_hits / the live chain)
+static bool rv_ko_mine(void), rv_drops_hits(void), rv_take_ko(const char *why), rv_live_set(const char *key, int v);
 static bool skt_live_set(const char *key, int v);  // (s110 skate, runtime/sora_skate.h)
 static bool sm_live_set(const char *key, int v);   // (s136 summon, runtime/sora_summon.h: summon scall sdone sdmg sstr sbars sendcall slog)
 static bool sm_hold(void);                         // Sora plays the summon call: no pad
@@ -2099,6 +2102,8 @@ static void sh_tick(uint64_t present);
 static volatile uint64_t g_slate_l_from, g_slate_l_until;
 static volatile uint64_t g_slate_seen;  // (s93 review: the present sk_tick last ran in Slate mode; a frame body that returns early (no world, Sora mode off) must not leave L + d-pad with BotW)
 #define SLATE_LIVE(now) (g_slate_mode && (now) - g_slate_seen < 30)
+static volatile int g_slate_eat_a;  // (s291 bombrock, runtime/sora_slate_a.h: live "slateeata 1": the menu's A kept from BotW until let go)
+#include "sora_slate_a.h"
 // (s59) the KH2 Game Over screen (gameover_tick below; recon/S59_HELPER_GAMEOVER.md). Live: "set kh2go 0/1" (0 = BotW's
 // screen alone), "set gohold <ms>" (KH2 screen time before BotW's menu takes A again), "set gofade <ms>" (fade in),
 // camera "set godist <cm> / goel <deg> / goyaw <deg> / gospin <deg per s> / gofov <deg>", "set gosy <%>" (his centre,
@@ -2380,6 +2385,7 @@ static bool camp_live_set(const char *key, int v);
 #define LINK_SW_RIDING 0x100000u
 static int g_ride_l = 1;  /* (s288: horse: the user did not play it, the contributor's videos show it working; user OK: default ON) */
 static volatile int g_riding;  // (the tick: g_ride_l and Link riding now)
+static volatile int g_link_rides;  // (s291 duelride: Link rides now, the state word bit alone, whatever ridel is; set where hflip reads it)
 static void pad_tap(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t now = vk_frame_counter();
     px_pad(now);  // (s194 promptx: which button BotW's A glyph shows)
@@ -2444,6 +2450,7 @@ static void pad_tap(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t 
         *b &= ~mm;  // (Sora's only: the game never sees them - the d-pad and L are KH2's menu; s93: unless the Slate)
     }
     if (SLATE_LIVE(now) && now >= g_slate_l_from && now < g_slate_l_until) *b |= BTN_SHORTCUT;  // (s93: the L tap that uses the rune)
+    if (g_slate_eat_a) *b = slate_eat_a(*b, SLATE_LIVE(now), &g_slate_eat_a, BTN_ATTACK);  // (s291 bombrock: no lift / grab from the rune pick's A)
     if (!g_zl_pass && !bmenu) *b &= ~BTN_LOCK;  // (ZL is KH2's lock-on)
     if (KB_L3_MINE && !g_link_owns && !*(volatile uint32_t *)(uintptr_t)PAUSE_STATE) *b &= ~BTN_L3;  // (kbtoggle: L3 is Sora's, after g_seen kept it)
     // (KH2's triangle = the reaction command: BotW gets A instead of the jump; Sora still saw the raw pad above, and
@@ -5758,6 +5765,7 @@ static bool is_live_set(const char *key, int v);
 // starts fresh: Sora re-enters from idle where Link stands).
 __declspec(dllexport) void sora_mod_unload(void) {  // (the old copy, before the new one's first frame)
     esa_unload(&g_esa);  // (s175: a running R2 attack is left with the exe Cpu before this copy goes; sora_mod_unload runs inside linkpos_frame via sora_frame -> load)
+    np_unload();  // (s289 nopause: a world let run behind a menu is stopped again before this copy goes)
     g_wd_stop = 1;
     avatar_off();       // (mp: the new copy re-poses it)
     net_party_off();    // (mp slice 3: ... and his Donald + Goofy)
@@ -6353,6 +6361,7 @@ static void live_poll(const float p[3], uint64_t present) {
             } else LOG("[sora] live: at enemy: none\n");
         } else if (warp_live_line(ln)) {  // (s269 warpcore: warpto / warpfriend / warp restore / warpnote, sora_warp.h)
         } else if (du_live_line(ln)) {  // (s272 duel: duel ask / accept / decline / end / diag, sora_duel.h)
+        } else if (lh_live_line(ln)) {  // (s291 labhorse: a horse at Link's side for nethorse's lab tests, sora_labhorse.h)
         } else if (!strcmp(ln, "goto off")) {
             if (GT.on) goto_carry(false);
             GT.on = false, drive_off();
@@ -6496,6 +6505,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (!strcmp(key, "trunkr")) g_trunk_r = v / 100.0f;
             else if (!strcmp(key, "mgelem")) g_mgelem = v != 0, LOG("[sora] live: mgelem %d (Blizzard / Thunder: BotW freeze / shock %s)\n", g_mgelem, g_mgelem ? "on" : "off");  // (mgelem #61)
             else if (!strcmp(key, "mgelemlog")) g_mgelem_log = v != 0;  // (mgelem: the per-hit lines)
+            else if (mgelem_live_set(key, v)) {}  // (s289 fix 3a: mgelemclaim, sora_mgelem.h)
             else if (!strcmp(key, "pausesave")) g_sl_pause_save = v != 0, LOG("[sora] live: pausesave %d (a pause-menu Save writes the slot sidecar %s)\n", g_sl_pause_save, g_sl_pause_save ? "while still paused" : "at the unpause (old)");  // (dbgsave #60)
             else if (!strcmp(key, "tree")) g_tree_on = v != 0;        // (s122 world)
             else if (!strcmp(key, "treek")) g_tree_k = v;
@@ -6826,6 +6836,7 @@ static void live_poll(const float p[3], uint64_t present) {
             else if (skt_live_set(key, v)) {}  // (s110 skate: skate / skatex y z yaw here home / skmax skacc skbrake skfric skturn skr / skatelog)
             else if (mark_live_set(key, v)) {}  // (s111 mark / markse)
             else if (mk_live_set(key, v)) {}  // (s109 b22-mickey: mickey / mkforce / mkheal / mkany / mkchance / mkcharge / mkdmg / mklog)
+            else if (rv_live_set(key, v)) {}  // (s289 revive: revive / revivelog / revivem / revives / revivehp / revivetime / revforce / revgiveup)
             else if (ca_live_set(key, v)) {}  // (s102 b16-chestabil: chestabil / chestlog / chestfx / chestr / chestgive / chestreset)
             else if (sh_live_set(key, v)) {}  // (s94 b8-slatehip: slatehip / shsnap / shx shy shz / shyaw shpitch shroll / shlog)
             else if (sk_live_set(key, v)) {}  // (s93 b7-runes: slate / slatepass / slaterec / slateforce / slateend ...)
@@ -7918,7 +7929,9 @@ static int hold_tick(uint64_t present, int st, uint32_t sw, bool dead) {
 #include "sora_net_party.h"   // (mp slice 3: the remote Donald + Goofy; the party poses for the fx anchors)
 #include "sora_net_minimap.h" // (s268 co-op item 3: friends on BotW's minimap; mm_tick after avatar_tick)
 #include "sora_warp.h"        // (s269 warpcore, co-op item 4: BotW's own fast travel to a spot / a friend; warp_tick after the net)
+#include "sora_labhorse.h"    // (s291 labhorse: LAB-ONLY `labhorse` live lines, a rideable horse at Link's side; lh_tick after warp_tick)
 #include "sora_fmwarp.h"      // (s272 co-op item 4b: friends on the full map, BotW's medallion marker as the pick; fmw_tick after warp_tick)
+#include "sora_nopause.h"     // (s289 nopause: the world runs behind menus in a Melty room; np_frame from net_frame; needs CAMP)
 #include "sora_net_pilot.h"   // (s209 step 2: Melty's autopilot, the game's side; bound below)
 
 // ---- (s209 step 2) Melty's lab notes as they happen + autopilot's binding (sora_net_act.h, sora_net_pilot.h) ----
@@ -8012,6 +8025,8 @@ static int sora_clock_in_world(void) {
 #include "sora_dbgmenu.h"  // (s140 dbgmenu: the camp Debug Menu page backend; needs sora_summon_menu.h)
 #include "sora_sumlv_late.h"  // (s148 sumlv: charms owned + the debug rows; needs sora_summon_menu.h / sora_dbgmenu.h)
 #include "sora_duel.h"  // (s272 duel, co-op item 6: duels between two players, default OFF; du_frame after warp_tick, du_input before rc_tick)
+#include "sora_duelmenu.h"  // (s289 duelmenu: page 2's "Duel" slot + list, live duelmenu default 1 since s290; hooks in sora_summon_menu.h, sora_meals.h)
+#include "sora_revive.h"  // (s289 revive, co-op item 7: a KO with a live friend in the room = DOWNED, he revives you by standing close; live revive default 0)
 // (s85 slice 5) the picked Keyblades to every Sora body (base, Valor, Wisdom) each frame: cheap, and it follows slot
 // loads, hot reloads and body switches without hooks. An exe before s85 (no sora_draw_actor_blade) -> logged once,
 // the model stays the bake's default (stats + ability still change).
@@ -8085,6 +8100,7 @@ static void net_fill(NetSnap *s) {
     s->flags = net_flags((!S.puppet || g_puppet_kb) && !g_kbf_hidden, ACT_AIR(S.act), NET.wet, S.special == SP_GUARD, NET.dead, false, bone);
     if (skate) s->flags |= NF_SKATE, s->slot = (uint16_t)SKT.rs, s->clock = SKT.rc, g_net_skate_sent++;
     if (du_on_wire()) s->flags |= NF_DUEL;  // (s272 duel: a third player draws the ring / skips us for "Duel")
+    if (NET.downed) s->flags |= NF_DOWNED;  // (s289 revive: DOWNED; revive 0 = never set)
     // (s170 bonedraw) the bone block: Link's joints the retarget used (this or the 2 frames before: net_fill runs after the body's draw in
     // the same driver call), in this SNAP's own model space (its feet = g_body, RotY(S.face), KH cm), so feet / yaw / joints always agree
     s->bones.slot = 0;
@@ -8190,6 +8206,7 @@ __declspec(dllexport) void sora_mod_frame(void) {
     } else avatar_off(), net_party_off(), net_sora_off(), mm_send(NULL, 0);  // (mp2: Sora mode off = BYE + socket closed, his fx copies dropped)
     fmw_tick(GetTickCount64());  // (s272 4b: fmprobe; idle = nothing)
     warp_tick(GetTickCount64());  // (s269 warpcore: a live warpto / warpfriend, the Medallion slot's restore, a friend's note; idle = nothing)
+    lh_tick(GetTickCount64());  // (s291 labhorse: idle = nothing until a labhorse live line)
     du_frame(GetTickCount64());  // (s272 duel: the packets, the ring, the timers, the screen text; duel 0 = nothing)
     net_note_frame(NET.melty ? note_flags() : 0);  // (s209: Melty's FRAME note, after the puppets were drawn; outside a room: the counts cleared)
     note_act_tick();  // (s209 step 2: the last swing's ACT end)
@@ -8285,6 +8302,15 @@ static void sora_mod_frame_body(void) {
         }
         g_t0sq = env_f("SAVAGEWIND_SORA_T0_SQUARE", (float)g_t0sq) != 0;  // (t0sq, s288 port: the env var it had not)
         if (g_t0sq) LOG("[sora] t0sq on: Retaliating / Upper / Horizontal Slash, Finishing Leap on Square (only when one would fire)\n");
+        {  // (s291 ridestart, exe linkpos_t0.h) a save loaded on a horse starts Sora mode at once, not at the dismount. Start-time
+           // only (the live file is first read in the world): SAVAGEWIND_SORA_T0_RIDE=1, 2 = + the exe logs the state words before
+           // it. 0 = the old ground-only rule (compiled default 1 since s292); an exe without linkpos_set_t0_ride: nothing (said once).
+            static const int T0RIDE_DEFAULT = 1;  // (default ON since s292: lab s291f PASS + the user: "works")
+            int v = (int)env_f("SAVAGEWIND_SORA_T0_RIDE", (float)T0RIDE_DEFAULT);
+            void (*set_t0_ride)(int) = (void (*)(int))(void *)GetProcAddress(GetModuleHandleA(NULL), "linkpos_set_t0_ride");
+            if (v && set_t0_ride) set_t0_ride(v < 0 ? 0 : v > 2 ? 2 : v);
+            else if (v) LOG("[sora] t0ride %d: this exe has no linkpos_set_t0_ride (NEEDS EXE RELINK): a save loaded on a horse still waits for the dismount\n", v);
+        }
         if (g_lockpt) LOG("[sora] lockpt %d: the lock-on icon at BotW's attention point\n", g_lockpt);
         g_swhit = env_f("SAVAGEWIND_SORA_SWHIT", (float)g_swhit) != 0;
         g_swhit_dgn = env_f("SAVAGEWIND_SORA_SWHIT_DGN", (float)g_swhit_dgn) != 0;  // (shrineswitch)
@@ -8487,6 +8513,7 @@ static void sora_mod_frame_body(void) {
     note_hurt(life);  // (s209 step 2: Melty's HURT note: the raw life, before Second Chance's clamp)
     life = ca_survive(life);  // (s102 b16-chestabil: Second Chance / Once More)
     mk_tick(life, present);  // (s109 b22-mickey: KH2's Mickey rescue state machine)
+    rv_tick(life, present);  // (s289 revive: DOWNED with a live friend in the room, his standing by = the revive; revive 0 = nothing)
     dbm_world_tick();  // (s233 dbgmenu: Infinite Drive / Infinite MP refill, the Mickey Rescue "Now" row; every unpaused world frame)
     // Dead (life_s16a) until he stands again with life: Continue gives the life back while the Game Over menu and the
     // loading tip are still up (state 0x80080000 = air), which drew Sora and the HUD over both (go26a, presents
@@ -8795,6 +8822,7 @@ static void sora_mod_frame_body(void) {
         static float py;
         static int down;
         int ride_raw = !dead && !g_loading && (sw_now & LINK_SW_RIDING) != 0;
+        g_link_rides = ride_raw;  // (s291 duelride)
         float lp[3];
         bool hp = linkpos_link_pos(lp);
         uint64_t nowms = GetTickCount64();
@@ -8826,6 +8854,7 @@ static void sora_mod_frame_body(void) {
     bh_tick();  // (s102 bombhand)
     bb_tick(g_loading, p);  // (s217 world: explosive barrels: the hook on / off by barrelboom, nothing while it is 0)
     wpn_tick(!dead && !g_loading && !carry_on());  // (s128 wpn: Link's BotW weapon in Sora's hand; s217: not while he carries an object - last frame's carry mode)
+    net_gear_local(g_wpn_cur.def ? g_wpn_cur.def->actor : NULL, g_wpn_hand);  // (s289 netgear: what the friends' games draw in his hand; only stored, sent by net_tick with netgear 1)
     st = sk_tick(present, st, sw_now);  // (s93 b7-runes: Slate mode = Link's pad + Sora puppets him, like the swim latch)
     st = carry_tick(present, st, sw_now, dead, g_loading, swim_at != 0);  // (s217 world: carry mode = the same, while Link carries; st unchanged while carry is 0)
     st = hold_tick(present, st, sw_now, dead);  // (holdinv: items held from the inventory = Link's frame + drawn)
@@ -9155,7 +9184,7 @@ static void sora_mod_frame_body(void) {
     prev = held;
     // (s117 mkchoice: the KO choice screen owns the pad the same way as the Dream picker below; s117 review: BEFORE skt_input,
     // else the Triangle that the screen ignores got Sora on / off the board)
-    bool mc_ui = mc_input(&press, &held);
+    bool mc_ui = mc_input(&press, &held) || rv_input(&press, &held);  // (s289 revive: DOWNED owns the pad the same way)
     uint64_t pl_x = pl_eat_x() ? (press & (uint64_t)BTN_CLIMB) : 0;  // (s133 review: the Comet Rain / Whirli-Goof Triangle must not also climb, pick up or board)
     press &= ~pl_x;
     sm_fps_input(&press, &held);  // (s137 fps) Balls / Firecracker / End on the face buttons, R1 = target, before the Reaction Command sees them
@@ -9182,6 +9211,7 @@ static void sora_mod_frame_body(void) {
     int32_t slx = g_lx, sly = g_ly;
     mtest_stick(&slx, &sly);  // (s201: Melty's test walks Sora through the stick Sora reads; no pad, no window focus)
     pilot_stick(&slx, &sly);  // (s209 step 2: Melty's autopilot goto, the same way; only with pilot=1 in Melty's lab)
+    du_act_stick(&slx, &sly);  // (s289 lab: a "duel act guard / roll" press frame's stick, sora_duel.h; else nothing)
     float sx = kh_axis(slx), sy = kh_axis(sly), mag = sqrtf(sx * sx + sy * sy);
     if (g_stick_round) {
         // (s65 user: diagonals walked on the pad, not on the keyboard) KH2's per-axis dead zone of 60 / 127.5 assumes
@@ -9512,6 +9542,7 @@ static void sora_mod_frame_body(void) {
     lm_chain();  // (s89 Limit Form: a Limit command's step that ended -> its next step, before the end check below)
     pl_chain(p, kh, to_u);  // (s133 limits: the party Limit's clocks, its step end / next step)
     mk_dchg_loop();  // (s110m review: Mickey's held D-Charge loops 60..76 here, before the end check, at any frame rate)
+    rv_pose_hold();  // (s289 revive: DOWNED holds KH2's blow landing at its deepest frame, here before the end check)
     if (S.mot && S.clock >= S.mot->frames) {
         if (S.special == SP_DAMAGE && (S.motion == MOT_BLOW_FRONT || S.motion == MOT_BLOW_BACK) && S.mot->frames > S.mot->loop)
             S.clock = S.mot->loop + fmodf(S.clock - S.mot->frames, (float)(S.mot->frames - S.mot->loop));  // (until up)
@@ -9968,6 +9999,7 @@ static void sora_mod_frame_body(void) {
     if (GT.on || g_dbm_clip || (S.special == SP_DAMAGE && !is_free) || nox_win) drive_off();  // (goto hold: zero velocity) BotW's hit push / ragdoll / pick up moves him
     else linkpos_set_velocity(true, vx, vz), linkpos_set_velocity_y(vy_on, vy);  // (the y servo on for the glide too)
     if (!((S.special == SP_DAMAGE && !is_free) || nox_win)) link_face();  // (s87c link face: ground / air only; set linkface 0 = off)
+    du_mag_drive(p, kh, to_u);  // (s289 duelmagnet: a Magnet pull on us replaces the velocity above + holds the pose, sora_duel.h; none = nothing)
     {
         bool kb_hid = g_kbfield && !g_bs_on && !g_kb_drawn && S.mot && (!S.special || S.special == SP_ROLL) && (S.mot->slot & 3) == 2;
         kbf_set(kb_hid);

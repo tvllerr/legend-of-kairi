@@ -61,6 +61,41 @@ if (Form != "" || kb2MdlxPath != null || modelName != "P_EX100")
 // (s59 helper PARTYBAKE) the emu starts each slot at its FrameStart (Slot.Start, GFR), as tools/partybake does since s59.
 // SORABAKE_SEEK=0 = the old bake (emu from time 0: late-starting slots like 22 A005 land, start 84, came out frozen).
 bool Seek = Environment.GetEnvironmentVariable("SORABAKE_SEEK") != "0";
+// SORABAKE_KH2MOT=<file.skkm> (sorabuild config pose = kh2): the body's bone matrices of the motions in that file come from
+// KH2's OWN motion code (fxrec_boot --mot, tools/sorabuild/fxrec/fxrec_mot.c) instead of Kh2AnimEmu: the emulator ignores an
+// interpolated motion's ConstraintActivations (per-constraint on/off switches over time; e.g. A322 Guard lets the left hand
+// go of the Keyblade at GFR 4 in KH2, the emulator keeps it on the grip). The file holds only the motions whose switches
+// change a constraint (P_EX100: 18 of 89); every other motion stays the emulator's (KH2 = emulator within 0.06 cm there).
+// Same frames and space as ProvideMatrices (GFR 0 .. Frames from the motion's start, model space, root move kept), so the
+// root strip / Keyblade attach below are unchanged. Unset = the emulator for every motion (the bake as before, byte-identical).
+var kh2mot = new Dictionary<int, (int nf, int off)>(); byte[] kh2motB = null; int kh2motNb = 0;
+var kh2motSeen = new HashSet<int>();
+{
+    var kp = Environment.GetEnvironmentVariable("SORABAKE_KH2MOT");
+    if (!string.IsNullOrEmpty(kp)) {
+        kh2motB = File.ReadAllBytes(kp);
+        if (kh2motB.Length < 16 || BitConverter.ToUInt32(kh2motB, 0) != 0x4D4B4B53 || BitConverter.ToInt32(kh2motB, 4) != 1)
+            throw new Exception($"SORABAKE_KH2MOT {kp}: not an SKKM v1 file");
+        int n = BitConverter.ToInt32(kh2motB, 8); kh2motNb = BitConverter.ToInt32(kh2motB, 12);
+        for (int i = 0; i < n; i++) kh2mot[BitConverter.ToUInt16(kh2motB, 16 + 8 * i)] = (BitConverter.ToUInt16(kh2motB, 18 + 8 * i), BitConverter.ToInt32(kh2motB, 20 + 8 * i));
+        Console.WriteLine($"kh2mot: {kp}: {n} motions by KH2's own code ({kh2motNb} bones): slots " + string.Join(" ", kh2mot.Keys.OrderBy(x => x)));
+    }
+}
+// the emulator's matrices of slot <slot> at GFR frame <f>, with the body bones replaced by KH2's when the file has that motion
+System.Numerics.Matrix4x4[] KhMot(int slot, int f, System.Numerics.Matrix4x4[] emu) {
+    if (kh2motB == null || !kh2mot.TryGetValue(slot, out var e)) return emu;
+    if (f >= e.nf) throw new Exception($"kh2mot: slot {slot} has {e.nf} frames, the bake asks for frame {f}");
+    if (emu.Length < kh2motNb) throw new Exception($"kh2mot: slot {slot}: {kh2motNb} bones in the file, {emu.Length} in this model");
+    var r = (System.Numerics.Matrix4x4[])emu.Clone(); double worst = 0; int wb = 0;
+    for (int b = 0; b < kh2motNb; b++) {
+        int o = e.off + (f * kh2motNb + b) * 48; float F(int k) => BitConverter.ToSingle(kh2motB, o + 4 * k);
+        r[b] = new System.Numerics.Matrix4x4(F(0), F(1), F(2), 0, F(3), F(4), F(5), 0, F(6), F(7), F(8), 0, F(9), F(10), F(11), 1);
+        double d = (r[b].Translation - emu[b].Translation).Length(); if (d > worst) { worst = d; wb = b; }
+    }
+    if (f == 0) kh2motSeen.Clear();
+    if (worst > 1 && kh2motSeen.Add(slot)) Console.WriteLine($"kh2mot: slot {slot} differs from the emulator from GFR {f} (bone {wb}: {worst:F1} cm)");
+    return r;
+}
 string battlePath = $"{Kh2}/kh2_first/original/00battle.bin", systemPath = $"{Kh2}/kh2_first/original/03system.bin";
 var mset = Bar.Read(new MemoryStream(File.ReadAllBytes(msetPath))).ToList();
 
@@ -869,7 +904,7 @@ void Pose(string outPath, List<int> only) {
         if (kb2Entries != null && !hasKb2) noKb2.Add($"{s.Index} {s.Name}");
         dir.Add((s.Index, s.Frames + 1, head + data.Position));
         for (int f = 0; f <= s.Frames; f++) {
-            var M = p.ProvideMatrices(f == 0 ? (Seek ? s.Start : 0) : 1.0);
+            var M = KhMot(s.Index, f, p.ProvideMatrices(f == 0 ? (Seek ? s.Start : 0) : 1.0));
             var K = hasKb ? kp.ProvideMatrices(f == 0 ? (Seek ? KbStart(s.Index) : 0) : 1.0) : kbIdle;
             var K2 = kb2Entries == null ? null : hasKb2 ? kp2.ProvideMatrices(f == 0 ? kb2Start : 1.0) : kb2Idle;
             if (M.Length < nbS || K.Length < nbK || (K2 != null && K2.Length < nbK2)) throw new Exception($"slot {s.Index}: {M.Length} + {K.Length} matrices for {nbS} + {nbK} bones");
@@ -1081,7 +1116,7 @@ void HitBake(string outPath) {
         var kp = new OpenKh.Kh2Anim.Mset.MsetIndir(Bar.Read(new MemoryStream(kbMsetBytes)).ToList()).GetAnb(s.Index).GetAnimProvider(new MemoryStream(kbMdlxBytes));
         var line = new StringBuilder();
         for (int f = 0; f <= s.Frames; f++) {
-            var M = p.ProvideMatrices(f == 0 ? (Seek ? s.Start : 0) : 1.0); var K = kp.ProvideMatrices(f == 0 ? (Seek ? KbStart(s.Index) : 0) : 1.0);  // (s59: seek like Pose)
+            var M = KhMot(s.Index, f, p.ProvideMatrices(f == 0 ? (Seek ? s.Start : 0) : 1.0)); var K = kp.ProvideMatrices(f == 0 ? (Seek ? KbStart(s.Index) : 0) : 1.0);  // (s59: seek like Pose)
             System.Numerics.Matrix4x4.Invert(RootAt(s, f), out var rinv);
             var strip = s.HasRoot ? rinv * RootAt(s, 0) : System.Numerics.Matrix4x4.Identity;
             var toEnt = M[KbParent] * strip;
@@ -1161,7 +1196,7 @@ void BodyHits(string outR, string outL) {
         var segs = new[] { new List<float>(), new List<float>() };
         var line = new StringBuilder();
         for (int f = 0; f <= s.Frames; f++) {
-            var M = p.ProvideMatrices(f == 0 ? (Seek ? s.Start : 0) : 1.0);
+            var M = KhMot(s.Index, f, p.ProvideMatrices(f == 0 ? (Seek ? s.Start : 0) : 1.0));
             System.Numerics.Matrix4x4.Invert(RootAt(s, f), out var rinv);
             var strip = s.HasRoot ? rinv * RootAt(s, 0) : System.Numerics.Matrix4x4.Identity;
             for (int k = 0; k < 2; k++) {

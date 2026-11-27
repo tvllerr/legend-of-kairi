@@ -74,6 +74,9 @@ static void net_fill(NetSnap *s);
 #define ESA_NO_EXE
 #define SORA_CLOCK_NO_EXE  // (s191: the test sets the room clock's hour hooks itself: a fake game per copy)
 #include "sora_net.h"
+// (s289 nopause: sora_nopause.h is the sora.c part of the DLL: here the world never runs behind a menu, as with the key 0)
+static bool np_frame(uint64_t now, float feet[3]) { (void)now, (void)feet; return false; }
+static bool np_live_set(const char *key, int v) { (void)key, (void)v; return false; }
 static void net_fill(NetSnap *s) { s->yaw = g_yaw; }
 static void av_drop_events(void) {
     g_drops++;
@@ -910,7 +913,8 @@ static void test_net_off(void) {
     CHECK(netslot_count(NET.slot, NET_MAX_PEERS) == 2);
     NetKillsMsg km;
     // (s197 killsync on by default) the frame before net 0 sent our SNAP + one kill-list ask to each of the 2 new room players
-    CHECK(FK.nout_all == 3 && fk_count(NET_SNAP) == 1 && fk_kills(NKO_ASK, 7, &km) == 1 && fk_kills(NKO_ASK, 8, &km) == 1);
+    // (s291) + our gear list once on the join (netgear default ON since s290)
+    CHECK(FK.nout_all == 4 && fk_count(NET_GEAR) == 1 && fk_count(NET_SNAP) == 1 && fk_kills(NKO_ASK, 7, &km) == 1 && fk_kills(NKO_ASK, 8, &km) == 1);
     CHECK(net_live_set("net", 0) && !NET.on && NET.melty);
     CHECK(netslot_count(NET.slot, NET_MAX_PEERS) == 0 && NET.nmroom == 2);
     CHECK(strstr(g_log, "[net] off: still in the Melty room") != NULL);
@@ -924,7 +928,7 @@ static void test_net_off(void) {
     fk_leave(8);
     frame(T0 + 120, true);
     CHECK(NET.nmroom == 2 && netslot_count(NET.slot, NET_MAX_PEERS) == 0);
-    CHECK(FK.nout_all == 3);  // (only the SNAP + the 2 kill asks of the frame before net 0; nothing after: no ask to Namine while off)
+    CHECK(FK.nout_all == 4);  // (only the gear list + the SNAP + the 2 kill asks of the frame before net 0; nothing after: no ask to Namine while off)
     CHECK(net_live_set("net", 1) && NET.on && !NET.sock.ok);
     frame(T0 + 140, true);
     CHECK(netslot_count(NET.slot, NET_MAX_PEERS) == 2 && slot_of(7) >= 0 && slot_of(9) >= 0 && slot_of(8) < 0);

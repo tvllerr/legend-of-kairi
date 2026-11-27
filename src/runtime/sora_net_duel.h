@@ -10,11 +10,13 @@
 
 static bool g_duel = true;  // live "set duel 0" = off (no prompt, no answer, no hits); default ON since s274 (two-copy run verified); parsed in sora_duel.h
 static bool g_duel_log;  // live "set duellog 1": one [duel] line per packet / step
+static bool g_du_god = true;  // (s289 3c) live "set duelgod 1": God Mode's life refill waits while a duel runs here (sora_duel_core.h du_god_waits); parsed in sora_duel.h. (s290: passed the two-copy lab, sb/s290/LAB_RESULTS.md; the user: "Flip the passes ON" -> default ON); "set duelgod 0" = the refill in a duel too, as before
 
 // the shared state (sora_duel.h writes it; read by the early hooks)
 static struct {
     bool live;        // a countdown / fight / time-up runs (NF_DUEL in our SNAP, the KO floor, the blocks)
     bool floor;       // the KO floor: world damage can't take Sora below 1 (live + DU_OVER, ca_survive's mask 4, mk_tick skips it)
+    bool ko_hold;     // (s289 3c) a KO's hold at 1 HP runs (sora_duel.h DU.heal_at, until the duel's own heal): God Mode's refill waits too
     volatile uint64_t eat_x_until;  // a duel prompt holds Triangle until then (pad_tap: BotW does not get its A from that press)
 } DUS;
 
@@ -26,7 +28,7 @@ static struct {
     struct { int k; NetDuelMsg m; } q[NETD_Q];
     int nq;
     struct { int k; uint8_t player; uint8_t b[NET_DUEL_HIT_LEN]; int n, left; uint64_t at; } rs[NETD_RS];  // UDP resends
-    struct { uint32_t tx[7], rx[7], bad, other, off, qfull, resent; } st;
+    struct { uint32_t tx[8], rx[8], bad, other, off, qfull, resent; } st;  // (by op; s289: 7 = PULL)
     NetLogRate lr;
 } NETD;
 
@@ -41,9 +43,9 @@ static uint32_t net_duel_nonce(void) {
 static bool net_duel_slot_ok(int k) {
     return NET.on && k >= 0 && k < NET_MAX_PEERS && NET.slot[k].used && NET.slot[k].p.st != PEER_NONE && (NET.slot[k].ip || NET.melty);
 }
-static const char *const NDO_NAME[7] = {"?", "ASK", "ANSWER", "HIT", "END", "TIME", "RING"};
+static const char *const NDO_NAME[8] = {"?", "ASK", "ANSWER", "HIT", "END", "TIME", "RING", "PULL"};
 
-// one packet to slot k (target = his player id; RING: 0). ANSWER / HIT / END / TIME are sent again DU_RESENDS times over UDP.
+// one packet to slot k (target = his player id; RING: 0). ANSWER / HIT / END / TIME / PULL are sent again DU_RESENDS times over UDP.
 static bool net_duel_send(int k, const NetDuelMsg *m, uint64_t now) {
     if (!net_duel_slot_ok(k) || !m) return false;
     if (!NETD.seeded) NETD.seeded = true, NETD.seq = (uint16_t)(GetTickCount64() * 2654435761u >> 9);
@@ -110,11 +112,11 @@ static bool net_duel_pop(int *k, NetDuelMsg *m) {
 }
 
 static void net_duel_diag(void) {
-    LOG("[net] duel: tx ask %u answer %u hit %u end %u time %u ring %u; rx ask %u answer %u hit %u end %u time %u ring %u; bad %u, for others %u, "
-        "off %u, queue full %u, resent %u%s\n",
-        NETD.st.tx[1], NETD.st.tx[2], NETD.st.tx[3], NETD.st.tx[4], NETD.st.tx[5], NETD.st.tx[6], NETD.st.rx[1], NETD.st.rx[2], NETD.st.rx[3],
-        NETD.st.rx[4], NETD.st.rx[5], NETD.st.rx[6], NETD.st.bad, NETD.st.other, NETD.st.off, NETD.st.qfull, NETD.st.resent,
-        DUS.live ? " (a duel runs)" : "");
+    LOG("[net] duel: tx ask %u answer %u hit %u end %u time %u ring %u pull %u; rx ask %u answer %u hit %u end %u time %u ring %u pull %u; "
+        "bad %u, for others %u, off %u, queue full %u, resent %u%s\n",
+        NETD.st.tx[1], NETD.st.tx[2], NETD.st.tx[3], NETD.st.tx[4], NETD.st.tx[5], NETD.st.tx[6], NETD.st.tx[7], NETD.st.rx[1], NETD.st.rx[2],
+        NETD.st.rx[3], NETD.st.rx[4], NETD.st.rx[5], NETD.st.rx[6], NETD.st.rx[7], NETD.st.bad, NETD.st.other, NETD.st.off, NETD.st.qfull,
+        NETD.st.resent, DUS.live ? " (a duel runs)" : "");
 }
 
 // ---- the early hooks (sora.c before sora_duel.h) ----
@@ -123,3 +125,4 @@ static int du_survive_mask(void) { return g_duel && DUS.floor ? 4 : 0; }        
 static bool du_floor_on(void) { return g_duel && DUS.floor; }                         // mk_tick: that clamp is not a Mickey KO
 static bool du_no_items(void) { return g_duel && DUS.live; }                          // the Items page: no item in a duel
 static bool du_on_wire(void) { return g_duel && DUS.live; }                           // net_fill: NF_DUEL in our SNAP
+static bool du_god_wait(void) { return g_duel && du_god_waits(g_du_god, DUS.live, DUS.ko_hold); }  // (s289 3c) dbm_god_tick_: God Mode's refill waits

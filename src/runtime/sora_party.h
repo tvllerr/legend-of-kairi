@@ -265,6 +265,7 @@ typedef struct {
     float hit_r, hit_h;       // the enemy cylinder sora.c's swings use (u): radius, height (0: 0.5 / 1.6)
     float sora_hp, sora_hp_max;  // Link's life (quarter hearts) and its max: Donald's Cure rule
     const PHooks *hk;
+    bool sora_down;           // (s289 revive) Sora is DOWNED (sora_revive.h): never a Cure target, his friend revives him
 } PIn;
 
 static struct {
@@ -1000,7 +1001,9 @@ static void pc_target_update(int i, const PIn *in) {
 static bool pc_low(float hp, float mx) { return mx > 0 && hp <= (float)((int)mx / 4); }
 static bool pc_below(float hp, float mx, float t) { return mx > 0 && hp < (float)(int)(mx * t); }
 static float pc_hp_of(const PIn *in, int who, float *mx) {
-    if (who == 0) return *mx = in->sora_hp_max, in->sora_hp;
+    // (s289 revive: a DOWNED Sora counts as full, like an absorbed member: in KH2 a KO is past Cure, his friend revives him;
+    //  s289i lab: Donald's Cure stood him up within a second, life 1 -> 6, so the friend never got to)
+    if (who == 0) return *mx = in->sora_hp_max, in->sora_down ? in->sora_hp_max : in->sora_hp;
     if (g_party_absorbed[who - 1]) return *mx = 1, 1;  // (s233: a member who is not in the field (None / a Drive Form / a summon) is never a Cure target)
     return *mx = P.m[who - 1].hp_max, P.m[who - 1].hp;
 }
@@ -2841,6 +2844,7 @@ static void party_tick(float kh, float to_u, int st) {
         n = n < 0 ? n : m;
         in.en = en, in.nen = n < 0 ? 0 : n, in.hit_r = g_hit_r, in.hit_h = g_hit_h;
         in.sora_hp = (float)linkpos_link_life(), in.sora_hp_max = (float)g_hud_life_max, in.hk = &PARTY_HOOKS;
+        in.sora_down = NET.downed;  // (s289 revive: sora_revive.h keeps NET.downed = RV.c.down)
     }
     static int rag_was;
     int rag = linkpos_link_ragdoll();

@@ -55,6 +55,8 @@ import gameside   # noqa: E402  (the last step: bin/ + the launcher)
 import swsetup    # noqa: E402  (s223: the Savage Wind version check + the in-place upgrade; s254: 0.6.0, from 0.5.3 / 0.4.1)
 SW_VERSION = swsetup.SW_WANT     # (s254) Savage Wind 0.6.0-alpha.6; a 0.5.3-alpha.5 / 0.4.1-alpha.4 folder is upgraded in place first
 import update     # noqa: E402  (s183: update an older install in place)
+import kitdrop    # noqa: E402  (s291: an update with another kit drops only the changed tools' steps)
+import sb as _sb  # noqa: E402  (s291: sb.KIT_STEPS)
 import uisfx      # noqa: E402  (s184: menu sounds from the player's own KH2)
 import setupguard  # noqa: E402  (s288 K8: tools/sorabuild/setupguard.py, the Wine check)
 try:
@@ -262,7 +264,7 @@ def write_work_for(work, tag, state):
     os.replace(p + ".tmp", p)
 
 
-def drop_other_release_work(work, tag, update_mode, log=print):
+def drop_other_release_work(work, tag, update_mode, log=print, kit=None, list_steps=None, old_kit_json=None):
     """(s223, the s221 Melty fix) work/done's markers say "this step's files are made": they hold only for the release whose
     tools made them. A build that was closed (or failed) part-way leaves them behind; a NEWER release started on that folder
     then skips those steps and keeps the old release's files and tools (0.1.6's Melty setup on 0.1.5's sorabake.exe: s221).
@@ -275,12 +277,37 @@ def drop_other_release_work(work, tag, update_mode, log=print):
     (s224 run B: the 0.1.4 -> new update kept cs_build's marker = 0.1.4's sorabake.exe in work/cs, which does not know the new
     Keyblades -> form_final FAILED, and every retry failed the same: update.invalidate only knows DATA changes, never tools.)
     Markers whose name starts with "_" (sorabuild's own bookkeeping, e.g. the KH2 extract) stay, as update.invalidate's "*".
+    (s291, plan s282) update, other tag, state "done", another kit, and `kit` + `list_steps` given: when work/kit_used.json is the
+    old tag's kit.json and only kit TOOLS changed, only the steps that copy those tools (sb.KIT_STEPS) + every step after them
+    lose their marker (kitdrop.plan); anything else = dropped as above. With `kit`, work/kit_used.json = a byte copy of
+    <kit>/kit.json (the kit whose tools make the markers from now on); without it, kit_used.json is removed.
+    (s291 option 1) old_kit_json = the old install's kit.json in the update backup (<root>/.kairi-update/bak/kit/kit.json):
+    stands in for a missing kit_used.json when its sha is the old tag's kit (kitdrop.plan checks; else dropped as above).
     Then made-for.txt = tag + "running". -> how many markers were dropped"""
     old, state = read_work_for(work)
     same_kit = bool(old) and _kit_of(old) == _kit_of(tag)
     drop = old != tag and (state == "running" or not update_mode or not same_kit)
     done = os.path.join(work, "done")
+    used = os.path.join(work, kitdrop.KIT_USED)
     n = 0
+    if drop and update_mode and state == "done" and kit and list_steps and os.path.isdir(done) and not update.is_reparse(done):
+        try:
+            markers, why = kitdrop.plan(_kit_of(old), _read_bytes(used), _read_bytes(os.path.join(kit, "kit.json")),
+                                        getattr(_sb, "KIT_STEPS", {}), list_steps,
+                                        bak_raw=_read_bytes(old_kit_json) if old_kit_json else None)
+        except Exception as e:  # (s291 review 4) any surprise in the old kit record = drop all, as before s291
+            markers, why = None, "kit record unreadable (%s): every step again" % type(e).__name__
+        if markers is not None:
+            drop = False
+            for name in markers:      # step names (sb.KIT_STEPS + sorabuild --list), never a path
+                p = os.path.join(done, name)
+                if os.path.basename(name) == name and name not in (".", "..") and os.path.lexists(p):
+                    update._rm(p)     # a link / junction is removed itself, never followed
+                    n += 1
+            log("[installer] another kit (%s): %d step marker(s) dropped (%s%s), the other steps keep theirs"
+                % (why, n, ", ".join(markers[:8]) or "none", " + %d more" % (len(markers) - 8) if len(markers) > 8 else ""))
+        else:
+            log("[installer] another kit: every step runs again (%s)" % why)
     if drop and os.path.isdir(done) and not update.is_reparse(done):
         for name in os.listdir(done):
             if name.startswith("_"):
@@ -294,8 +321,32 @@ def drop_other_release_work(work, tag, update_mode, log=print):
         if n:
             log("[installer] %d step marker(s) of another build (%s) dropped: those steps run again with this release's tools"
                 % (n, old or "made before %s existed" % WORK_FOR))
+    write_kit_used(work, kit)
     write_work_for(work, tag, "running")
     return n
+
+
+def _read_bytes(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def write_kit_used(work, kit):
+    """(s291) work/kit_used.json = a byte copy of <kit>/kit.json (its sha256 = the kit part of the tag written next); no kit or
+    no kit.json -> removed (a kit_used.json that does not match made-for.txt is never trusted anyway: kitdrop.plan checks)"""
+    os.makedirs(work, exist_ok=True)
+    p = os.path.join(work, kitdrop.KIT_USED)
+    raw = _read_bytes(os.path.join(kit, "kit.json")) if kit else None
+    if raw is None:
+        if os.path.lexists(p) and not update.is_reparse(p):
+            os.remove(p)
+        return
+    with open(p + ".tmp", "wb") as f:
+        f.write(raw)
+    os.replace(p + ".tmp", p)
 
 
 # ------------------------------------------------------------------------------------------------ folder dialog (Windows)
@@ -627,7 +678,13 @@ class State:
         kit = (root + "/kit") if self.mode == "update" else self.kit
         cfg = {"kit": kit, "kh2img": self.kh2img_dev or self.kh2["info"]["img"], "romfs": self.sw["info"]["romfs"],
                "out": root + "/data", "work": root + "/work", "fx": "fxrec", "sounds": "recipe", "fx_keep": "used",
-               "kh2exe": self.kh2["info"]["exe"]}
+               "kh2exe": self.kh2["info"]["exe"],
+               # pose = kh2: the motions that switch a constraint (Guard's left hand, 18 Sora + 29 Drive Form motions) from
+               # KH2's own motion code (step kh2mot, needs kh2exe); the rest stay OpenKH's emulator. Deck (install.sh) stays emu.
+               # (s291) OFF by default: "emu" until the user has played the kh2 poses (PR #64). kh2 = flip this to "kh2" AFTER
+               # the user plays it, in the SAME commit as manifest.thispc.json taking the 14 kh2 pose / hit hashes (PR #64's
+               # manifest), or the installer's verify step fails every Windows install.
+               "pose": "emu"}
         p = os.path.join(root, "work", "install_config.json")
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8", newline="\n") as f:
@@ -772,8 +829,10 @@ class State:
                 update.prepare(RELEASE, self.dest(), self.add_log)
                 self.save_choices(os.path.join(self.dest(), ".installer-ui", "choices.json"))
             tag = work_tag(RELEASE, self.kit)
-            drop_other_release_work(os.path.join(self.dest(), "work"), tag, upd, self.add_log)   # (s223: the s221 fix)
-            cfgp = self.config()
+            cfgp = self.config()     # (s291) before the drop: an update with another kit asks sorabuild --list for the deps
+            drop_other_release_work(os.path.join(self.dest(), "work"), tag, upd, self.add_log,      # (s223: the s221 fix)
+                                    kit=self.kit, list_steps=lambda: self._list_steps(cfgp, raw=True),
+                                    old_kit_json=os.path.join(self.dest(), update.UPD, "bak", "kit", "kit.json") if upd else None)
             self.add_log("[installer] config %s" % cfgp)
             if upd:
                 update.invalidate(self.dest(), self._list_steps(cfgp, raw=True), self.add_log)
