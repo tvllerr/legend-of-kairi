@@ -358,9 +358,76 @@ def test_invalidate_work_inputs(base):
     print("ok invalidate work inputs")
 
 
+# (s292 pose) the 14 data files config pose = kh2 changes (PR #64); every other file is byte-identical to pose = emu
+POSE_FILES = ["sora_pose.bin", "sora_hits.bin", "forms/valor_pose.bin", "forms/valor_hits_r.bin", "forms/valor_hits_l.bin",
+              "forms/wisdom_pose.bin", "forms/limit_pose.bin", "forms/limit_hits.bin", "forms/master_pose.bin",
+              "forms/final_pose_s91.bin", "forms/final_hits_r_s91.bin", "forms/final_hits_l_s91.bin", "forms/final_hits_r_s92.bin",
+              "forms/final_hits_l_s92.bin"]
+KH2_SORA_POSE = "33e4e6d482790279ea1d7b75ab398ef5837f7a81ca0b366bf422d6194a8952d4"   # sora_pose.bin, pose = kh2 (s291 build = s292 play)
+EMU_SORA_POSE = "b8f49c436487163a9ba44f47ccb6e793295e023a2a7f3ef83450181d869d2d60"   # sora_pose.bin, pose = emu (0.2.3 / 0.2.4)
+
+
+def test_pose_flip(base):
+    """(s292 pose) installer.py's config "pose" and manifest.thispc.json go together (one without the other = verify fails every
+    Windows install), and an update from a pose = emu install (0.2.4) re-runs the 14 files' steps + kh2mot instead of verify
+    calling them wrong. Uses the REAL sorabuild steps (their deps / outputs) and the REAL manifest of this tree."""
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    sbdir = os.path.join(here, "..", "sorabuild")
+    sys.path.insert(0, sbdir)
+    import sb
+    import sorabuild
+    pose = re.search(r'"pose":\s*"(\w+)"', r(os.path.join(here, "installer.py"))).group(1)
+    new_man = json.load(open(os.path.join(sbdir, "manifest.thispc.json"), encoding="utf-8"))
+    want = {"kh2": KH2_SORA_POSE, "emu": EMU_SORA_POSE}[pose]
+    assert new_man["files"]["sora_pose.bin"]["sha256"] == want, \
+        "installer.py pose = %s but manifest.thispc.json has the other sora_pose.bin: change both in one commit" % pose
+    # Deck: install.sh writes no "pose" key (= emu)
+    assert '"pose"' not in r(os.path.join(here, "linux", "install.sh")), "the Deck install stays pose = emu"
+    if pose != "kh2":
+        print("ok pose flip (pose = emu: update part skipped)")
+        return
+    steps = sorabuild.load_steps({})
+    lst = "".join("%-24s %-8s %-5s deps=%s out=%s\n" % (n, s.group, "done", ",".join(s.deps) or "-", " ".join(s.outputs) or "-")
+                  for n, s in steps.items())
+    # the old install = this release's data, but the 14 files as pose = emu built them
+    old_files = {k: dict(v) for k, v in new_man["files"].items()}
+    for f in POSE_FILES:
+        old_files[f]["sha256"] = "emu-" + old_files[f]["sha256"][4:]
+    rel = os.path.join(base, "new")
+    make_release(rel, "0.2.5-alpha", {}, new_man["build_id"])
+    w(os.path.join(rel, "tools", "sorabuild", "manifest.thispc.json"), json.dumps(new_man))
+    old = os.path.join(base, "old")
+    make_release(old, "0.2.4-alpha", {}, "OLD", top=False)
+    w(os.path.join(old, "tools", "sorabuild", "manifest.thispc.json"), json.dumps({"build_id": "OLD", "files": old_files}))
+    for f in old_files:
+        w(os.path.join(old, "data", f), "x")
+    for n in list(steps) + ["_kh2pick"]:
+        w(os.path.join(old, "work", "done", n), "done")
+    w(os.path.join(old, "work", "kh2mot_mode.txt"), "emu\n")       # what step kh2mot wrote with pose = emu
+    logs = []
+    update.prepare(rel, old, logs.append)
+    hit = update.invalidate(old, lst, logs.append)
+    assert hit == sorted({"sora_hits", "sora_mp", "form_valor", "form_wisdom", "form_limit", "form_master", "form_final_s91",
+                          "form_final_s92"}), hit
+    for f in POSE_FILES:
+        assert not os.path.exists(os.path.join(old, "data", f)), f + ": an emu file must be removed (rebuilt), not left for verify"
+    assert os.path.exists(os.path.join(old, "data", "forms", "anti_pose.bin")), "an unchanged file stays"
+    inputs = update.read_journal(old)["invalidated_inputs"]
+    assert "kh2mot" in inputs and "sora_base" in inputs, inputs
+    done = os.path.join(old, "work", "done")
+    for s in hit + inputs:
+        assert not os.path.exists(os.path.join(done, s)), s
+    # kh2mot would re-run anyway: its marker says emu, the config now says kh2 (sorabuild.is_done -> stale)
+    w(os.path.join(done, "kh2mot"), "done")
+    cfg = {"out": os.path.join(old, "data"), "work": os.path.join(old, "work"), "pose": "kh2", "kh2exe": "X:/KH2.exe"}
+    assert not sorabuild.is_done(sb.Ctx(cfg), steps["kh2mot"]), "pose emu -> kh2: step kh2mot (and every step after it) re-runs"
+    print("ok pose flip (%d steps re-run, inputs %s)" % (len(hit), ",".join(inputs)))
+
+
 def main():
     for t in (test_detect, test_swap_and_invalidate, test_unowned_rebuilds_all, test_crash_recovery, test_release_items, test_busy,
-              test_junction_escape, test_relocated_folders, test_invalidate_work_inputs):
+              test_junction_escape, test_relocated_folders, test_invalidate_work_inputs, test_pose_flip):
         with tempfile.TemporaryDirectory(dir=os.environ.get("LOK_TEST_TMP")) as base:
             t(base)
     print("ok")

@@ -681,10 +681,10 @@ class State:
                "kh2exe": self.kh2["info"]["exe"],
                # pose = kh2: the motions that switch a constraint (Guard's left hand, 18 Sora + 29 Drive Form motions) from
                # KH2's own motion code (step kh2mot, needs kh2exe); the rest stay OpenKH's emulator. Deck (install.sh) stays emu.
-               # (s291) OFF by default: "emu" until the user has played the kh2 poses (PR #64). kh2 = flip this to "kh2" AFTER
-               # the user plays it, in the SAME commit as manifest.thispc.json taking the 14 kh2 pose / hit hashes (PR #64's
-               # manifest), or the installer's verify step fails every Windows install.
-               "pose": "emu"}
+               # (s291) was "emu" until the user played the kh2 poses (PR #64); (s292) he did ("everything works good"): "kh2".
+               # It goes WITH manifest.thispc.json's 14 kh2 pose / hit hashes (build id 45c0a1787e1e6909): change one = change
+               # both, or the installer's verify step fails every Windows install.
+               "pose": "kh2"}
         p = os.path.join(root, "work", "install_config.json")
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8", newline="\n") as f:
